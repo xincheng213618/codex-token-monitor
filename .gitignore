@@ -1,0 +1,29 @@
+# Build outputs
+bin/
+obj/
+outputs/
+**/bin/
+**/obj/
+
+# Local IDE/user files
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/
+
+# Local runtime/cache data
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Scratch workspace from local Codex development
+work/
+
+# OS noise
+Thumbs.db
+Desktop.ini
+.DS_Store
