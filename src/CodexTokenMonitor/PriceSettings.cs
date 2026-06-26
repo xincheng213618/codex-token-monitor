@@ -239,12 +239,21 @@ internal static class PriceSettingsStore
     public static IReadOnlyList<PricePreset> DisplayPresetsForSource(string sourceKey, int count)
     {
         var source = sourceKey.Trim().ToLowerInvariant();
-        var candidates = Current.Presets
-            .Where(item => IsDisplayCandidateForSource(item, source))
-            .ToList();
-        if (candidates.Count < count)
+        var candidates = new List<PricePreset>();
+        AddFirstDisplayPreset(candidates, item => IsPrimaryDisplayCandidateForSource(item, source));
+        AddFirstDisplayPreset(candidates, IsDeepSeekPreset);
+        AddFirstDisplayPreset(candidates, IsXiaomiPreset);
+        foreach (var preset in Current.Presets)
         {
-            candidates.AddRange(Current.Presets.Where(item => !candidates.Any(existing => SamePreset(existing, item))));
+            if (candidates.Count >= count)
+            {
+                break;
+            }
+
+            if (!candidates.Any(existing => SamePreset(existing, preset)))
+            {
+                candidates.Add(preset);
+            }
         }
 
         return candidates
@@ -253,7 +262,17 @@ internal static class PriceSettingsStore
             .ToList();
     }
 
-    private static bool IsDisplayCandidateForSource(PricePreset preset, string source)
+    private static void AddFirstDisplayPreset(List<PricePreset> candidates, Func<PricePreset, bool> predicate)
+    {
+        var match = Current.Presets.FirstOrDefault(item =>
+            !candidates.Any(existing => SamePreset(existing, item)) && predicate(item));
+        if (match is not null)
+        {
+            candidates.Add(match);
+        }
+    }
+
+    private static bool IsPrimaryDisplayCandidateForSource(PricePreset preset, string source)
     {
         return source switch
         {
@@ -265,8 +284,23 @@ internal static class PriceSettingsStore
             "zcode" => ContainsIgnoreCase(preset.Provider, "智谱") ||
                        ContainsIgnoreCase(preset.Provider, "Z.AI") ||
                        ContainsIgnoreCase(preset.Model, "GLM"),
-            _ => true
+            _ => ContainsIgnoreCase(preset.Provider, "OpenAI") ||
+                 ContainsIgnoreCase(preset.Model, "GPT") ||
+                 ContainsIgnoreCase(preset.Model, "Codex")
         };
+    }
+
+    private static bool IsDeepSeekPreset(PricePreset preset)
+    {
+        return ContainsIgnoreCase(preset.Provider, "DeepSeek") ||
+               ContainsIgnoreCase(preset.Model, "DeepSeek");
+    }
+
+    private static bool IsXiaomiPreset(PricePreset preset)
+    {
+        return ContainsIgnoreCase(preset.Provider, "Xiaomi") ||
+               ContainsIgnoreCase(preset.Model, "Xiaomi") ||
+               ContainsIgnoreCase(preset.Model, "MiMo");
     }
 
     private static bool ContainsIgnoreCase(string value, string pattern)

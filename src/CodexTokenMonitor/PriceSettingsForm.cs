@@ -51,7 +51,7 @@ internal sealed class PriceSettingsForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            Text = "主界面按价格库排序展示：Codex 取总表前 3，Claude Code 取 Claude 前 3，ZCode 取智谱/GLM 前 3。选中行可以置顶或上下移动，保存后生效。",
+            Text = "主界面第一栏按来源取主模型：Codex=GPT，Claude Code=Claude，ZCode=GLM；第二、三栏固定 DeepSeek / Xiaomi。选中行可以置顶或上下移动。",
             ForeColor = Color.FromArgb(55, 65, 81),
             Margin = new Padding(0, 0, 0, 12)
         }, 0, 0);
