@@ -1319,13 +1319,8 @@ public partial class Form1 : Form
         UsageSource source)
     {
         Text = $"{SourceTitle(source)} Token 额度监控器 - {range.Title}";
-        priceLabel.Text = source switch
-        {
-            UsageSource.Codex => $"价格：{PriceProfiles.Gpt55StandardLong.Name} / DeepSeek V4 Pro / Xiaomi Credits",
-            UsageSource.ClaudeCode => "价格：DeepSeek V4 Pro / Xiaomi Credits（GPT-5.5 仅 Codex）",
-            UsageSource.ZCode => "价格：DeepSeek V4 Pro / Xiaomi Credits（GPT-5.5 仅 Codex）",
-            _ => ""
-        };
+        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(SourceKey(source), count: 3);
+        priceLabel.Text = "";
         totalValue.Text = FormatTokenMillions(summary.TotalTokens);
         periodValue.Text = $"{summary.StartLocal:yyyy-MM-dd HH:mm} - {summary.EndLocal:yyyy-MM-dd HH:mm:ss}  GMT+8";
         inputValue.Text = FormatTokenMillions(summary.InputTokens);
@@ -1337,18 +1332,9 @@ public partial class Form1 : Form
         eventsValue.Text = summary.Events.ToString("N0");
         lastEventValue.Text = FormatDuration(codingTime);
 
-        costPanel1Title.Text = "GPT-5.5";
-        costPanel1Subtitle.Text = PriceSettingsStore.GptSubtitle();
-        costPanel2Title.Text = "DeepSeek";
-        costPanel2Subtitle.Text = "V4 Pro / CNY";
-        costPanel3Title.Text = "Xiaomi";
-        costPanel3Subtitle.Text = "MiMo Credits";
-        gpt55CostValue.Text = source == UsageSource.Codex
-            ? FormatMoney(summary.EstimateCost(PriceProfiles.Gpt55StandardLong), PriceProfiles.Gpt55StandardLong)
-            : "-";
-        deepSeekCostValue.Text = FormatMoney(summary.EstimateCost(PriceProfiles.DeepSeekV4Pro), PriceProfiles.DeepSeekV4Pro);
-        var xiaomiCredits = summary.EstimateCost(PriceProfiles.XiaomiMimoV25Pro);
-        xiaomiCreditValue.Text = FormatCredits(xiaomiCredits);
+        ApplyCostDisplay(costPanel1Title, costPanel1Subtitle, gpt55CostValue, displayPresets.ElementAtOrDefault(0), summary);
+        ApplyCostDisplay(costPanel2Title, costPanel2Subtitle, deepSeekCostValue, displayPresets.ElementAtOrDefault(1), summary);
+        ApplyCostDisplay(costPanel3Title, costPanel3Subtitle, xiaomiCreditValue, displayPresets.ElementAtOrDefault(2), summary);
         currentQuotaSnapshots = source == UsageSource.Codex
             ? quotaSnapshots
             : Array.Empty<CodexQuotaSnapshot>();
@@ -1382,9 +1368,9 @@ public partial class Form1 : Form
         breakdownList.Columns[3].Text = "Cached";
         breakdownList.Columns[4].Text = "Uncached";
         breakdownList.Columns[5].Text = "Output";
-        breakdownList.Columns[6].Text = "GPT-5.5";
-        breakdownList.Columns[7].Text = "DeepSeek ¥";
-        breakdownList.Columns[8].Text = "Xiaomi Credits";
+        breakdownList.Columns[6].Text = FormatPresetColumnTitle(displayPresets.ElementAtOrDefault(0), "价格1");
+        breakdownList.Columns[7].Text = FormatPresetColumnTitle(displayPresets.ElementAtOrDefault(1), "价格2");
+        breakdownList.Columns[8].Text = FormatPresetColumnTitle(displayPresets.ElementAtOrDefault(2), "价格3");
         breakdownList.Columns[9].Text = "额度(5h/7d)";
         ApplyBreakdownColumnWidths(range);
         var useEventTokenScale = range.Mode == RangeMode.Day || range.IsCustomStart;
@@ -1396,17 +1382,78 @@ public partial class Form1 : Form
             item.SubItems.Add(FormatBreakdownToken(bucket.CachedInputTokens, useEventTokenScale));
             item.SubItems.Add(FormatBreakdownToken(bucket.UncachedInputTokens, useEventTokenScale));
             item.SubItems.Add(FormatTokenAdaptive(bucket.OutputTokens));
-            item.SubItems.Add(source == UsageSource.Codex
-                ? FormatMoney(bucket.EstimateCost(PriceProfiles.Gpt55StandardLong), PriceProfiles.Gpt55StandardLong)
-                : "-");
-            item.SubItems.Add(FormatMoney(bucket.EstimateCost(PriceProfiles.DeepSeekV4Pro), PriceProfiles.DeepSeekV4Pro));
-            item.SubItems.Add(FormatCredits(bucket.EstimateCost(PriceProfiles.XiaomiMimoV25Pro)));
+            AddPresetCost(item, bucket, displayPresets.ElementAtOrDefault(0));
+            AddPresetCost(item, bucket, displayPresets.ElementAtOrDefault(1));
+            AddPresetCost(item, bucket, displayPresets.ElementAtOrDefault(2));
             item.SubItems.Add(source == UsageSource.Codex
                 ? FormatQuotaSnapshotForBucket(range, bucket, quotaSnapshots)
                 : "-");
             breakdownList.Items.Add(item);
         }
         breakdownList.EndUpdate();
+    }
+
+    private static string SourceKey(UsageSource source)
+    {
+        return source switch
+        {
+            UsageSource.ClaudeCode => "claude",
+            UsageSource.ZCode => "zcode",
+            _ => "codex"
+        };
+    }
+
+    private static void ApplyCostDisplay(
+        Label titleLabel,
+        Label subtitleLabel,
+        Label valueLabel,
+        PricePreset? preset,
+        TokenUsageSummary summary)
+    {
+        if (preset is null)
+        {
+            titleLabel.Text = "-";
+            subtitleLabel.Text = "";
+            valueLabel.Text = "-";
+            return;
+        }
+
+        var profile = preset.ToProfile();
+        titleLabel.Text = string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider;
+        subtitleLabel.Text = preset.Model;
+        valueLabel.Text = FormatCost(summary.EstimateCost(profile), profile);
+    }
+
+    private static void AddPresetCost(ListViewItem item, TokenUsageBucket bucket, PricePreset? preset)
+    {
+        if (preset is null)
+        {
+            item.SubItems.Add("-");
+            return;
+        }
+
+        var profile = preset.ToProfile();
+        item.SubItems.Add(FormatCost(bucket.EstimateCost(profile), profile));
+    }
+
+    private static string FormatPresetColumnTitle(PricePreset? preset, string fallback)
+    {
+        if (preset is null)
+        {
+            return fallback;
+        }
+
+        if (string.IsNullOrWhiteSpace(preset.Provider))
+        {
+            return ShortenColumnTitle(preset.Model);
+        }
+
+        return ShortenColumnTitle($"{preset.Provider} {preset.Model}");
+    }
+
+    private static string ShortenColumnTitle(string text)
+    {
+        return text.Length <= 18 ? text : $"{text[..16]}...";
     }
 
     private void ApplyQuotaSummary(UsageSource source, CodexQuotaEstimate? quota)
@@ -1469,8 +1516,8 @@ public partial class Form1 : Form
         valueLabel.Text = $"{remainingPercent:N0}%";
         var resetAt = window.ResetAtLocal ?? window.WindowEndLocal;
         detailLabel.Text = mode == QuotaWindowDisplayMode.FiveHour
-            ? $"刷新 {resetAt:MM-dd HH:mm} · 已花 {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
-            : $"刷新 {resetAt:MM-dd HH:mm} · 总额 {FormatQuotaLimit(window)}";
+            ? $"{resetAt:HH:mm} · {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
+            : $"到期 {FormatQuotaRemaining(resetAt)} · {FormatQuotaLimit(window)}";
     }
 
     private void UpdateQuotaLimitCalculation()
@@ -1491,6 +1538,23 @@ public partial class Form1 : Form
         return window?.EstimatedGptLimit is null
             ? "-"
             : FormatMoney(window.EstimatedGptLimit.Value, PriceProfiles.Gpt55StandardLong);
+    }
+
+    private static string FormatQuotaRemaining(DateTimeOffset resetAtLocal)
+    {
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        var remaining = resetAtLocal - now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "已到期";
+        }
+
+        if (remaining.TotalDays >= 1)
+        {
+            return $"{Math.Ceiling(remaining.TotalDays):N0}天";
+        }
+
+        return $"{Math.Max(1, (int)Math.Ceiling(remaining.TotalHours))}小时";
     }
 
     private static string FormatQuotaWindowReport(string label, CodexQuotaWindowEstimate? window)
@@ -1996,6 +2060,13 @@ public partial class Form1 : Form
             >= 1 => $"{profile.CurrencySymbol}{value:N3}",
             _ => $"{profile.CurrencySymbol}{value:N4}"
         };
+    }
+
+    private static string FormatCost(decimal value, PriceProfile profile)
+    {
+        return string.Equals(profile.CurrencySymbol, "Credits", StringComparison.OrdinalIgnoreCase)
+            ? FormatCredits(value)
+            : FormatMoney(value, profile);
     }
 
     private static string FormatCredits(decimal value)

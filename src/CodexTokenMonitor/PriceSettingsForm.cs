@@ -51,7 +51,7 @@ internal sealed class PriceSettingsForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            Text = "当前主界面默认展示 GPT-5.5 / DeepSeek / Xiaomi 三档。下方价格库可以保留更多模型，用选中行套用到上面的任一档。",
+            Text = "主界面按价格库排序展示：Codex 取总表前 3，Claude Code 取 Claude 前 3，ZCode 取智谱/GLM 前 3。选中行可以置顶或上下移动，保存后生效。",
             ForeColor = Color.FromArgb(55, 65, 81),
             Margin = new Padding(0, 0, 0, 12)
         }, 0, 0);
@@ -225,22 +225,25 @@ internal sealed class PriceSettingsForm : Form
             Margin = new Padding(0, 6, 12, 0)
         });
 
-        presetTargetBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        presetTargetBox.Items.AddRange(new object[] { "套用到 GPT", "套用到 DeepSeek", "套用到 Xiaomi" });
-        presetTargetBox.SelectedIndex = 0;
-        presetTargetBox.Width = 150;
-        presetTargetBox.Margin = new Padding(0, 2, 8, 0);
-        layout.Controls.Add(presetTargetBox);
-
-        var applyButton = CreateActionButton("套用选中行", Color.FromArgb(21, 128, 106), Color.White);
+        var applyButton = CreateActionButton("置顶显示", Color.FromArgb(21, 128, 106), Color.White);
         applyButton.Margin = new Padding(0, 0, 12, 0);
         applyButton.Click += (_, _) => ApplySelectedPreset();
         layout.Controls.Add(applyButton);
 
+        var upButton = CreateActionButton("上移", Color.FromArgb(229, 234, 242), Color.FromArgb(55, 65, 81));
+        upButton.Margin = new Padding(0, 0, 8, 0);
+        upButton.Click += (_, _) => MoveSelectedPreset(-1);
+        layout.Controls.Add(upButton);
+
+        var downButton = CreateActionButton("下移", Color.FromArgb(229, 234, 242), Color.FromArgb(55, 65, 81));
+        downButton.Margin = new Padding(0, 0, 12, 0);
+        downButton.Click += (_, _) => MoveSelectedPreset(1);
+        layout.Controls.Add(downButton);
+
         layout.Controls.Add(new Label
         {
             AutoSize = true,
-            Text = "表格价格可编辑；保存后会保留。部分海外/国内价格变动频繁，默认档用于对比，不替代官方账单。",
+            Text = "表格价格和顺序可编辑；保存后会保留。部分价格变动频繁，默认档用于对比，不替代官方账单。",
             ForeColor = Color.FromArgb(87, 99, 116),
             Margin = new Padding(0, 6, 0, 0)
         });
@@ -379,25 +382,57 @@ internal sealed class PriceSettingsForm : Form
             return;
         }
 
-        switch (presetTargetBox.SelectedIndex)
+        var index = row.Index;
+        presetGrid.Rows.RemoveAt(index);
+        presetGrid.Rows.Insert(0,
+            preset.Provider,
+            preset.Model,
+            preset.CurrencySymbol,
+            preset.UnitLabel,
+            preset.Divisor.ToString("0.####", CultureInfo.InvariantCulture),
+            preset.UncachedInput.ToString("0.####", CultureInfo.InvariantCulture),
+            preset.CachedInput.ToString("0.####", CultureInfo.InvariantCulture),
+            preset.Output.ToString("0.####", CultureInfo.InvariantCulture),
+            preset.Source);
+        presetGrid.ClearSelection();
+        presetGrid.Rows[0].Selected = true;
+        presetGrid.CurrentCell = presetGrid.Rows[0].Cells[0];
+    }
+
+    private void MoveSelectedPreset(int offset)
+    {
+        var row = presetGrid.CurrentRow;
+        if (row is null || row.IsNewRow)
         {
-            case 1:
-                deepSeekInputBox.Value = Clamp(preset.UncachedInput, deepSeekInputBox);
-                deepSeekCachedBox.Value = Clamp(preset.CachedInput, deepSeekCachedBox);
-                deepSeekOutputBox.Value = Clamp(preset.Output, deepSeekOutputBox);
-                break;
-            case 2:
-                xiaomiInputBox.Value = Clamp(preset.UncachedInput, xiaomiInputBox);
-                xiaomiCachedBox.Value = Clamp(preset.CachedInput, xiaomiCachedBox);
-                xiaomiOutputBox.Value = Clamp(preset.Output, xiaomiOutputBox);
-                break;
-            default:
-                gptNameBox.Text = preset.DisplayName;
-                gptInputBox.Value = Clamp(preset.UncachedInput, gptInputBox);
-                gptCachedBox.Value = Clamp(preset.CachedInput, gptCachedBox);
-                gptOutputBox.Value = Clamp(preset.Output, gptOutputBox);
-                break;
+            return;
         }
+
+        var targetIndex = row.Index + offset;
+        if (targetIndex < 0 || targetIndex >= presetGrid.Rows.Count || presetGrid.Rows[targetIndex].IsNewRow)
+        {
+            return;
+        }
+
+        var preset = TryReadPreset(row);
+        if (preset is null)
+        {
+            return;
+        }
+
+        presetGrid.Rows.RemoveAt(row.Index);
+        presetGrid.Rows.Insert(targetIndex,
+            preset.Provider,
+            preset.Model,
+            preset.CurrencySymbol,
+            preset.UnitLabel,
+            preset.Divisor.ToString("0.####", CultureInfo.InvariantCulture),
+            preset.UncachedInput.ToString("0.####", CultureInfo.InvariantCulture),
+            preset.CachedInput.ToString("0.####", CultureInfo.InvariantCulture),
+            preset.Output.ToString("0.####", CultureInfo.InvariantCulture),
+            preset.Source);
+        presetGrid.ClearSelection();
+        presetGrid.Rows[targetIndex].Selected = true;
+        presetGrid.CurrentCell = presetGrid.Rows[targetIndex].Cells[0];
     }
 
     private void SaveSettings()

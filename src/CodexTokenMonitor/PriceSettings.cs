@@ -5,6 +5,7 @@ namespace CodexTokenMonitor;
 
 internal sealed class PriceSettings
 {
+    public int DisplayOrderVersion { get; set; } = 3;
     public string GptName { get; set; } = "GPT-5.5 Standard Short";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
@@ -56,6 +57,7 @@ internal sealed class PriceSettings
     {
         return new PriceSettings
         {
+            DisplayOrderVersion = DisplayOrderVersion,
             GptName = GptName,
             GptUncachedInputPerMillion = GptUncachedInputPerMillion,
             GptCachedInputPerMillion = GptCachedInputPerMillion,
@@ -117,14 +119,14 @@ internal sealed class PricePreset
         return new[]
         {
             Preset("OpenAI", "GPT-5.5 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI API Pricing"),
+            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档"),
+            Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
             Preset("OpenAI", "GPT-5.5 Standard Long", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 45.00m, "历史长上下文对比档"),
             Preset("OpenAI", "GPT-5.5 Priority Short", "$", "USD / 1M tokens", 1_000_000m, 12.50m, 1.25m, 75.00m, "OpenAI priority short context"),
             Preset("OpenAI", "GPT-5.4 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI API Pricing"),
             Preset("OpenAI", "GPT-5.4 mini Short", "$", "USD / 1M tokens", 1_000_000m, 1.50m, 0.15m, 9.00m, "OpenAI API Pricing"),
             Preset("OpenAI", "GPT-5.2 Reference", "$", "USD / 1M tokens", 1_000_000m, 1.75m, 0.175m, 14.00m, "价格库参考档"),
-            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档"),
             Preset("DeepSeek", "V4 Pro API", "$", "USD / 1M tokens", 1_000_000m, 0.435m, 0.0036m, 0.87m, "DeepSeek/OpenRouter reference"),
-            Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
             Preset("Xiaomi", "MiMo V2.5 Pro API", "$", "USD / 1M tokens", 1_000_000m, 0.435m, 0.0036m, 0.87m, "MiMo pay-as-you-go"),
             Preset("Xiaomi", "Token Plan ¥99 / 110亿", "¥", "CNY / 1M tokens", 1_000_000m, 0.0090m, 0.0090m, 0.0090m, "99元=110亿 token 折算"),
             Preset("Kimi（月之暗面）", "K2.7 Code", "¥", "CNY / 1M tokens", 1_000_000m, 6.50m, 1.30m, 27.00m, "Kimi API 官方人民币价格"),
@@ -154,11 +156,13 @@ internal sealed class PricePreset
             Preset("通义千问", "Qwen Plus <=128K", "¥", "CNY / 1M tokens", 1_000_000m, 0.80m, 0.08m, 2.00m, "阿里云百炼模型价格"),
             Preset("腾讯混元", "Hunyuan Turbo S", "¥", "CNY / 1M tokens", 1_000_000m, 0.80m, 0.08m, 2.00m, "腾讯混元官方参考"),
             Preset("腾讯混元", "Hunyuan Turbo", "¥", "CNY / 1M tokens", 1_000_000m, 0.70m, 0.07m, 1.40m, "腾讯混元官方参考"),
-            Preset("Claude", "Haiku 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Sonnet 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Sonnet 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Opus 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read"),
             Preset("Claude", "Opus 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read"),
+            Preset("Claude", "Sonnet 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
+            Preset("Claude", "Haiku 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read"),
+            Preset("Claude", "Sonnet 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
+            Preset("Claude", "Sonnet 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
+            Preset("Claude", "Opus 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read"),
+            Preset("Claude", "Haiku 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read"),
             Preset("Claude", "Opus 4.6 Fast", "$", "USD / 1M tokens", 1_000_000m, 30.00m, 3.00m, 150.00m, "Anthropic fast mode reference"),
             Preset("xAI", "Grok 4.3", "$", "USD / 1M tokens", 1_000_000m, 1.25m, 0.25m, 2.50m, "xAI model pricing"),
             Preset("xAI", "Grok Build 0.1", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.00m, 2.00m, "xAI coding reference")
@@ -232,6 +236,44 @@ internal static class PriceSettingsStore
             : name;
     }
 
+    public static IReadOnlyList<PricePreset> DisplayPresetsForSource(string sourceKey, int count)
+    {
+        var source = sourceKey.Trim().ToLowerInvariant();
+        var candidates = Current.Presets
+            .Where(item => IsDisplayCandidateForSource(item, source))
+            .ToList();
+        if (candidates.Count < count)
+        {
+            candidates.AddRange(Current.Presets.Where(item => !candidates.Any(existing => SamePreset(existing, item))));
+        }
+
+        return candidates
+            .Take(Math.Max(1, count))
+            .Select(item => item.Clone())
+            .ToList();
+    }
+
+    private static bool IsDisplayCandidateForSource(PricePreset preset, string source)
+    {
+        return source switch
+        {
+            "claude" => ContainsIgnoreCase(preset.Provider, "Claude") ||
+                        ContainsIgnoreCase(preset.Model, "Claude") ||
+                        ContainsIgnoreCase(preset.Model, "Opus") ||
+                        ContainsIgnoreCase(preset.Model, "Sonnet") ||
+                        ContainsIgnoreCase(preset.Model, "Haiku"),
+            "zcode" => ContainsIgnoreCase(preset.Provider, "智谱") ||
+                       ContainsIgnoreCase(preset.Provider, "Z.AI") ||
+                       ContainsIgnoreCase(preset.Model, "GLM"),
+            _ => true
+        };
+    }
+
+    private static bool ContainsIgnoreCase(string value, string pattern)
+    {
+        return value.Contains(pattern, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static PriceSettings Load()
     {
         try
@@ -257,8 +299,15 @@ internal static class PriceSettingsStore
     private static PriceSettings Normalize(PriceSettings settings)
     {
         var defaults = Defaults();
+        var presets = NormalizePresets(settings.Presets);
+        if (settings.DisplayOrderVersion < defaults.DisplayOrderVersion)
+        {
+            presets = ApplyDefaultDisplayOrder(presets);
+        }
+
         return new PriceSettings
         {
+            DisplayOrderVersion = defaults.DisplayOrderVersion,
             GptName = string.IsNullOrWhiteSpace(settings.GptName) ? defaults.GptName : settings.GptName.Trim(),
             GptUncachedInputPerMillion = PositiveOrDefault(settings.GptUncachedInputPerMillion, defaults.GptUncachedInputPerMillion),
             GptCachedInputPerMillion = PositiveOrDefault(settings.GptCachedInputPerMillion, defaults.GptCachedInputPerMillion),
@@ -269,8 +318,39 @@ internal static class PriceSettingsStore
             XiaomiUncachedInputCreditsPerToken = PositiveOrDefault(settings.XiaomiUncachedInputCreditsPerToken, defaults.XiaomiUncachedInputCreditsPerToken),
             XiaomiCachedInputCreditsPerToken = PositiveOrDefault(settings.XiaomiCachedInputCreditsPerToken, defaults.XiaomiCachedInputCreditsPerToken),
             XiaomiOutputCreditsPerToken = PositiveOrDefault(settings.XiaomiOutputCreditsPerToken, defaults.XiaomiOutputCreditsPerToken),
-            Presets = NormalizePresets(settings.Presets)
+            Presets = presets
         };
+    }
+
+    private static List<PricePreset> ApplyDefaultDisplayOrder(List<PricePreset> presets)
+    {
+        var preferred = new (string Provider, string Model)[]
+        {
+            ("OpenAI", "GPT-5.5 Standard Short"),
+            ("DeepSeek", "V4 Pro"),
+            ("Xiaomi", "MiMo V2.5 Pro"),
+            ("Claude", "Opus 4.8 API"),
+            ("Claude", "Sonnet 4.8 API"),
+            ("Claude", "Haiku 4.8 API"),
+            ("智谱/Z.AI", "GLM-5.2 1M"),
+            ("智谱/Z.AI", "GLM-5.1 <=32K"),
+            ("智谱/Z.AI", "GLM-4.7 <=32K short out")
+        };
+
+        var ordered = new List<PricePreset>();
+        foreach (var key in preferred)
+        {
+            var match = presets.FirstOrDefault(item =>
+                string.Equals(item.Provider, key.Provider, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(item.Model, key.Model, StringComparison.OrdinalIgnoreCase));
+            if (match is not null && !ordered.Any(item => SamePreset(item, match)))
+            {
+                ordered.Add(match);
+            }
+        }
+
+        ordered.AddRange(presets.Where(item => !ordered.Any(existing => SamePreset(existing, item))));
+        return ordered;
     }
 
     private static List<PricePreset> NormalizePresets(List<PricePreset>? presets)
@@ -302,6 +382,12 @@ internal static class PriceSettingsStore
         }
 
         return result;
+    }
+
+    private static bool SamePreset(PricePreset first, PricePreset second)
+    {
+        return string.Equals(first.Provider, second.Provider, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(first.Model, second.Model, StringComparison.OrdinalIgnoreCase);
     }
 
     private static decimal PositiveOrDefault(decimal value, decimal fallback)
