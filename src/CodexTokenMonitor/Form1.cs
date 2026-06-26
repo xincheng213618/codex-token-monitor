@@ -460,9 +460,9 @@ public partial class Form1 : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
         quotaPanel.Controls.Add(layout);
 
-        layout.Controls.Add(BuildQuotaCard("5h 额度", quota5hValue, quota5hDetail), 0, 0);
-        layout.Controls.Add(BuildQuotaCard("1周额度", quotaWeekValue, quotaWeekDetail), 1, 0);
-        layout.Controls.Add(BuildQuotaCard("实际套餐", planSpendValue, planSpendDetail), 2, 0);
+        layout.Controls.Add(BuildQuotaCard("5h", quota5hValue, quota5hDetail), 0, 0);
+        layout.Controls.Add(BuildQuotaCard("1周", quotaWeekValue, quotaWeekDetail), 1, 0);
+        layout.Controls.Add(BuildQuotaCard("套餐", planSpendValue, planSpendDetail), 2, 0);
         layout.Controls.Add(BuildQuotaCalculationCard(), 3, 0);
         return quotaPanel;
     }
@@ -533,7 +533,7 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             AutoSize = false,
-            Text = "额度估算",
+            Text = "估算",
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Microsoft YaHei UI", 9.2f, FontStyle.Bold),
             ForeColor = Color.FromArgb(90, 103, 119),
@@ -554,7 +554,7 @@ public partial class Form1 : Form
 
         quotaLimitValue.Dock = DockStyle.Fill;
         quotaLimitValue.AutoSize = false;
-        quotaLimitValue.Text = "5h - / 7d -";
+        quotaLimitValue.Text = "";
         quotaLimitValue.TextAlign = ContentAlignment.TopLeft;
         quotaLimitValue.Font = new Font("Microsoft YaHei UI", 8.6f);
         quotaLimitValue.ForeColor = Color.FromArgb(87, 99, 116);
@@ -1418,13 +1418,13 @@ public partial class Form1 : Form
             quota5hDetail.Text = "-";
             quotaWeekValue.Text = "-";
             quotaWeekDetail.Text = "-";
-            quotaLimitValue.Text = show ? "暂无额度快照" : "5h - / 7d -";
+            quotaLimitValue.Text = "";
             return;
         }
 
         ApplyQuotaWindow(quota5hValue, quota5hDetail, quota.FiveHour);
         ApplyQuotaWindow(quotaWeekValue, quotaWeekDetail, quota.Week);
-        quotaLimitValue.Text = "点击计算";
+        quotaLimitValue.Text = "";
     }
 
     private void ApplyCurrentPlanSummary()
@@ -1437,14 +1437,13 @@ public partial class Form1 : Form
         if (active.Count == 0)
         {
             planSpendValue.Text = "-";
-            planSpendDetail.Text = "当前没有匹配套餐";
+            planSpendDetail.Text = "";
             return;
         }
 
         var amount = active.Sum(item => item.AmountCny);
         planSpendValue.Text = FormatCny(amount);
-        planSpendDetail.Text = string.Join(" / ", active.Select(item =>
-            $"{item.PlanName} {item.StartLocal:MM-dd}-{item.EndLocal:MM-dd}"));
+        planSpendDetail.Text = string.Join(" / ", active.Select(item => item.PlanName).Distinct());
     }
 
     private static void ApplyQuotaWindow(
@@ -1455,31 +1454,24 @@ public partial class Form1 : Form
         if (window is null)
         {
             valueLabel.Text = "-";
-            detailLabel.Text = "日志里暂未捕获百分比";
+            detailLabel.Text = "";
             return;
         }
 
         var remainingPercent = Math.Max(0m, 100m - window.UsedPercent);
-        valueLabel.Text = $"剩余 {remainingPercent:N0}%";
-        var limit = window.EstimatedGptLimit is null
-            ? "额度 -"
-            : $"额度≈{FormatMoney(window.EstimatedGptLimit.Value, PriceProfiles.Gpt55StandardLong)}";
-        var reset = window.ResetAtLocal is null
-            ? "重置 -"
-            : $"重置 {window.ResetAtLocal:MM-dd HH:mm}";
-        detailLabel.Text = $"已用 {window.UsedPercent:N0}% · {limit} · {reset}";
+        valueLabel.Text = $"{remainingPercent:N0}%";
+        detailLabel.Text = "";
     }
 
     private void UpdateQuotaLimitCalculation()
     {
         if (currentQuotaEstimate is null)
         {
-            quotaLimitValue.Text = "暂无额度快照";
+            quotaLimitValue.Text = "";
             return;
         }
 
-        quotaLimitValue.Text =
-            $"5h {FormatQuotaLimit(currentQuotaEstimate.FiveHour)} / 7d {FormatQuotaLimit(currentQuotaEstimate.Week)}";
+        quotaLimitValue.Text = "";
         var form = new QuotaEstimateForm(currentQuotaEstimate);
         form.Show(this);
     }

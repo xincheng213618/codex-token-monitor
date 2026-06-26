@@ -6,7 +6,8 @@ internal sealed class QuotaEstimateForm : Form
     private static readonly TimeSpan ResetClusterTolerance = TimeSpan.FromMinutes(10);
 
     private readonly CodexQuotaEstimate currentQuota;
-    private readonly ListView currentList = new();
+    private readonly CurrentWindowCardBindings fiveHourCard = new();
+    private readonly CurrentWindowCardBindings weekCard = new();
     private readonly ListView weeklyList = new();
     private readonly Label statusLabel = new();
     private readonly NumericUpDown weekManualFromBox = new();
@@ -14,6 +15,7 @@ internal sealed class QuotaEstimateForm : Form
     private readonly Button weekManualButton = new();
     private readonly Label weekManualResult = new();
     private CancellationTokenSource? loadCancellation;
+    private int currentWindowRowsLoaded;
 
     public QuotaEstimateForm(CodexQuotaEstimate currentQuota)
     {
@@ -51,7 +53,7 @@ internal sealed class QuotaEstimateForm : Form
             BackColor = BackColor
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 138));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -59,8 +61,7 @@ internal sealed class QuotaEstimateForm : Form
         Controls.Add(root);
 
         root.Controls.Add(CreateHeader("当前窗口"), 0, 0);
-        ConfigureCurrentList();
-        root.Controls.Add(currentList, 0, 1);
+        root.Controls.Add(BuildCurrentWindowPanel(), 0, 1);
 
         root.Controls.Add(BuildManualEstimateBar(), 0, 2);
 
@@ -108,6 +109,92 @@ internal sealed class QuotaEstimateForm : Form
             ForeColor = Color.FromArgb(31, 41, 55),
             Margin = new Padding(0, 0, 0, 8)
         };
+    }
+
+    private Control BuildCurrentWindowPanel()
+    {
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = Color.Transparent,
+            Margin = new Padding(0, 0, 0, 10)
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        panel.Controls.Add(BuildCurrentWindowCard("5h", fiveHourCard), 0, 0);
+        panel.Controls.Add(BuildCurrentWindowCard("7d", weekCard), 1, 0);
+        return panel;
+    }
+
+    private static Control BuildCurrentWindowCard(string title, CurrentWindowCardBindings bindings)
+    {
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 3,
+            Padding = new Padding(14, 10, 14, 10),
+            Margin = new Padding(0, 0, 12, 0),
+            BackColor = Color.White
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 126));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+
+        var titleLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            Text = title,
+            Font = new Font("Microsoft YaHei UI", 10.5f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(55, 65, 81),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0)
+        };
+        panel.Controls.Add(titleLabel, 0, 0);
+
+        bindings.Plan.Dock = DockStyle.Fill;
+        bindings.Plan.AutoSize = false;
+        bindings.Plan.TextAlign = ContentAlignment.MiddleRight;
+        bindings.Plan.Font = new Font("Microsoft YaHei UI", 9f);
+        bindings.Plan.ForeColor = Color.FromArgb(87, 99, 116);
+        bindings.Plan.AutoEllipsis = true;
+        bindings.Plan.Margin = new Padding(0);
+        panel.Controls.Add(bindings.Plan, 1, 0);
+
+        bindings.Value.Dock = DockStyle.Fill;
+        bindings.Value.AutoSize = false;
+        bindings.Value.Text = "-";
+        bindings.Value.TextAlign = ContentAlignment.MiddleLeft;
+        bindings.Value.Font = new Font("Segoe UI", 22f, FontStyle.Bold);
+        bindings.Value.ForeColor = Color.FromArgb(29, 40, 55);
+        bindings.Value.Margin = new Padding(0);
+        panel.Controls.Add(bindings.Value, 0, 1);
+
+        bindings.Detail.Dock = DockStyle.Fill;
+        bindings.Detail.AutoSize = false;
+        bindings.Detail.Text = "-";
+        bindings.Detail.TextAlign = ContentAlignment.MiddleLeft;
+        bindings.Detail.Font = new Font("Microsoft YaHei UI", 9.2f);
+        bindings.Detail.ForeColor = Color.FromArgb(55, 65, 81);
+        bindings.Detail.AutoEllipsis = true;
+        bindings.Detail.Margin = new Padding(0, 4, 0, 0);
+        panel.Controls.Add(bindings.Detail, 1, 1);
+
+        bindings.Stable.Dock = DockStyle.Fill;
+        bindings.Stable.AutoSize = false;
+        bindings.Stable.TextAlign = ContentAlignment.MiddleLeft;
+        bindings.Stable.Font = new Font("Microsoft YaHei UI", 8.8f);
+        bindings.Stable.ForeColor = Color.FromArgb(87, 99, 116);
+        bindings.Stable.AutoEllipsis = true;
+        bindings.Stable.Margin = new Padding(0);
+        panel.Controls.Add(bindings.Stable, 0, 2);
+        panel.SetColumnSpan(bindings.Stable, 2);
+
+        return panel;
     }
 
     private Control BuildManualEstimateBar()
@@ -202,24 +289,6 @@ internal sealed class QuotaEstimateForm : Form
         box.Margin = new Padding(0, 1, 0, 0);
     }
 
-    private void ConfigureCurrentList()
-    {
-        currentList.Dock = DockStyle.Fill;
-        currentList.View = View.Details;
-        currentList.FullRowSelect = true;
-        currentList.GridLines = false;
-        currentList.HideSelection = false;
-        currentList.Columns.Add("窗口", 70);
-        currentList.Columns.Add("时间", 190);
-        currentList.Columns.Add("已用", 70, HorizontalAlignment.Right);
-        currentList.Columns.Add("Tokens", 100, HorizontalAlignment.Right);
-        currentList.Columns.Add("已用 $", 90, HorizontalAlignment.Right);
-        currentList.Columns.Add("100% $", 90, HorizontalAlignment.Right);
-        currentList.Columns.Add("套餐", 120);
-        currentList.Columns.Add("实际 ¥", 90, HorizontalAlignment.Right);
-        currentList.Columns.Add("稳定段", 330);
-    }
-
     private void ConfigureWeeklyList()
     {
         weeklyList.Dock = DockStyle.Fill;
@@ -227,17 +296,16 @@ internal sealed class QuotaEstimateForm : Form
         weeklyList.FullRowSelect = true;
         weeklyList.GridLines = false;
         weeklyList.HideSelection = false;
-        weeklyList.Columns.Add("周期", 190);
-        weeklyList.Columns.Add("重置", 120);
-        weeklyList.Columns.Add("快照", 58, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("剩余变化", 112, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("周期", 260);
+        weeklyList.Columns.Add("重置", 110);
+        weeklyList.Columns.Add("快照", 64, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("剩余", 74, HorizontalAlignment.Right);
         weeklyList.Columns.Add("已用", 70, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("Tokens", 100, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("Tokens", 112, HorizontalAlignment.Right);
         weeklyList.Columns.Add("已用 $", 90, HorizontalAlignment.Right);
         weeklyList.Columns.Add("100% $", 90, HorizontalAlignment.Right);
         weeklyList.Columns.Add("套餐", 120);
         weeklyList.Columns.Add("实际 ¥", 90, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("状态", 90);
     }
 
     private async Task LoadRowsAsync()
@@ -250,19 +318,14 @@ internal sealed class QuotaEstimateForm : Form
         try
         {
             statusLabel.Text = "正在加载当前窗口...";
-            currentList.Items.Clear();
             weeklyList.Items.Clear();
+            currentWindowRowsLoaded = 0;
 
             var currentRows = await Task.Run(BuildCurrentRows, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
-            currentList.BeginUpdate();
-            currentList.Items.Clear();
-            foreach (var row in currentRows)
-            {
-                currentList.Items.Add(row);
-            }
-            currentList.EndUpdate();
+            ApplyCurrentRows(currentRows);
+            currentWindowRowsLoaded = currentRows.Count;
 
             var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
             statusLabel.Text = "正在读取历史快照...";
@@ -289,7 +352,7 @@ internal sealed class QuotaEstimateForm : Form
                 }
             }
 
-            statusLabel.Text = $"已加载 {currentList.Items.Count + weeklyList.Items.Count:N0} 行 {DateTime.Now:HH:mm:ss}";
+            statusLabel.Text = $"已加载 {currentWindowRowsLoaded + weeklyList.Items.Count:N0} 行 {DateTime.Now:HH:mm:ss}";
         }
         catch (OperationCanceledException)
         {
@@ -407,13 +470,25 @@ internal sealed class QuotaEstimateForm : Form
             $"{FormatTokenMillions(usage.TotalTokens)}，{FormatMoney(usedCost)}，100%≈{FormatMoney(estimatedLimit)}";
     }
 
-    private List<ListViewItem> BuildCurrentRows()
+    private List<CurrentWindowRow> BuildCurrentRows()
     {
-        return new List<ListViewItem>
+        return new List<CurrentWindowRow>
         {
             BuildCurrentRow("5h", currentQuota.FiveHour),
             BuildCurrentRow("7d", currentQuota.Week)
         };
+    }
+
+    private void ApplyCurrentRows(IReadOnlyList<CurrentWindowRow> rows)
+    {
+        foreach (var row in rows)
+        {
+            var target = row.Label == "5h" ? fiveHourCard : weekCard;
+            target.Value.Text = row.RemainingText;
+            target.Detail.Text = row.DetailText;
+            target.Plan.Text = row.PlanText;
+            target.Stable.Text = row.StableText;
+        }
     }
 
     private IReadOnlyList<WeeklyQuotaPeriod> BuildWeeklyPeriods(DateTimeOffset now)
@@ -563,11 +638,11 @@ internal sealed class QuotaEstimateForm : Form
             quota.Week.ResetAtLocal);
     }
 
-    private static ListViewItem BuildCurrentRow(string label, CodexQuotaWindowEstimate? window)
+    private static CurrentWindowRow BuildCurrentRow(string label, CodexQuotaWindowEstimate? window)
     {
         if (window is null)
         {
-            return new ListViewItem(new[] { label, "-", "-", "-", "-", "-", "-", "-", "-" });
+            return new CurrentWindowRow(label, "-", "-", "", "");
         }
 
         var snapshots = CodexUsageReader.ReadQuotaSnapshots(window.WindowStartLocal, window.WindowEndLocal.AddMinutes(1));
@@ -577,18 +652,21 @@ internal sealed class QuotaEstimateForm : Form
             label == "5h" ? item => item.FiveHourUsedPercent : item => item.WeekUsedPercent,
             label == "5h" ? item => item.FiveHourResetAtLocal : item => item.WeekResetAtLocal);
         var plan = SubscriptionPlanStore.Summarize(window.WindowStartLocal, window.WindowEndLocal);
-        return new ListViewItem(new[]
-        {
+        var remaining = Math.Max(0m, 100m - window.UsedPercent);
+        var detail =
+            $"{FormatTokenMillions(window.Usage.TotalTokens)} · " +
+            $"{FormatMoney(window.UsedGptCost)} · 100% {FormatNullableMoney(window.EstimatedGptLimit)}";
+        var planText = plan.HasRecords
+            ? $"{plan.PlanNames} · {FormatCny(plan.AmountCny)}"
+            : "";
+        var stableText =
+            $"{window.WindowStartLocal:MM-dd HH:mm}-{window.WindowEndLocal:MM-dd HH:mm} · {FormatDelta(delta)}";
+        return new CurrentWindowRow(
             label,
-            $"{window.WindowStartLocal:MM-dd HH:mm} - {window.WindowEndLocal:MM-dd HH:mm}",
-            $"{window.UsedPercent:N0}%",
-            FormatTokenMillions(window.Usage.TotalTokens),
-            FormatMoney(window.UsedGptCost),
-            FormatNullableMoney(window.EstimatedGptLimit),
-            plan.PlanNames,
-            plan.HasRecords ? FormatCny(plan.AmountCny) : "-",
-            FormatDelta(delta)
-        });
+            $"{remaining:N0}%",
+            detail,
+            planText,
+            stableText);
     }
 
     private static ListViewItem? BuildWeeklyRow(
@@ -625,11 +703,6 @@ internal sealed class QuotaEstimateForm : Form
         var estimatedLimit = maxUsed is > 0m
             ? usedCost / (maxUsed.Value / 100m)
             : (decimal?)null;
-        var status = period.IsCurrent
-            ? "当前"
-            : period.Snapshots.Count > 0
-                ? "已过期"
-                : "待快照";
         var plan = SubscriptionPlanStore.Summarize(period.PeriodStart, period.PeriodEnd);
 
         return new ListViewItem(new[]
@@ -643,8 +716,7 @@ internal sealed class QuotaEstimateForm : Form
             FormatMoney(usedCost),
             FormatNullableMoney(estimatedLimit),
             plan.PlanNames,
-            plan.HasRecords ? FormatCny(plan.AmountCny) : "-",
-            status
+            plan.HasRecords ? FormatCny(plan.AmountCny) : "-"
         });
     }
 
@@ -738,7 +810,7 @@ internal sealed class QuotaEstimateForm : Form
             return "-";
         }
 
-        return $"100% -> {100m - maxUsed.Value:N0}%";
+        return $"{Math.Max(0m, 100m - maxUsed.Value):N0}%";
     }
 
     private static bool IsSameQuotaReset(DateTimeOffset? first, DateTimeOffset? second)
@@ -799,6 +871,21 @@ internal sealed class QuotaEstimateForm : Form
         CodexQuotaSnapshot Snapshot,
         decimal PreviousUsedPercent,
         decimal UsedDeltaPercent);
+
+    private sealed class CurrentWindowCardBindings
+    {
+        public Label Value { get; } = new();
+        public Label Detail { get; } = new();
+        public Label Plan { get; } = new();
+        public Label Stable { get; } = new();
+    }
+
+    private sealed record CurrentWindowRow(
+        string Label,
+        string RemainingText,
+        string DetailText,
+        string PlanText,
+        string StableText);
 
     private sealed record WeeklyQuotaPeriod(
         DateTimeOffset PeriodStart,
