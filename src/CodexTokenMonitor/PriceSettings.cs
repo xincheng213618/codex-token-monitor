@@ -5,7 +5,7 @@ namespace CodexTokenMonitor;
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 5;
+    public int DisplayOrderVersion { get; set; } = 6;
     public string GptName { get; set; } = "GPT-5.5 Standard Short";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
@@ -408,36 +408,63 @@ internal static class PriceSettingsStore
 
     private static List<PricePreset> NormalizePresets(List<PricePreset>? presets)
     {
-        var result = (presets is { Count: > 0 } ? presets : PricePreset.Defaults())
+        var source = (presets is { Count: > 0 } ? presets : PricePreset.Defaults())
+            .Concat(PricePreset.Defaults())
             .Where(item => !string.IsNullOrWhiteSpace(item.Model))
-            .Select(item => new PricePreset
-            {
-                Group = NormalizeGroup(string.IsNullOrWhiteSpace(item.Group) ? InferGroup(item) : item.Group),
-                Provider = item.Provider.Trim(),
-                Model = item.Model.Trim(),
-                CurrencySymbol = string.IsNullOrWhiteSpace(item.CurrencySymbol) ? "$" : item.CurrencySymbol.Trim(),
-                UnitLabel = string.IsNullOrWhiteSpace(item.UnitLabel) ? "1M tokens" : item.UnitLabel.Trim(),
-                Divisor = item.Divisor <= 0 ? 1_000_000m : item.Divisor,
-                UncachedInput = PositiveOrDefault(item.UncachedInput, 0),
-                CachedInput = PositiveOrDefault(item.CachedInput, 0),
-                Output = PositiveOrDefault(item.Output, 0),
-                Source = item.Source.Trim()
-            })
+            .Select(NormalizePreset)
             .ToList();
 
-        foreach (var preset in PricePreset.Defaults())
+        var catalog = new List<PricePreset>();
+        foreach (var preset in source)
         {
-            var normalizedDefault = preset.Clone();
-            normalizedDefault.Group = NormalizeGroup(string.IsNullOrWhiteSpace(normalizedDefault.Group)
-                ? InferGroup(normalizedDefault)
-                : normalizedDefault.Group);
-            if (!result.Any(item => SamePreset(item, normalizedDefault)))
+            if (!catalog.Any(item => SameCatalogPreset(item, preset)))
             {
-                result.Add(normalizedDefault);
+                catalog.Add(preset);
+            }
+        }
+
+        var result = new List<PricePreset>();
+        foreach (var group in new[] { "Codex", "Claude Code", "ZCode" })
+        {
+            foreach (var preset in source.Where(item => GroupEquals(item.Group, group)))
+            {
+                AddGroupedPreset(result, preset, group);
+            }
+
+            foreach (var preset in catalog)
+            {
+                AddGroupedPreset(result, preset, group);
             }
         }
 
         return result;
+    }
+
+    private static PricePreset NormalizePreset(PricePreset item)
+    {
+        return new PricePreset
+        {
+            Group = NormalizeGroup(string.IsNullOrWhiteSpace(item.Group) ? InferGroup(item) : item.Group),
+            Provider = item.Provider.Trim(),
+            Model = item.Model.Trim(),
+            CurrencySymbol = string.IsNullOrWhiteSpace(item.CurrencySymbol) ? "$" : item.CurrencySymbol.Trim(),
+            UnitLabel = string.IsNullOrWhiteSpace(item.UnitLabel) ? "1M tokens" : item.UnitLabel.Trim(),
+            Divisor = item.Divisor <= 0 ? 1_000_000m : item.Divisor,
+            UncachedInput = PositiveOrDefault(item.UncachedInput, 0),
+            CachedInput = PositiveOrDefault(item.CachedInput, 0),
+            Output = PositiveOrDefault(item.Output, 0),
+            Source = item.Source.Trim()
+        };
+    }
+
+    private static void AddGroupedPreset(List<PricePreset> result, PricePreset preset, string group)
+    {
+        var grouped = preset.Clone();
+        grouped.Group = group;
+        if (!result.Any(item => SamePreset(item, grouped)))
+        {
+            result.Add(grouped);
+        }
     }
 
     private static string InferGroup(PricePreset preset)
@@ -464,6 +491,14 @@ internal static class PriceSettingsStore
     private static bool SamePreset(PricePreset first, PricePreset second)
     {
         return GroupEquals(first.Group, second.Group) &&
+               SameCatalogPreset(first, second);
+    }
+
+    private static bool SameCatalogPreset(PricePreset first, PricePreset second)
+    {
+        return string.Equals(first.CurrencySymbol, second.CurrencySymbol, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(first.UnitLabel, second.UnitLabel, StringComparison.OrdinalIgnoreCase) &&
+               first.Divisor == second.Divisor &&
                string.Equals(first.Provider, second.Provider, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(first.Model, second.Model, StringComparison.OrdinalIgnoreCase);
     }

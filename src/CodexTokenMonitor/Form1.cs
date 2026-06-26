@@ -6,7 +6,9 @@ public partial class Form1 : Form
     private const int CostCardWidth = 218;
     private const int CostCardRightMargin = 14;
     private const decimal MinimumStableQuotaDeltaPercent = 3m;
+    private static readonly TimeSpan DayTimelineInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan MultiDayBreakdownInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan MonthTimelineInterval = TimeSpan.FromHours(1);
     private static readonly DateTimeOffset BackgroundCacheStart = new(
         2026,
         1,
@@ -1439,10 +1441,9 @@ public partial class Form1 : Form
         timelineChart.Visible = showTimeline;
         if (showTimeline)
         {
-            var chartInterval = range.Mode is RangeMode.Week or RangeMode.Cycle
-                ? MultiDayBreakdownInterval
-                : (TimeSpan?)null;
-            timelineChart.SetData(range.Start, range.End, breakdownRows, chartInterval);
+            var chartInterval = GetTimelineInterval(range.Mode);
+            var chartRows = GetTimelineRows(source, range, breakdownRows);
+            timelineChart.SetData(range.Start, range.End, chartRows, chartInterval);
         }
         else
         {
@@ -1471,6 +1472,31 @@ public partial class Form1 : Form
             breakdownList.Items.Add(item);
         }
         breakdownList.EndUpdate();
+    }
+
+    private static TimeSpan? GetTimelineInterval(RangeMode mode)
+    {
+        return mode switch
+        {
+            RangeMode.Day => DayTimelineInterval,
+            RangeMode.Week or RangeMode.Cycle => MultiDayBreakdownInterval,
+            RangeMode.Month => MonthTimelineInterval,
+            _ => null
+        };
+    }
+
+    private static IReadOnlyList<TokenUsageBucket> GetTimelineRows(
+        UsageSource source,
+        SelectedRange range,
+        IReadOnlyList<TokenUsageBucket> breakdownRows)
+    {
+        if (range.Mode != RangeMode.Month)
+        {
+            return breakdownRows;
+        }
+
+        var detailRows = ReadSourceCachedDetailRows(source, range.Start, range.End);
+        return detailRows.Count > 0 ? detailRows : breakdownRows;
     }
 
     private void ApplyCostCards(IReadOnlyList<PricePreset> presets, TokenUsageSummary summary)
