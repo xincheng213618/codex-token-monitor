@@ -5,7 +5,7 @@ namespace CodexTokenMonitor;
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 4;
+    public int DisplayOrderVersion { get; set; } = 5;
     public string GptName { get; set; } = "GPT-5.5 Standard Short";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
@@ -257,6 +257,13 @@ internal static class PriceSettingsStore
         {
             candidates = Current.Presets
                 .Where(item => IsLegacyDisplayCandidateForSource(item, source))
+                .ToList();
+        }
+
+        if (count <= 0)
+        {
+            return candidates
+                .Select(item => item.Clone())
                 .ToList();
         }
 

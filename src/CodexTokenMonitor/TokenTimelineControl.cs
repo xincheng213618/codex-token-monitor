@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 
 namespace CodexTokenMonitor;
 
@@ -43,7 +44,9 @@ internal sealed class TokenTimelineControl : Control
         base.OnPaint(e);
         var graphics = e.Graphics;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        graphics.Clear(BackColor);
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        graphics.Clear(Color.FromArgb(252, 253, 255));
 
         var bounds = ClientRectangle;
         if (bounds.Width < 80 || bounds.Height < 60)
@@ -51,14 +54,16 @@ internal sealed class TokenTimelineControl : Control
             return;
         }
 
-        using var mutedBrush = new SolidBrush(Color.FromArgb(105, 116, 134));
-        using var gridPen = new Pen(Color.FromArgb(224, 229, 236));
-        using var axisPen = new Pen(Color.FromArgb(148, 163, 184));
-        using var tickPen = new Pen(Color.FromArgb(190, 200, 214));
-        using var linePen = new Pen(Color.FromArgb(232, 126, 66), 2f);
-        using var barBrush = new SolidBrush(Color.FromArgb(34, 137, 119));
-        using var cachedBrush = new SolidBrush(Color.FromArgb(113, 184, 169));
+        using var mutedBrush = new SolidBrush(Color.FromArgb(92, 105, 122));
+        using var faintBrush = new SolidBrush(Color.FromArgb(246, 249, 252));
+        using var gridPen = new Pen(Color.FromArgb(218, 226, 236));
+        using var axisPen = new Pen(Color.FromArgb(157, 171, 190));
+        using var tickPen = new Pen(Color.FromArgb(180, 192, 208));
+        using var lineShadowPen = new Pen(Color.FromArgb(70, 232, 126, 66), 4f);
+        using var linePen = new Pen(Color.FromArgb(241, 115, 55), 2.2f);
+        using var cachedBrush = new SolidBrush(Color.FromArgb(122, 190, 176));
         using var font = new Font("Microsoft YaHei UI", 8.0f);
+        using var valueFont = new Font("Segoe UI", 8.0f, FontStyle.Bold);
 
         var plot = Rectangle.Inflate(bounds, -14, -8);
         plot.Y += 6;
@@ -90,9 +95,10 @@ internal sealed class TokenTimelineControl : Control
 
         var maxBucket = Math.Max(1, totalValues.Max());
         var total = Math.Max(1, rows.Sum(row => row.TotalTokens));
-        for (var i = 0; i <= 3; i++)
+        graphics.FillRectangle(faintBrush, plot);
+        for (var i = 0; i <= 4; i++)
         {
-            var y = plot.Bottom - (int)Math.Round(plot.Height * i / 3d);
+            var y = plot.Bottom - (int)Math.Round(plot.Height * i / 4d);
             graphics.DrawLine(gridPen, plot.Left, y, plot.Right, y);
         }
 
@@ -115,8 +121,20 @@ internal sealed class TokenTimelineControl : Control
                 : 0f;
             var totalRect = new RectangleF(x, plot.Bottom - totalHeight, barWidth, totalHeight);
             var cachedRect = new RectangleF(x, plot.Bottom - cachedHeight, barWidth, cachedHeight);
-            graphics.FillRectangle(barBrush, totalRect);
-            graphics.FillRectangle(cachedBrush, cachedRect);
+            if (totalRect.Height > 0)
+            {
+                using var barBrush = new LinearGradientBrush(
+                    totalRect,
+                    Color.FromArgb(25, 139, 121),
+                    Color.FromArgb(112, 190, 174),
+                    LinearGradientMode.Vertical);
+                graphics.FillRectangle(barBrush, totalRect);
+            }
+
+            if (cachedRect.Height > 0)
+            {
+                graphics.FillRectangle(cachedBrush, cachedRect);
+            }
 
             var cumulativeY = plot.Bottom - (float)(cumulative / (double)total * plot.Height);
             points.Add(new PointF(x + barWidth / 2f, cumulativeY));
@@ -124,10 +142,19 @@ internal sealed class TokenTimelineControl : Control
 
         if (points.Count > 1)
         {
+            graphics.DrawLines(lineShadowPen, points.ToArray());
             graphics.DrawLines(linePen, points.ToArray());
         }
 
         graphics.DrawRectangle(axisPen, plot);
+        var totalLabel = FormatTokens(rows.Sum(row => row.TotalTokens));
+        var totalLabelSize = graphics.MeasureString(totalLabel, valueFont);
+        graphics.DrawString(
+            totalLabel,
+            valueFont,
+            mutedBrush,
+            plot.Right - totalLabelSize.Width - 4,
+            plot.Top + 2);
 
     }
 

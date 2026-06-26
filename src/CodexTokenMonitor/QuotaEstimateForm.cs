@@ -491,42 +491,9 @@ internal sealed class QuotaEstimateForm : Form
         }
     }
 
-    private IReadOnlyList<WeeklyQuotaPeriod> BuildWeeklyPeriods(DateTimeOffset now)
+    private IReadOnlyList<CodexQuotaCycle> BuildWeeklyPeriods(DateTimeOffset now)
     {
-        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, CodexUsageReader.BeijingOffset);
-        var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(start, now.AddMinutes(1))
-            .Where(item => item.WeekResetAtLocal is not null && item.WeekUsedPercent is not null)
-            .Concat(CurrentWeekSnapshot(currentQuota))
-            .GroupBy(item => item.SnapshotLocal)
-            .Select(group => group.OrderByDescending(item => item.WeekUsedPercent ?? -1m).First())
-            .OrderBy(item => item.SnapshotLocal)
-            .ToList();
-        var periods = BuildActualWeeklyPeriods(snapshots, now);
-
-        var currentWeek = currentQuota.Week;
-        var currentReset = currentWeek?.ResetAtLocal;
-        if (currentWeek is not null && currentReset is not null)
-        {
-            var currentPeriod = periods.FirstOrDefault(item =>
-                item.Snapshots.Any(snapshot => IsSameQuotaReset(snapshot.WeekResetAtLocal, currentReset)) &&
-                item.PeriodStart <= currentQuota.SnapshotLocal &&
-                item.PeriodEnd >= currentQuota.SnapshotLocal.AddSeconds(-1));
-            if (currentPeriod is not null)
-            {
-                var index = periods.IndexOf(currentPeriod);
-                periods[index] = currentPeriod with
-                {
-                    PeriodEnd = currentWeek.WindowEndLocal,
-                    ResetAt = currentReset.Value,
-                    IsCurrent = true
-                };
-            }
-        }
-
-        return periods
-            .Where(item => item.PeriodEnd > item.PeriodStart)
-            .OrderByDescending(item => item.PeriodStart)
-            .ToList();
+        return CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now);
     }
 
     private static List<WeeklyQuotaPeriod> BuildActualWeeklyPeriods(
@@ -670,7 +637,7 @@ internal sealed class QuotaEstimateForm : Form
     }
 
     private static ListViewItem? BuildWeeklyRow(
-        WeeklyQuotaPeriod period,
+        CodexQuotaCycle period,
         CodexQuotaWindowEstimate? currentWeek)
     {
         if (period.PeriodEnd <= period.PeriodStart)

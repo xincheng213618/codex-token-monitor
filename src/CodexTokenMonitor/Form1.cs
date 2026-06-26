@@ -17,7 +17,8 @@ public partial class Form1 : Form
     {
         Day,
         Week,
-        Month
+        Month,
+        Cycle
     }
 
     private enum UsageSource
@@ -39,6 +40,7 @@ public partial class Form1 : Form
     private readonly Button priceSettingsButton = new();
     private readonly ComboBox rangeModeBox = new();
     private readonly DateTimePicker datePicker = new();
+    private readonly ComboBox cycleBox = new();
     private readonly Button previousButton = new();
     private readonly Button nextButton = new();
     private readonly Button currentButton = new();
@@ -75,6 +77,7 @@ public partial class Form1 : Form
     private readonly Label costPanel2Subtitle = new();
     private readonly Label costPanel3Title = new();
     private readonly Label costPanel3Subtitle = new();
+    private readonly FlowLayoutPanel costCardsFlow = new();
     private readonly Label breakdownTitle = new();
     private readonly Label statusValue = new();
     private readonly Button refreshButton = new();
@@ -90,9 +93,11 @@ public partial class Form1 : Form
     private DateTimeOffset? customStartLocal;
     private CodexQuotaEstimate? currentQuotaEstimate;
     private IReadOnlyList<CodexQuotaSnapshot> currentQuotaSnapshots = Array.Empty<CodexQuotaSnapshot>();
+    private IReadOnlyList<CodexQuotaCycle> quotaCycles = Array.Empty<CodexQuotaCycle>();
     private bool isRefreshing;
     private bool isBackgroundCaching;
     private bool suppressDateRefresh;
+    private bool suppressCycleRefresh;
     private bool suppressStartTimeRefresh;
 
     public Form1()
@@ -109,8 +114,17 @@ public partial class Form1 : Form
         startNowButton.Click += async (_, _) => await StartFromNowAsync();
         startTimePicker.ValueChanged += async (_, _) => await StartTimeChangedAsync();
         weekPickerButton.Click += async (_, _) => await OpenWeekPickerAsync();
-        sourceTabs.SelectedIndexChanged += async (_, _) => await RefreshUsageAsync();
+        sourceTabs.SelectedIndexChanged += async (_, _) => await SourceChangedAsync();
         rangeModeBox.SelectedIndexChanged += async (_, _) => await RangeModeChangedAsync();
+        cycleBox.SelectedIndexChanged += async (_, _) =>
+        {
+            if (!suppressCycleRefresh)
+            {
+                ClearCustomStart();
+                UpdateRangeControls();
+                await RefreshUsageAsync();
+            }
+        };
         datePicker.ValueChanged += async (_, _) =>
         {
             if (!suppressDateRefresh)
@@ -256,7 +270,7 @@ public partial class Form1 : Form
         panel.Controls.Add(layout);
 
         rangeModeBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        rangeModeBox.Items.AddRange(new object[] { "按天", "按周", "按月" });
+        rangeModeBox.Items.AddRange(new object[] { "按天", "按周", "按月", "按周期" });
         rangeModeBox.Width = 110;
         rangeModeBox.Margin = new Padding(0, 5, 12, 0);
         layout.Controls.Add(rangeModeBox);
@@ -273,6 +287,13 @@ public partial class Form1 : Form
         datePicker.Margin = new Padding(0, 4, 6, 0);
         datePicker.Value = DateTime.Today;
         layout.Controls.Add(datePicker);
+
+        cycleBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        cycleBox.Width = 300;
+        cycleBox.Height = 32;
+        cycleBox.Margin = new Padding(0, 4, 6, 0);
+        cycleBox.Visible = false;
+        layout.Controls.Add(cycleBox);
 
         weekPickerButton.Text = "选7天";
         weekPickerButton.Width = 78;
@@ -326,14 +347,12 @@ public partial class Form1 : Form
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 2,
             RowCount = 1,
             BackColor = Color.Transparent
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 43));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 21));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
         summaryPanel.Controls.Add(layout);
 
         var totalLayout = new TableLayoutPanel
@@ -367,9 +386,13 @@ public partial class Form1 : Form
         periodValue.Margin = new Padding(0, 2, 0, 0);
         totalLayout.Controls.Add(periodValue, 0, 2);
 
-        layout.Controls.Add(BuildCostPanel("GPT-5.5", PriceSettingsStore.GptSubtitle(), gpt55CostValue, costPanel1Title, costPanel1Subtitle), 1, 0);
-        layout.Controls.Add(BuildCostPanel("DeepSeek", "V4 Pro / CNY", deepSeekCostValue, costPanel2Title, costPanel2Subtitle), 2, 0);
-        layout.Controls.Add(BuildCostPanel("Xiaomi", "MiMo Credits", xiaomiCreditValue, costPanel3Title, costPanel3Subtitle), 3, 0);
+        costCardsFlow.Dock = DockStyle.Fill;
+        costCardsFlow.FlowDirection = FlowDirection.LeftToRight;
+        costCardsFlow.WrapContents = false;
+        costCardsFlow.AutoScroll = true;
+        costCardsFlow.BackColor = Color.Transparent;
+        costCardsFlow.Margin = new Padding(0);
+        layout.Controls.Add(costCardsFlow, 1, 0);
         return summaryPanel;
     }
 
@@ -737,6 +760,28 @@ public partial class Form1 : Form
     private async Task ShiftPeriodAsync(int delta)
     {
         ClearCustomStart();
+        if (CurrentMode() == RangeMode.Cycle)
+        {
+            UpdateCycleOptions(keepSelection: true);
+            if (cycleBox.Items.Count == 0)
+            {
+                return;
+            }
+
+            var targetIndex = Math.Clamp(cycleBox.SelectedIndex - delta, 0, cycleBox.Items.Count - 1);
+            if (targetIndex == cycleBox.SelectedIndex)
+            {
+                return;
+            }
+
+            suppressCycleRefresh = true;
+            cycleBox.SelectedIndex = targetIndex;
+            suppressCycleRefresh = false;
+            UpdateRangeControls();
+            await RefreshUsageAsync();
+            return;
+        }
+
         suppressDateRefresh = true;
         datePicker.Value = CurrentMode() switch
         {
@@ -753,6 +798,21 @@ public partial class Form1 : Form
     private async Task JumpToCurrentPeriodAsync()
     {
         ClearCustomStart();
+        if (CurrentMode() == RangeMode.Cycle)
+        {
+            UpdateCycleOptions(keepSelection: false);
+            if (cycleBox.Items.Count > 0)
+            {
+                suppressCycleRefresh = true;
+                cycleBox.SelectedIndex = 0;
+                suppressCycleRefresh = false;
+            }
+
+            UpdateRangeControls();
+            await RefreshUsageAsync();
+            return;
+        }
+
         suppressDateRefresh = true;
         datePicker.Value = CurrentMode() == RangeMode.Week
             ? DateTime.Now
@@ -765,11 +825,35 @@ public partial class Form1 : Form
     private async Task RangeModeChangedAsync()
     {
         ClearCustomStart();
+        if (CurrentMode() == RangeMode.Cycle && CurrentSource() != UsageSource.Codex)
+        {
+            sourceTabs.SelectedIndex = 0;
+            return;
+        }
+
         if (CurrentMode() == RangeMode.Week && datePicker.Value.Date == DateTime.Today)
         {
             suppressDateRefresh = true;
             datePicker.Value = DateTime.Now;
             suppressDateRefresh = false;
+        }
+
+        if (CurrentMode() == RangeMode.Cycle)
+        {
+            UpdateCycleOptions(keepSelection: false);
+        }
+
+        UpdateRangeControls();
+        await RefreshUsageAsync();
+    }
+
+    private async Task SourceChangedAsync()
+    {
+        ClearCustomStart();
+        if (CurrentMode() == RangeMode.Cycle && CurrentSource() != UsageSource.Codex)
+        {
+            rangeModeBox.SelectedIndex = 0;
+            return;
         }
 
         UpdateRangeControls();
@@ -1319,7 +1403,8 @@ public partial class Form1 : Form
         UsageSource source)
     {
         Text = $"{SourceTitle(source)} Token 额度监控器 - {range.Title}";
-        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(SourceKey(source), count: 3);
+        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(SourceKey(source), count: 0);
+        var tablePresets = displayPresets.Take(3).ToList();
         priceLabel.Text = "";
         totalValue.Text = FormatTokenMillions(summary.TotalTokens);
         periodValue.Text = $"{summary.StartLocal:yyyy-MM-dd HH:mm} - {summary.EndLocal:yyyy-MM-dd HH:mm:ss}  GMT+8";
@@ -1332,13 +1417,15 @@ public partial class Form1 : Form
         eventsValue.Text = summary.Events.ToString("N0");
         lastEventValue.Text = FormatDuration(codingTime);
 
-        ApplyCostDisplay(costPanel1Title, costPanel1Subtitle, gpt55CostValue, displayPresets.ElementAtOrDefault(0), summary);
-        ApplyCostDisplay(costPanel2Title, costPanel2Subtitle, deepSeekCostValue, displayPresets.ElementAtOrDefault(1), summary);
-        ApplyCostDisplay(costPanel3Title, costPanel3Subtitle, xiaomiCreditValue, displayPresets.ElementAtOrDefault(2), summary);
+        ApplyCostCards(displayPresets, summary);
         currentQuotaSnapshots = source == UsageSource.Codex
             ? quotaSnapshots
             : Array.Empty<CodexQuotaSnapshot>();
         ApplyQuotaSummary(source, quota);
+        if (source == UsageSource.Codex && range.Mode == RangeMode.Cycle)
+        {
+            UpdateCycleOptions(keepSelection: true);
+        }
 
         breakdownList.BeginUpdate();
         breakdownList.Items.Clear();
@@ -1368,9 +1455,9 @@ public partial class Form1 : Form
         breakdownList.Columns[3].Text = "Cached";
         breakdownList.Columns[4].Text = "Uncached";
         breakdownList.Columns[5].Text = "Output";
-        breakdownList.Columns[6].Text = FormatPresetColumnTitle(displayPresets.ElementAtOrDefault(0), "价格1");
-        breakdownList.Columns[7].Text = FormatPresetColumnTitle(displayPresets.ElementAtOrDefault(1), "价格2");
-        breakdownList.Columns[8].Text = FormatPresetColumnTitle(displayPresets.ElementAtOrDefault(2), "价格3");
+        breakdownList.Columns[6].Text = FormatPresetColumnTitle(tablePresets.ElementAtOrDefault(0), "价格1");
+        breakdownList.Columns[7].Text = FormatPresetColumnTitle(tablePresets.ElementAtOrDefault(1), "价格2");
+        breakdownList.Columns[8].Text = FormatPresetColumnTitle(tablePresets.ElementAtOrDefault(2), "价格3");
         breakdownList.Columns[9].Text = "额度(5h/7d)";
         ApplyBreakdownColumnWidths(range);
         var useEventTokenScale = range.Mode == RangeMode.Day || range.IsCustomStart;
@@ -1382,15 +1469,82 @@ public partial class Form1 : Form
             item.SubItems.Add(FormatBreakdownToken(bucket.CachedInputTokens, useEventTokenScale));
             item.SubItems.Add(FormatBreakdownToken(bucket.UncachedInputTokens, useEventTokenScale));
             item.SubItems.Add(FormatTokenAdaptive(bucket.OutputTokens));
-            AddPresetCost(item, bucket, displayPresets.ElementAtOrDefault(0));
-            AddPresetCost(item, bucket, displayPresets.ElementAtOrDefault(1));
-            AddPresetCost(item, bucket, displayPresets.ElementAtOrDefault(2));
+            AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(0));
+            AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(1));
+            AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(2));
             item.SubItems.Add(source == UsageSource.Codex
                 ? FormatQuotaSnapshotForBucket(range, bucket, quotaSnapshots)
                 : "-");
             breakdownList.Items.Add(item);
         }
         breakdownList.EndUpdate();
+    }
+
+    private void ApplyCostCards(IReadOnlyList<PricePreset> presets, TokenUsageSummary summary)
+    {
+        costCardsFlow.SuspendLayout();
+        costCardsFlow.Controls.Clear();
+        foreach (var preset in presets)
+        {
+            costCardsFlow.Controls.Add(CreateCostCard(preset, summary));
+        }
+
+        costCardsFlow.ResumeLayout();
+    }
+
+    private static Control CreateCostCard(PricePreset preset, TokenUsageSummary summary)
+    {
+        var profile = preset.ToProfile();
+        var panel = new TableLayoutPanel
+        {
+            Width = 170,
+            Height = 118,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(14, 6, 10, 4),
+            Margin = new Padding(0, 0, 14, 0),
+            BackColor = Color.Transparent
+        };
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        panel.Controls.Add(new Label
+        {
+            AutoSize = false,
+            Dock = DockStyle.Top,
+            Height = 24,
+            Text = string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(92, 105, 122),
+            AutoEllipsis = true,
+            Margin = new Padding(0)
+        }, 0, 0);
+
+        panel.Controls.Add(new Label
+        {
+            AutoSize = false,
+            Dock = DockStyle.Top,
+            Height = 30,
+            Text = preset.Model,
+            ForeColor = Color.FromArgb(101, 114, 130),
+            AutoEllipsis = true,
+            Margin = new Padding(0, 0, 0, 4)
+        }, 0, 1);
+
+        panel.Controls.Add(new Label
+        {
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            Text = FormatCost(summary.EstimateCost(profile), profile),
+            Font = new Font("Segoe UI", 15.5f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(31, 41, 55),
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0)
+        }, 0, 2);
+
+        return panel;
     }
 
     private static string SourceKey(UsageSource source)
@@ -1755,6 +1909,33 @@ public partial class Form1 : Form
                 IsCustomStart: true);
         }
 
+        if (CurrentMode() == RangeMode.Cycle)
+        {
+            var cycle = SelectedCycle();
+            if (cycle is null)
+            {
+                return new SelectedRange(
+                    now,
+                    now,
+                    "额度周期",
+                    "按天明细（额度周期）",
+                    RangeMode.Cycle);
+            }
+
+            var cycleEnd = cycle.PeriodEnd > now ? now : cycle.PeriodEnd;
+            if (cycleEnd < cycle.PeriodStart)
+            {
+                cycleEnd = cycle.PeriodStart;
+            }
+
+            return new SelectedRange(
+                cycle.PeriodStart,
+                cycleEnd,
+                cycle.IsCurrent ? "当前周期" : $"周期 {cycle.PeriodStart:MM-dd HH:mm}",
+                "按天明细（额度周期）",
+                RangeMode.Cycle);
+        }
+
         DateTimeOffset start;
         DateTimeOffset periodEnd;
         string title;
@@ -1796,16 +1977,23 @@ public partial class Form1 : Form
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var todayStart = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
         return range.IsCustomStart ||
-               range.Mode == RangeMode.Day && range.Start == todayStart;
+               range.Mode == RangeMode.Day && range.Start == todayStart ||
+               range.Mode == RangeMode.Cycle && range.End >= now.AddSeconds(-2);
     }
 
     private void UpdateRangeControls()
     {
         var mode = CurrentMode();
+        if (mode == RangeMode.Cycle)
+        {
+            UpdateCycleOptions(keepSelection: true);
+        }
+
         currentButton.Text = mode switch
         {
             RangeMode.Week => "近一周",
             RangeMode.Month => "本月",
+            RangeMode.Cycle => "当前周期",
             _ => "今天"
         };
         datePicker.CustomFormat = mode switch
@@ -1815,9 +2003,21 @@ public partial class Form1 : Form
             _ => "yyyy-MM-dd"
         };
         datePicker.Width = mode == RangeMode.Week ? 170 : 140;
+        datePicker.Visible = mode != RangeMode.Cycle;
+        cycleBox.Visible = mode == RangeMode.Cycle;
 
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var range = GetSelectedRange();
+        if (mode == RangeMode.Cycle)
+        {
+            previousButton.Enabled = cycleBox.SelectedIndex >= 0 && cycleBox.SelectedIndex < cycleBox.Items.Count - 1;
+            nextButton.Enabled = cycleBox.SelectedIndex > 0;
+            currentButton.Enabled = cycleBox.SelectedIndex != 0 && cycleBox.Items.Count > 0;
+            UpdateWeekPickerState();
+            UpdateStartNowButtonState();
+            return;
+        }
+
         var currentStart = mode switch
         {
             RangeMode.Week => now.AddDays(-7),
@@ -1827,8 +2027,57 @@ public partial class Form1 : Form
         nextButton.Enabled = mode == RangeMode.Week
             ? range.End < now.AddSeconds(-2)
             : range.Start < currentStart;
+        previousButton.Enabled = true;
+        currentButton.Enabled = true;
         UpdateWeekPickerState();
         UpdateStartNowButtonState();
+    }
+
+    private void UpdateCycleOptions(bool keepSelection)
+    {
+        if (CurrentSource() != UsageSource.Codex)
+        {
+            quotaCycles = Array.Empty<CodexQuotaCycle>();
+            suppressCycleRefresh = true;
+            cycleBox.Items.Clear();
+            suppressCycleRefresh = false;
+            return;
+        }
+
+        var selected = keepSelection ? SelectedCycle() : null;
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        quotaCycles = CodexQuotaCycleReader.ReadWeeklyCycles(currentQuotaEstimate, now);
+
+        suppressCycleRefresh = true;
+        cycleBox.BeginUpdate();
+        cycleBox.Items.Clear();
+        foreach (var cycle in quotaCycles)
+        {
+            cycleBox.Items.Add(cycle);
+        }
+
+        if (cycleBox.Items.Count > 0)
+        {
+            var selectedIndex = selected is null
+                ? 0
+                : quotaCycles.ToList().FindIndex(item => SameCycle(item, selected));
+            cycleBox.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+        }
+
+        cycleBox.EndUpdate();
+        suppressCycleRefresh = false;
+    }
+
+    private CodexQuotaCycle? SelectedCycle()
+    {
+        return cycleBox.SelectedItem as CodexQuotaCycle;
+    }
+
+    private static bool SameCycle(CodexQuotaCycle first, CodexQuotaCycle second)
+    {
+        return first.PeriodStart == second.PeriodStart &&
+               first.PeriodEnd == second.PeriodEnd &&
+               first.ResetAt == second.ResetAt;
     }
 
     private void UpdateWeekPickerState()
@@ -1855,6 +2104,7 @@ public partial class Form1 : Form
         {
             1 => RangeMode.Week,
             2 => RangeMode.Month,
+            3 => RangeMode.Cycle,
             _ => RangeMode.Day
         };
     }
