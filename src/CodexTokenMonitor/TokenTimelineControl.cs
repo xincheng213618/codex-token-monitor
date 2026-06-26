@@ -240,15 +240,15 @@ internal sealed class TokenTimelineControl : Control
             var hour = value.Hour;
             if (hour == 0)
             {
-                return "12a";
+                return "12 AM";
             }
 
             if (hour == 12)
             {
-                return "12p";
+                return "12 PM";
             }
 
-            return hour < 12 ? $"{hour}a" : $"{hour - 12}p";
+            return hour < 12 ? $"{hour} AM" : $"{hour - 12} PM";
         }
 
         return span.TotalDays <= 35

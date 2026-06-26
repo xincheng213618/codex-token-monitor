@@ -4,6 +4,7 @@ public partial class Form1 : Form
 {
     private const int BackgroundCacheIntervalMs = 120_000;
     private const decimal MinimumStableQuotaDeltaPercent = 3m;
+    private static readonly TimeSpan MultiDayBreakdownInterval = TimeSpan.FromMinutes(10);
     private static readonly DateTimeOffset BackgroundCacheStart = new(
         2026,
         1,
@@ -1400,7 +1401,7 @@ public partial class Form1 : Form
     {
         Text = $"{SourceTitle(source)} Token 额度监控器 - {range.Title}";
         var displayPresets = PriceSettingsStore.DisplayPresetsForSource(SourceKey(source), count: 0);
-        var tablePresets = displayPresets.Take(3).ToList();
+        var tablePresets = displayPresets.ToList();
         priceLabel.Text = "";
         totalValue.Text = FormatTokenMillions(summary.TotalTokens);
         periodValue.Text = $"{summary.StartLocal:yyyy-MM-dd HH:mm} - {summary.EndLocal:yyyy-MM-dd HH:mm:ss}  GMT+8";
@@ -1442,17 +1443,7 @@ public partial class Form1 : Form
         }
 
         var eventBreakdown = UsesEventBreakdown(range, breakdownRows);
-        breakdownList.Columns[0].Text = eventBreakdown ? "时间" : "日期";
-        breakdownList.Columns[1].Text = "Total";
-        breakdownList.Columns[2].Text = "Input";
-        breakdownList.Columns[3].Text = "Cached";
-        breakdownList.Columns[4].Text = "Uncached";
-        breakdownList.Columns[5].Text = "Output";
-        breakdownList.Columns[6].Text = FormatPresetColumnTitle(tablePresets.ElementAtOrDefault(0), "价格1");
-        breakdownList.Columns[7].Text = FormatPresetColumnTitle(tablePresets.ElementAtOrDefault(1), "价格2");
-        breakdownList.Columns[8].Text = FormatPresetColumnTitle(tablePresets.ElementAtOrDefault(2), "价格3");
-        breakdownList.Columns[9].Text = "额度(5h/7d)";
-        ApplyBreakdownColumnWidths(range, eventBreakdown);
+        RebuildBreakdownColumns(range, eventBreakdown, tablePresets);
         foreach (var bucket in breakdownRows)
         {
             var rowIsEvent = IsEventBucket(range, bucket);
@@ -1462,9 +1453,11 @@ public partial class Form1 : Form
             item.SubItems.Add(FormatBreakdownToken(bucket.CachedInputTokens, rowIsEvent));
             item.SubItems.Add(FormatBreakdownToken(bucket.UncachedInputTokens, rowIsEvent));
             item.SubItems.Add(FormatTokenAdaptive(bucket.OutputTokens));
-            AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(0));
-            AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(1));
-            AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(2));
+            foreach (var preset in tablePresets)
+            {
+                AddPresetCost(item, bucket, preset);
+            }
+
             item.SubItems.Add(source == UsageSource.Codex
                 ? FormatQuotaSnapshotForBucket(range, bucket, quotaSnapshots, rowIsEvent)
                 : "-");
@@ -1814,7 +1807,31 @@ public partial class Form1 : Form
         return first is null || second is null || first.Value == second.Value;
     }
 
-    private void ApplyBreakdownColumnWidths(SelectedRange range, bool eventBreakdown)
+    private void RebuildBreakdownColumns(
+        SelectedRange range,
+        bool eventBreakdown,
+        IReadOnlyList<PricePreset> tablePresets)
+    {
+        breakdownList.Columns.Clear();
+        breakdownList.Columns.Add(eventBreakdown ? "时间" : "日期", 104, HorizontalAlignment.Left);
+        breakdownList.Columns.Add("Total", 96, HorizontalAlignment.Right);
+        breakdownList.Columns.Add("Input", 96, HorizontalAlignment.Right);
+        breakdownList.Columns.Add("Cached", 96, HorizontalAlignment.Right);
+        breakdownList.Columns.Add("Uncached", 104, HorizontalAlignment.Right);
+        breakdownList.Columns.Add("Output", 88, HorizontalAlignment.Right);
+        for (var i = 0; i < tablePresets.Count; i++)
+        {
+            breakdownList.Columns.Add(
+                FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}"),
+                108,
+                HorizontalAlignment.Right);
+        }
+
+        breakdownList.Columns.Add("额度(5h/7d)", 126, HorizontalAlignment.Right);
+        ApplyBreakdownColumnWidths(range, eventBreakdown, tablePresets.Count);
+    }
+
+    private void ApplyBreakdownColumnWidths(SelectedRange range, bool eventBreakdown, int priceColumnCount)
     {
         breakdownList.Columns[0].Width = eventBreakdown && range.Mode != RangeMode.Day && !range.IsCustomStart
             ? 134
@@ -1828,10 +1845,12 @@ public partial class Form1 : Form
         breakdownList.Columns[3].Width = 96;
         breakdownList.Columns[4].Width = 104;
         breakdownList.Columns[5].Width = 88;
-        breakdownList.Columns[6].Width = 92;
-        breakdownList.Columns[7].Width = 108;
-        breakdownList.Columns[8].Width = 132;
-        breakdownList.Columns[9].Width = 126;
+        for (var i = 0; i < priceColumnCount; i++)
+        {
+            breakdownList.Columns[6 + i].Width = 108;
+        }
+
+        breakdownList.Columns[6 + priceColumnCount].Width = 126;
     }
 
     private static string FormatQuotaSnapshotForBucket(
@@ -1848,7 +1867,7 @@ public partial class Form1 : Form
         var bucketEnd = eventBreakdown
             ? range.Mode == RangeMode.Day || range.IsCustomStart
                 ? bucket.StartLocal.AddSeconds(2)
-                : bucket.StartLocal.AddHours(1)
+                : bucket.StartLocal.Add(MultiDayBreakdownInterval)
             : bucket.StartLocal.AddDays(1);
         var snapshot = quotaSnapshots
             .Where(item => item.SnapshotLocal >= bucket.StartLocal && item.SnapshotLocal < bucketEnd)
@@ -2192,16 +2211,17 @@ public partial class Form1 : Form
 
         if (range.Mode is RangeMode.Week or RangeMode.Cycle)
         {
-            return BuildHourlyBreakdownRows(source, range, summary);
+            return BuildIntervalBreakdownRows(source, range, summary, MultiDayBreakdownInterval);
         }
 
         return summary.DailyBuckets;
     }
 
-    private static IReadOnlyList<TokenUsageBucket> BuildHourlyBreakdownRows(
+    private static IReadOnlyList<TokenUsageBucket> BuildIntervalBreakdownRows(
         UsageSource source,
         SelectedRange range,
-        TokenUsageSummary summary)
+        TokenUsageSummary summary,
+        TimeSpan interval)
     {
         var detailRows = ReadSourceCachedDetailRows(source, range.Start, range.End);
         if (detailRows.Count == 0)
@@ -2213,7 +2233,7 @@ public partial class Form1 : Form
         var detailDates = new HashSet<DateOnly>();
         foreach (var row in detailRows)
         {
-            var hour = StartOfHour(row.StartLocal);
+            var hour = StartOfInterval(row.StartLocal, interval);
             detailDates.Add(DateOnly.FromDateTime(row.StartLocal.DateTime));
             if (!buckets.TryGetValue(hour, out var bucket))
             {
@@ -2241,9 +2261,11 @@ public partial class Form1 : Form
             .ToList();
     }
 
-    private static DateTimeOffset StartOfHour(DateTimeOffset value)
+    private static DateTimeOffset StartOfInterval(DateTimeOffset value, TimeSpan interval)
     {
-        return new DateTimeOffset(value.Year, value.Month, value.Day, value.Hour, 0, 0, value.Offset);
+        var dayStart = StartOfDay(value);
+        var ticks = (value - dayStart).Ticks / interval.Ticks * interval.Ticks;
+        return dayStart.AddTicks(ticks);
     }
 
     private static TimeSpan EstimateCodingTimeForRange(
@@ -2357,7 +2379,7 @@ public partial class Form1 : Form
         if (range.Mode is RangeMode.Week or RangeMode.Cycle)
         {
             return bucket.LastTokenEventLocal is null ||
-                   bucket.LastTokenEventLocal.Value < bucket.StartLocal.AddHours(1);
+                   bucket.LastTokenEventLocal.Value < bucket.StartLocal.Add(MultiDayBreakdownInterval);
         }
 
         return false;
@@ -2392,7 +2414,7 @@ public partial class Form1 : Form
         }
 
         return eventBreakdown
-            ? start.ToString("MM-dd HH:00")
+            ? start.ToString("MM-dd HH:mm")
             : start.ToString("yyyy-MM-dd");
     }
 
