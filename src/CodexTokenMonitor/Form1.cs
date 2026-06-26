@@ -619,7 +619,7 @@ public partial class Form1 : Form
         panel.Controls.Add(layout);
 
         timelineChart.Dock = DockStyle.Fill;
-        timelineChart.Margin = new Padding(0, 0, 0, 12);
+        timelineChart.Margin = Padding.Empty;
         timelineChart.Visible = false;
         layout.Controls.Add(timelineChart, 0, 0);
 
@@ -1435,7 +1435,7 @@ public partial class Form1 : Form
         var showTimeline = breakdownRows.Count > 0;
         if (timelineRowStyle is not null)
         {
-            timelineRowStyle.Height = showTimeline ? 150 : 0;
+            timelineRowStyle.Height = showTimeline ? 300 : 0;
         }
 
         timelineChart.Visible = showTimeline;

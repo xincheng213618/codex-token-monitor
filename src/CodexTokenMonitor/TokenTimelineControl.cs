@@ -112,17 +112,18 @@ internal sealed class TokenTimelineControl : UserControl
         cumulativePlot.FillYValue = 0;
         cumulativePlot.FillYBelowColor = PlotColor.FromSDColor(DrawingColor.FromArgb(26, 241, 115, 55));
 
-        var leftMax = Math.Max(0.001, barValues.Max() * 1.12);
-        var rightMax = Math.Max(0.001, cumulativeValues.Last() * 1.08);
-        var xPadding = Math.Max(barWidthDays, (ToDateNumber(endLocal) - ToDateNumber(startLocal)) * 0.004);
-        plot.Axes.SetLimitsX(ToDateNumber(startLocal) - xPadding, ToDateNumber(endLocal) + xPadding);
-        plot.Axes.SetLimitsY(0, leftMax, plot.Axes.Left);
-        plot.Axes.SetLimitsY(0, rightMax, plot.Axes.Right);
-
         var bottom = plot.Axes.DateTimeTicksBottom();
         bottom.TickLabelStyle.FontName = "Segoe UI";
         bottom.TickLabelStyle.FontSize = 11;
         bottom.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(86, 100, 118));
+
+        var leftMax = Math.Max(0.001, barValues.Max() * 1.12);
+        var rightMax = Math.Max(0.001, cumulativeValues.Last() * 1.08);
+        plot.Axes.Margins(0, 0);
+        plot.Axes.SetLimitsX(ToDateNumber(startLocal), ToDateNumber(endLocal));
+        plot.Axes.SetLimitsY(0, leftMax, plot.Axes.Left);
+        plot.Axes.SetLimitsY(0, rightMax, plot.Axes.Right);
+
         plot.Axes.Left.TickLabelStyle.FontName = "Segoe UI";
         plot.Axes.Left.TickLabelStyle.FontSize = 10;
         plot.Axes.Left.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(116, 128, 145));
