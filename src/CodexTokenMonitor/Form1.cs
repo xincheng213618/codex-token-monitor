@@ -389,7 +389,7 @@ public partial class Form1 : Form
         costCardsFlow.Dock = DockStyle.Fill;
         costCardsFlow.FlowDirection = FlowDirection.LeftToRight;
         costCardsFlow.WrapContents = false;
-        costCardsFlow.AutoScroll = true;
+        costCardsFlow.AutoScroll = false;
         costCardsFlow.BackColor = Color.Transparent;
         costCardsFlow.Margin = new Padding(0);
         layout.Controls.Add(costCardsFlow, 1, 0);
@@ -1138,9 +1138,7 @@ public partial class Form1 : Form
                             : ReadSourceCachedRange(source, range.Start, range.End);
                         var dayQuota = ReadQuotaForRefresh(source, includeLiveToday, cachedQuota);
                         var dayQuotaSnapshots = source == UsageSource.Codex
-                            ? includeLiveToday
-                                ? CodexUsageReader.ReadQuotaSnapshots(range.Start, range.End)
-                                : CodexUsageReader.ReadCachedQuotaSnapshots(range.Start, range.End)
+                            ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, dayQuota)
                             : Array.Empty<CodexQuotaSnapshot>();
                         return new QueryResult(
                             daySummary,
@@ -1163,13 +1161,11 @@ public partial class Form1 : Form
                             : ZCodeUsageReader.ReadCachedRange(range.Start, range.End),
                         _ => throw new InvalidOperationException("Unknown usage source.")
                     };
-                    var rows = BuildBreakdownRows(source, range, summary, includeLiveToday);
+                    var rows = BuildBreakdownRows(source, range, summary);
                     var codingTime = EstimateCodingTimeForRange(source, range, rows, includeLiveToday, cacheOnly: !includeLiveToday);
                     var quota = ReadQuotaForRefresh(source, includeLiveToday, cachedQuota);
                     var quotaSnapshots = source == UsageSource.Codex
-                        ? includeLiveToday
-                            ? CodexUsageReader.ReadQuotaSnapshots(range.Start, range.End)
-                            : CodexUsageReader.ReadCachedQuotaSnapshots(range.Start, range.End)
+                        ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, quota)
                         : Array.Empty<CodexQuotaSnapshot>();
                     return new QueryResult(summary, rows, codingTime, quota, quotaSnapshots);
                 });
@@ -1445,11 +1441,8 @@ public partial class Form1 : Form
             timelineChart.ClearData();
         }
 
-        breakdownList.Columns[0].Text = range.Mode switch
-        {
-            RangeMode.Day => "时间",
-            _ => "日期"
-        };
+        var eventBreakdown = UsesEventBreakdown(range, breakdownRows);
+        breakdownList.Columns[0].Text = eventBreakdown ? "时间" : "日期";
         breakdownList.Columns[1].Text = "Total";
         breakdownList.Columns[2].Text = "Input";
         breakdownList.Columns[3].Text = "Cached";
@@ -1459,21 +1452,21 @@ public partial class Form1 : Form
         breakdownList.Columns[7].Text = FormatPresetColumnTitle(tablePresets.ElementAtOrDefault(1), "价格2");
         breakdownList.Columns[8].Text = FormatPresetColumnTitle(tablePresets.ElementAtOrDefault(2), "价格3");
         breakdownList.Columns[9].Text = "额度(5h/7d)";
-        ApplyBreakdownColumnWidths(range);
-        var useEventTokenScale = range.Mode == RangeMode.Day || range.IsCustomStart;
+        ApplyBreakdownColumnWidths(range, eventBreakdown);
         foreach (var bucket in breakdownRows)
         {
-            var item = new ListViewItem(FormatBucketLabel(range, bucket.StartLocal));
-            item.SubItems.Add(FormatBreakdownToken(bucket.TotalTokens, useEventTokenScale));
-            item.SubItems.Add(FormatBreakdownToken(bucket.InputTokens, useEventTokenScale));
-            item.SubItems.Add(FormatBreakdownToken(bucket.CachedInputTokens, useEventTokenScale));
-            item.SubItems.Add(FormatBreakdownToken(bucket.UncachedInputTokens, useEventTokenScale));
+            var rowIsEvent = IsEventBucket(range, bucket);
+            var item = new ListViewItem(FormatBucketLabel(range, bucket.StartLocal, rowIsEvent));
+            item.SubItems.Add(FormatBreakdownToken(bucket.TotalTokens, rowIsEvent));
+            item.SubItems.Add(FormatBreakdownToken(bucket.InputTokens, rowIsEvent));
+            item.SubItems.Add(FormatBreakdownToken(bucket.CachedInputTokens, rowIsEvent));
+            item.SubItems.Add(FormatBreakdownToken(bucket.UncachedInputTokens, rowIsEvent));
             item.SubItems.Add(FormatTokenAdaptive(bucket.OutputTokens));
             AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(0));
             AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(1));
             AddPresetCost(item, bucket, tablePresets.ElementAtOrDefault(2));
             item.SubItems.Add(source == UsageSource.Codex
-                ? FormatQuotaSnapshotForBucket(range, bucket, quotaSnapshots)
+                ? FormatQuotaSnapshotForBucket(range, bucket, quotaSnapshots, rowIsEvent)
                 : "-");
             breakdownList.Items.Add(item);
         }
@@ -1497,7 +1490,7 @@ public partial class Form1 : Form
         var profile = preset.ToProfile();
         var panel = new TableLayoutPanel
         {
-            Width = 170,
+            Width = 218,
             Height = 118,
             ColumnCount = 1,
             RowCount = 3,
@@ -1671,7 +1664,7 @@ public partial class Form1 : Form
         var resetAt = window.ResetAtLocal ?? window.WindowEndLocal;
         detailLabel.Text = mode == QuotaWindowDisplayMode.FiveHour
             ? $"{resetAt:HH:mm} · {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
-            : $"到期 {FormatQuotaRemaining(resetAt)} · {FormatQuotaLimit(window)}";
+            : $"{resetAt:MM-dd HH:mm} · {FormatQuotaLimit(window)}";
     }
 
     private void UpdateQuotaLimitCalculation()
@@ -1691,7 +1684,7 @@ public partial class Form1 : Form
     {
         return window?.EstimatedGptLimit is null
             ? "-"
-            : FormatMoney(window.EstimatedGptLimit.Value, PriceProfiles.Gpt55StandardLong);
+            : $"≈{FormatMoney(window.EstimatedGptLimit.Value, PriceProfiles.Gpt55StandardLong)}";
     }
 
     private static string FormatQuotaRemaining(DateTimeOffset resetAtLocal)
@@ -1821,9 +1814,11 @@ public partial class Form1 : Form
         return first is null || second is null || first.Value == second.Value;
     }
 
-    private void ApplyBreakdownColumnWidths(SelectedRange range)
+    private void ApplyBreakdownColumnWidths(SelectedRange range, bool eventBreakdown)
     {
-        breakdownList.Columns[0].Width = range.IsCustomStart
+        breakdownList.Columns[0].Width = eventBreakdown && range.Mode != RangeMode.Day && !range.IsCustomStart
+            ? 134
+            : range.IsCustomStart
             ? 150
             : range.Mode == RangeMode.Day
                 ? 86
@@ -1842,15 +1837,18 @@ public partial class Form1 : Form
     private static string FormatQuotaSnapshotForBucket(
         SelectedRange range,
         TokenUsageBucket bucket,
-        IReadOnlyList<CodexQuotaSnapshot> quotaSnapshots)
+        IReadOnlyList<CodexQuotaSnapshot> quotaSnapshots,
+        bool eventBreakdown)
     {
         if (quotaSnapshots.Count == 0)
         {
             return "-";
         }
 
-        var bucketEnd = range.Mode == RangeMode.Day || range.IsCustomStart
-            ? bucket.StartLocal.AddSeconds(2)
+        var bucketEnd = eventBreakdown
+            ? range.Mode == RangeMode.Day || range.IsCustomStart
+                ? bucket.StartLocal.AddSeconds(2)
+                : bucket.StartLocal.AddHours(1)
             : bucket.StartLocal.AddDays(1);
         var snapshot = quotaSnapshots
             .Where(item => item.SnapshotLocal >= bucket.StartLocal && item.SnapshotLocal < bucketEnd)
@@ -2142,6 +2140,34 @@ public partial class Form1 : Form
         return includeLiveToday ? CodexUsageReader.ReadQuotaEstimate() : cachedQuota;
     }
 
+    private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsForRefresh(
+        SelectedRange range,
+        bool includeLiveToday,
+        CodexQuotaEstimate? quota)
+    {
+        var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(range.Start, range.End);
+        if (!includeLiveToday || quota is null ||
+            quota.SnapshotLocal < range.Start ||
+            quota.SnapshotLocal >= range.End)
+        {
+            return snapshots;
+        }
+
+        return snapshots
+            .Append(new CodexQuotaSnapshot(
+                quota.SnapshotLocal,
+                quota.LimitId,
+                quota.LimitName,
+                quota.FiveHour?.UsedPercent,
+                quota.FiveHour?.ResetAtLocal,
+                quota.Week?.UsedPercent,
+                quota.Week?.ResetAtLocal))
+            .GroupBy(item => item.SnapshotLocal)
+            .Select(group => group.OrderByDescending(item => item.WeekUsedPercent ?? -1m).First())
+            .OrderBy(item => item.SnapshotLocal)
+            .ToList();
+    }
+
     private static DateTimeOffset StartOfWeek(DateTimeOffset value)
     {
         var daysSinceMonday = ((int)value.DayOfWeek + 6) % 7;
@@ -2157,21 +2183,67 @@ public partial class Form1 : Form
     private static IReadOnlyList<TokenUsageBucket> BuildBreakdownRows(
         UsageSource source,
         SelectedRange range,
-        TokenUsageSummary summary,
-        bool includeLiveToday)
+        TokenUsageSummary summary)
     {
         if (range.Mode == RangeMode.Day)
         {
-            return source switch
-            {
-                UsageSource.Codex => CodexUsageReader.ReadDetailRows(range.Start, range.End, includeLiveToday),
-                UsageSource.ClaudeCode => ClaudeUsageReader.ReadDetailRows(range.Start, range.End, includeLiveToday),
-                UsageSource.ZCode => ZCodeUsageReader.ReadDetailRows(range.Start, range.End, includeLiveToday),
-                _ => Array.Empty<TokenUsageBucket>()
-            };
+            return ReadSourceCachedDetailRows(source, range.Start, range.End);
+        }
+
+        if (range.Mode is RangeMode.Week or RangeMode.Cycle)
+        {
+            return BuildHourlyBreakdownRows(source, range, summary);
         }
 
         return summary.DailyBuckets;
+    }
+
+    private static IReadOnlyList<TokenUsageBucket> BuildHourlyBreakdownRows(
+        UsageSource source,
+        SelectedRange range,
+        TokenUsageSummary summary)
+    {
+        var detailRows = ReadSourceCachedDetailRows(source, range.Start, range.End);
+        if (detailRows.Count == 0)
+        {
+            return summary.DailyBuckets;
+        }
+
+        var buckets = new Dictionary<DateTimeOffset, TokenUsageBucket>();
+        var detailDates = new HashSet<DateOnly>();
+        foreach (var row in detailRows)
+        {
+            var hour = StartOfHour(row.StartLocal);
+            detailDates.Add(DateOnly.FromDateTime(row.StartLocal.DateTime));
+            if (!buckets.TryGetValue(hour, out var bucket))
+            {
+                bucket = new TokenUsageBucket { StartLocal = hour };
+                buckets[hour] = bucket;
+            }
+
+            AddBucketValues(bucket, row);
+        }
+
+        var rows = buckets.Values
+            .Where(bucket => bucket.Events > 0)
+            .ToList();
+        foreach (var dailyBucket in summary.DailyBuckets)
+        {
+            var date = DateOnly.FromDateTime(dailyBucket.StartLocal.DateTime);
+            if (!detailDates.Contains(date))
+            {
+                rows.Add(dailyBucket);
+            }
+        }
+
+        return rows
+            .OrderBy(bucket => bucket.StartLocal)
+            .ToList();
+    }
+
+    private static DateTimeOffset StartOfHour(DateTimeOffset value)
+    {
+        return new DateTimeOffset(value.Year, value.Month, value.Day, value.Hour, 0, 0, value.Offset);
     }
 
     private static TimeSpan EstimateCodingTimeForRange(
@@ -2184,6 +2256,17 @@ public partial class Form1 : Form
         if (range.Mode == RangeMode.Day || range.IsCustomStart)
         {
             return EstimateCodingTime(breakdownRows);
+        }
+
+        var cachedRows = ReadSourceCachedDetailRows(source, range.Start, range.End);
+        if (cachedRows.Count > 0)
+        {
+            return EstimateCodingTime(cachedRows);
+        }
+
+        if (cacheOnly)
+        {
+            return TimeSpan.Zero;
         }
 
         var total = TimeSpan.Zero;
@@ -2257,15 +2340,59 @@ public partial class Form1 : Form
         };
     }
 
-    private static string FormatBucketLabel(SelectedRange range, DateTimeOffset start)
+    private static bool UsesEventBreakdown(SelectedRange range, IReadOnlyList<TokenUsageBucket> rows)
+    {
+        return range.IsCustomStart ||
+               range.Mode == RangeMode.Day ||
+               rows.Any(row => IsEventBucket(range, row));
+    }
+
+    private static bool IsEventBucket(SelectedRange range, TokenUsageBucket bucket)
+    {
+        if (range.IsCustomStart || range.Mode == RangeMode.Day)
+        {
+            return true;
+        }
+
+        if (range.Mode is RangeMode.Week or RangeMode.Cycle)
+        {
+            return bucket.LastTokenEventLocal is null ||
+                   bucket.LastTokenEventLocal.Value < bucket.StartLocal.AddHours(1);
+        }
+
+        return false;
+    }
+
+    private static void AddBucketValues(TokenUsageBucket target, TokenUsageBucket source)
+    {
+        target.Events += source.Events;
+        target.InputTokens += source.InputTokens;
+        target.CachedInputTokens += source.CachedInputTokens;
+        target.UncachedInputTokens += source.UncachedInputTokens;
+        target.OutputTokens += source.OutputTokens;
+        target.ReasoningOutputTokens += source.ReasoningOutputTokens;
+        target.TotalTokens += source.TotalTokens;
+        if (source.LastTokenEventLocal is not null &&
+            (target.LastTokenEventLocal is null || source.LastTokenEventLocal > target.LastTokenEventLocal))
+        {
+            target.LastTokenEventLocal = source.LastTokenEventLocal;
+        }
+    }
+
+    private static string FormatBucketLabel(SelectedRange range, DateTimeOffset start, bool eventBreakdown)
     {
         if (range.IsCustomStart)
         {
             return start.ToString("yyyy-MM-dd HH:mm:ss");
         }
 
-        return range.Mode == RangeMode.Day
-            ? start.ToString("HH:mm:ss")
+        if (range.Mode == RangeMode.Day)
+        {
+            return start.ToString("HH:mm:ss");
+        }
+
+        return eventBreakdown
+            ? start.ToString("MM-dd HH:00")
             : start.ToString("yyyy-MM-dd");
     }
 
