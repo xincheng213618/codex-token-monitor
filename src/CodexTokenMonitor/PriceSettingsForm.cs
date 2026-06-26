@@ -51,7 +51,7 @@ internal sealed class PriceSettingsForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            Text = "主界面第一栏按来源取主模型：Codex=GPT，Claude Code=Claude，ZCode=GLM；第二、三栏固定 DeepSeek / Xiaomi。选中行可以置顶或上下移动。",
+            Text = "价格库分 Codex / Claude Code / ZCode 三组；主界面按当前组的前三行展示。选中行可以置顶或上下移动。",
             ForeColor = Color.FromArgb(55, 65, 81),
             Margin = new Padding(0, 0, 0, 12)
         }, 0, 0);
@@ -259,6 +259,7 @@ internal sealed class PriceSettingsForm : Form
         presetGrid.BackgroundColor = Color.White;
         presetGrid.BorderStyle = BorderStyle.FixedSingle;
         presetGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+        presetGrid.Columns.Add("group", "Group");
         presetGrid.Columns.Add("provider", "Provider");
         presetGrid.Columns.Add("model", "Model");
         presetGrid.Columns.Add("currency", "Currency");
@@ -268,15 +269,16 @@ internal sealed class PriceSettingsForm : Form
         presetGrid.Columns.Add("cached", "Cached");
         presetGrid.Columns.Add("output", "Output");
         presetGrid.Columns.Add("source", "Source");
-        presetGrid.Columns[0].FillWeight = 12;
-        presetGrid.Columns[1].FillWeight = 20;
-        presetGrid.Columns[2].FillWeight = 8;
-        presetGrid.Columns[3].FillWeight = 14;
-        presetGrid.Columns[4].FillWeight = 10;
-        presetGrid.Columns[5].FillWeight = 8;
+        presetGrid.Columns[0].FillWeight = 10;
+        presetGrid.Columns[1].FillWeight = 12;
+        presetGrid.Columns[2].FillWeight = 20;
+        presetGrid.Columns[3].FillWeight = 8;
+        presetGrid.Columns[4].FillWeight = 14;
+        presetGrid.Columns[5].FillWeight = 9;
         presetGrid.Columns[6].FillWeight = 8;
         presetGrid.Columns[7].FillWeight = 8;
-        presetGrid.Columns[8].FillWeight = 20;
+        presetGrid.Columns[8].FillWeight = 8;
+        presetGrid.Columns[9].FillWeight = 19;
     }
 
     private static void ConfigurePriceBox(NumericUpDown box)
@@ -356,6 +358,7 @@ internal sealed class PriceSettingsForm : Form
     private void AddPresetRow(PricePreset preset)
     {
         presetGrid.Rows.Add(
+            preset.Group,
             preset.Provider,
             preset.Model,
             preset.CurrencySymbol,
@@ -385,6 +388,7 @@ internal sealed class PriceSettingsForm : Form
         var index = row.Index;
         presetGrid.Rows.RemoveAt(index);
         presetGrid.Rows.Insert(0,
+            preset.Group,
             preset.Provider,
             preset.Model,
             preset.CurrencySymbol,
@@ -421,6 +425,7 @@ internal sealed class PriceSettingsForm : Form
 
         presetGrid.Rows.RemoveAt(row.Index);
         presetGrid.Rows.Insert(targetIndex,
+            preset.Group,
             preset.Provider,
             preset.Model,
             preset.CurrencySymbol,
@@ -484,8 +489,8 @@ internal sealed class PriceSettingsForm : Form
 
     private static PricePreset? TryReadPreset(DataGridViewRow row)
     {
-        var provider = CellText(row, 0);
-        var model = CellText(row, 1);
+        var provider = CellText(row, 1);
+        var model = CellText(row, 2);
         if (string.IsNullOrWhiteSpace(model))
         {
             return null;
@@ -493,15 +498,16 @@ internal sealed class PriceSettingsForm : Form
 
         return new PricePreset
         {
+            Group = string.IsNullOrWhiteSpace(CellText(row, 0)) ? "Codex" : CellText(row, 0),
             Provider = provider,
             Model = model,
-            CurrencySymbol = string.IsNullOrWhiteSpace(CellText(row, 2)) ? "$" : CellText(row, 2),
-            UnitLabel = string.IsNullOrWhiteSpace(CellText(row, 3)) ? "1M tokens" : CellText(row, 3),
-            Divisor = ParseDecimal(CellText(row, 4), 1_000_000m),
-            UncachedInput = ParseDecimal(CellText(row, 5), 0m),
-            CachedInput = ParseDecimal(CellText(row, 6), 0m),
-            Output = ParseDecimal(CellText(row, 7), 0m),
-            Source = CellText(row, 8)
+            CurrencySymbol = string.IsNullOrWhiteSpace(CellText(row, 3)) ? "$" : CellText(row, 3),
+            UnitLabel = string.IsNullOrWhiteSpace(CellText(row, 4)) ? "1M tokens" : CellText(row, 4),
+            Divisor = ParseDecimal(CellText(row, 5), 1_000_000m),
+            UncachedInput = ParseDecimal(CellText(row, 6), 0m),
+            CachedInput = ParseDecimal(CellText(row, 7), 0m),
+            Output = ParseDecimal(CellText(row, 8), 0m),
+            Source = CellText(row, 9)
         };
     }
 

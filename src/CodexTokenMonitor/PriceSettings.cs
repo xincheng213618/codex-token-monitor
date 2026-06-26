@@ -5,7 +5,7 @@ namespace CodexTokenMonitor;
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 3;
+    public int DisplayOrderVersion { get; set; } = 4;
     public string GptName { get; set; } = "GPT-5.5 Standard Short";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
@@ -75,6 +75,7 @@ internal sealed class PriceSettings
 
 internal sealed class PricePreset
 {
+    public string Group { get; set; } = "";
     public string Provider { get; set; } = "";
     public string Model { get; set; } = "";
     public string CurrencySymbol { get; set; } = "$";
@@ -102,6 +103,7 @@ internal sealed class PricePreset
     {
         return new PricePreset
         {
+            Group = Group,
             Provider = Provider,
             Model = Model,
             CurrencySymbol = CurrencySymbol,
@@ -134,6 +136,8 @@ internal sealed class PricePreset
             Preset("Kimi（月之暗面）", "K2.6", "¥", "CNY / 1M tokens", 1_000_000m, 6.50m, 1.10m, 27.00m, "Kimi API 官方人民币价格"),
             Preset("Kimi（月之暗面）", "K2.5", "¥", "CNY / 1M tokens", 1_000_000m, 4.00m, 0.70m, 21.00m, "Kimi API 官方人民币价格"),
             Preset("智谱/Z.AI", "GLM-5.2 1M", "¥", "CNY / 1M tokens", 1_000_000m, 8.00m, 2.00m, 28.00m, "bigmodel.cn/pricing"),
+            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档", "ZCode"),
+            Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan", "ZCode"),
             Preset("智谱/Z.AI", "GLM-5.1 <=32K", "¥", "CNY / 1M tokens", 1_000_000m, 6.00m, 1.30m, 24.00m, "bigmodel.cn/pricing"),
             Preset("智谱/Z.AI", "GLM-5.1 >32K", "¥", "CNY / 1M tokens", 1_000_000m, 8.00m, 2.00m, 28.00m, "bigmodel.cn/pricing"),
             Preset("智谱/Z.AI", "GLM-4.7 <=32K short out", "¥", "CNY / 1M tokens", 1_000_000m, 2.00m, 0.40m, 8.00m, "bigmodel.cn/pricing"),
@@ -157,6 +161,8 @@ internal sealed class PricePreset
             Preset("腾讯混元", "Hunyuan Turbo S", "¥", "CNY / 1M tokens", 1_000_000m, 0.80m, 0.08m, 2.00m, "腾讯混元官方参考"),
             Preset("腾讯混元", "Hunyuan Turbo", "¥", "CNY / 1M tokens", 1_000_000m, 0.70m, 0.07m, 1.40m, "腾讯混元官方参考"),
             Preset("Claude", "Opus 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read"),
+            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档", "Claude Code"),
+            Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan", "Claude Code"),
             Preset("Claude", "Sonnet 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
             Preset("Claude", "Haiku 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read"),
             Preset("Claude", "Sonnet 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
@@ -178,10 +184,12 @@ internal sealed class PricePreset
         decimal input,
         decimal cached,
         decimal output,
-        string source)
+        string source,
+        string group = "")
     {
         return new PricePreset
         {
+            Group = group,
             Provider = provider,
             Model = model,
             CurrencySymbol = currency,
@@ -210,7 +218,9 @@ internal static class PriceSettingsStore
 
     public static PriceSettings Defaults()
     {
-        return new PriceSettings();
+        var settings = new PriceSettings();
+        settings.Presets = ApplyDefaultDisplayOrder(NormalizePresets(settings.Presets));
+        return settings;
     }
 
     public static void Save(PriceSettings settings)
@@ -239,21 +249,20 @@ internal static class PriceSettingsStore
     public static IReadOnlyList<PricePreset> DisplayPresetsForSource(string sourceKey, int count)
     {
         var source = sourceKey.Trim().ToLowerInvariant();
-        var candidates = new List<PricePreset>();
-        AddFirstDisplayPreset(candidates, item => IsPrimaryDisplayCandidateForSource(item, source));
-        AddFirstDisplayPreset(candidates, IsDeepSeekPreset);
-        AddFirstDisplayPreset(candidates, IsXiaomiPreset);
-        foreach (var preset in Current.Presets)
+        var group = GroupForSource(source);
+        var candidates = Current.Presets
+            .Where(item => GroupEquals(item.Group, group))
+            .ToList();
+        if (candidates.Count == 0)
         {
-            if (candidates.Count >= count)
-            {
-                break;
-            }
+            candidates = Current.Presets
+                .Where(item => IsLegacyDisplayCandidateForSource(item, source))
+                .ToList();
+        }
 
-            if (!candidates.Any(existing => SamePreset(existing, preset)))
-            {
-                candidates.Add(preset);
-            }
+        if (candidates.Count < count)
+        {
+            candidates.AddRange(Current.Presets.Where(item => !candidates.Any(existing => SamePreset(existing, item))));
         }
 
         return candidates
@@ -262,17 +271,17 @@ internal static class PriceSettingsStore
             .ToList();
     }
 
-    private static void AddFirstDisplayPreset(List<PricePreset> candidates, Func<PricePreset, bool> predicate)
+    private static string GroupForSource(string source)
     {
-        var match = Current.Presets.FirstOrDefault(item =>
-            !candidates.Any(existing => SamePreset(existing, item)) && predicate(item));
-        if (match is not null)
+        return source switch
         {
-            candidates.Add(match);
-        }
+            "claude" => "Claude Code",
+            "zcode" => "ZCode",
+            _ => "Codex"
+        };
     }
 
-    private static bool IsPrimaryDisplayCandidateForSource(PricePreset preset, string source)
+    private static bool IsLegacyDisplayCandidateForSource(PricePreset preset, string source)
     {
         return source switch
         {
@@ -290,17 +299,19 @@ internal static class PriceSettingsStore
         };
     }
 
-    private static bool IsDeepSeekPreset(PricePreset preset)
+    private static bool GroupEquals(string first, string second)
     {
-        return ContainsIgnoreCase(preset.Provider, "DeepSeek") ||
-               ContainsIgnoreCase(preset.Model, "DeepSeek");
+        return string.Equals(NormalizeGroup(first), NormalizeGroup(second), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsXiaomiPreset(PricePreset preset)
+    private static string NormalizeGroup(string group)
     {
-        return ContainsIgnoreCase(preset.Provider, "Xiaomi") ||
-               ContainsIgnoreCase(preset.Model, "Xiaomi") ||
-               ContainsIgnoreCase(preset.Model, "MiMo");
+        return group.Trim().ToLowerInvariant() switch
+        {
+            "claude" or "claude code" or "claudecode" => "Claude Code",
+            "zcode" or "glm" or "z.ai" or "zai" or "智谱" => "ZCode",
+            _ => "Codex"
+        };
     }
 
     private static bool ContainsIgnoreCase(string value, string pattern)
@@ -358,23 +369,24 @@ internal static class PriceSettingsStore
 
     private static List<PricePreset> ApplyDefaultDisplayOrder(List<PricePreset> presets)
     {
-        var preferred = new (string Provider, string Model)[]
+        var preferred = new (string Group, string Provider, string Model)[]
         {
-            ("OpenAI", "GPT-5.5 Standard Short"),
-            ("DeepSeek", "V4 Pro"),
-            ("Xiaomi", "MiMo V2.5 Pro"),
-            ("Claude", "Opus 4.8 API"),
-            ("Claude", "Sonnet 4.8 API"),
-            ("Claude", "Haiku 4.8 API"),
-            ("智谱/Z.AI", "GLM-5.2 1M"),
-            ("智谱/Z.AI", "GLM-5.1 <=32K"),
-            ("智谱/Z.AI", "GLM-4.7 <=32K short out")
+            ("Codex", "OpenAI", "GPT-5.5 Standard Short"),
+            ("Codex", "DeepSeek", "V4 Pro"),
+            ("Codex", "Xiaomi", "MiMo V2.5 Pro"),
+            ("Claude Code", "Claude", "Opus 4.8 API"),
+            ("Claude Code", "DeepSeek", "V4 Pro"),
+            ("Claude Code", "Xiaomi", "MiMo V2.5 Pro"),
+            ("ZCode", "智谱/Z.AI", "GLM-5.2 1M"),
+            ("ZCode", "DeepSeek", "V4 Pro"),
+            ("ZCode", "Xiaomi", "MiMo V2.5 Pro")
         };
 
         var ordered = new List<PricePreset>();
         foreach (var key in preferred)
         {
             var match = presets.FirstOrDefault(item =>
+                GroupEquals(item.Group, key.Group) &&
                 string.Equals(item.Provider, key.Provider, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(item.Model, key.Model, StringComparison.OrdinalIgnoreCase));
             if (match is not null && !ordered.Any(item => SamePreset(item, match)))
@@ -393,6 +405,7 @@ internal static class PriceSettingsStore
             .Where(item => !string.IsNullOrWhiteSpace(item.Model))
             .Select(item => new PricePreset
             {
+                Group = NormalizeGroup(string.IsNullOrWhiteSpace(item.Group) ? InferGroup(item) : item.Group),
                 Provider = item.Provider.Trim(),
                 Model = item.Model.Trim(),
                 CurrencySymbol = string.IsNullOrWhiteSpace(item.CurrencySymbol) ? "$" : item.CurrencySymbol.Trim(),
@@ -407,20 +420,44 @@ internal static class PriceSettingsStore
 
         foreach (var preset in PricePreset.Defaults())
         {
-            if (!result.Any(item =>
-                    string.Equals(item.Provider, preset.Provider, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(item.Model, preset.Model, StringComparison.OrdinalIgnoreCase)))
+            var normalizedDefault = preset.Clone();
+            normalizedDefault.Group = NormalizeGroup(string.IsNullOrWhiteSpace(normalizedDefault.Group)
+                ? InferGroup(normalizedDefault)
+                : normalizedDefault.Group);
+            if (!result.Any(item => SamePreset(item, normalizedDefault)))
             {
-                result.Add(preset.Clone());
+                result.Add(normalizedDefault);
             }
         }
 
         return result;
     }
 
+    private static string InferGroup(PricePreset preset)
+    {
+        if (ContainsIgnoreCase(preset.Provider, "Claude") ||
+            ContainsIgnoreCase(preset.Model, "Claude") ||
+            ContainsIgnoreCase(preset.Model, "Opus") ||
+            ContainsIgnoreCase(preset.Model, "Sonnet") ||
+            ContainsIgnoreCase(preset.Model, "Haiku"))
+        {
+            return "Claude Code";
+        }
+
+        if (ContainsIgnoreCase(preset.Provider, "智谱") ||
+            ContainsIgnoreCase(preset.Provider, "Z.AI") ||
+            ContainsIgnoreCase(preset.Model, "GLM"))
+        {
+            return "ZCode";
+        }
+
+        return "Codex";
+    }
+
     private static bool SamePreset(PricePreset first, PricePreset second)
     {
-        return string.Equals(first.Provider, second.Provider, StringComparison.OrdinalIgnoreCase) &&
+        return GroupEquals(first.Group, second.Group) &&
+               string.Equals(first.Provider, second.Provider, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(first.Model, second.Model, StringComparison.OrdinalIgnoreCase);
     }
 
