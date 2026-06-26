@@ -8,6 +8,7 @@ internal sealed class TokenTimelineControl : Control
     private readonly List<TokenUsageBucket> rows = new();
     private DateTimeOffset startLocal;
     private DateTimeOffset endLocal;
+    private TimeSpan? fixedBucketInterval;
 
     public TokenTimelineControl()
     {
@@ -24,10 +25,12 @@ internal sealed class TokenTimelineControl : Control
     public void SetData(
         DateTimeOffset start,
         DateTimeOffset end,
-        IEnumerable<TokenUsageBucket> sourceRows)
+        IEnumerable<TokenUsageBucket> sourceRows,
+        TimeSpan? bucketInterval = null)
     {
         startLocal = start;
         endLocal = end;
+        fixedBucketInterval = bucketInterval;
         rows.Clear();
         rows.AddRange(sourceRows.Where(row => row.Events > 0).OrderBy(row => row.StartLocal));
         Invalidate();
@@ -36,6 +39,7 @@ internal sealed class TokenTimelineControl : Control
     public void ClearData()
     {
         rows.Clear();
+        fixedBucketInterval = null;
         Invalidate();
     }
 
@@ -79,21 +83,14 @@ internal sealed class TokenTimelineControl : Control
             return;
         }
 
-        var bucketCount = GetBucketCount(plot.Width, endLocal - startLocal);
-        var totalValues = new long[bucketCount];
-        var cachedValues = new long[bucketCount];
-        var spanTicks = Math.Max(1, (endLocal - startLocal).Ticks);
-
-        foreach (var row in rows)
+        var bars = BuildBars().ToList();
+        if (bars.Count == 0)
         {
-            var offsetTicks = Math.Clamp((row.StartLocal - startLocal).Ticks, 0, spanTicks - 1);
-            var index = (int)(offsetTicks * bucketCount / spanTicks);
-            index = Math.Clamp(index, 0, bucketCount - 1);
-            totalValues[index] += row.TotalTokens;
-            cachedValues[index] += row.CachedInputTokens;
+            graphics.DrawString("无事件", font, mutedBrush, plot.Left, plot.Top + plot.Height / 2 - 8);
+            return;
         }
 
-        var maxBucket = Math.Max(1, totalValues.Max());
+        var maxBucket = Math.Max(1, bars.Max(item => item.TotalTokens));
         var total = Math.Max(1, rows.Sum(row => row.TotalTokens));
         graphics.FillRectangle(faintBrush, plot);
         for (var i = 0; i <= 4; i++)
@@ -104,20 +101,25 @@ internal sealed class TokenTimelineControl : Control
 
         DrawTimeTicks(graphics, plot, font, mutedBrush, tickPen);
 
-        var barGap = bucketCount > 48 ? 1 : 2;
-        var slot = plot.Width / (float)bucketCount;
-        var barWidth = Math.Max(1f, slot - barGap);
+        var barGap = bars.Count > 48 ? 1 : 2;
+        var slot = plot.Width / (float)Math.Max(1, bars.Count);
+        var barWidth = fixedBucketInterval is null
+            ? Math.Max(1f, Math.Min(4f, slot - barGap))
+            : Math.Max(1f, slot - barGap);
         long cumulative = 0;
-        var points = new List<PointF>(bucketCount);
+        var points = new List<PointF>(bars.Count);
 
-        for (var i = 0; i < bucketCount; i++)
+        for (var i = 0; i < bars.Count; i++)
         {
-            var totalValue = totalValues[i];
+            var bar = bars[i];
+            var totalValue = bar.TotalTokens;
             cumulative += totalValue;
-            var x = plot.Left + i * slot;
+            var x = fixedBucketInterval is null
+                ? XForTime(plot, bar.StartLocal) - barWidth / 2f
+                : plot.Left + i * slot;
             var totalHeight = (float)(totalValue / (double)maxBucket * plot.Height);
             var cachedHeight = totalValue > 0
-                ? (float)(Math.Min(cachedValues[i], totalValue) / (double)maxBucket * plot.Height)
+                ? (float)(Math.Min(bar.CachedInputTokens, totalValue) / (double)maxBucket * plot.Height)
                 : 0f;
             var totalRect = new RectangleF(x, plot.Bottom - totalHeight, barWidth, totalHeight);
             var cachedRect = new RectangleF(x, plot.Bottom - cachedHeight, barWidth, cachedHeight);
@@ -156,6 +158,46 @@ internal sealed class TokenTimelineControl : Control
             plot.Right - totalLabelSize.Width - 4,
             plot.Top + 2);
 
+    }
+
+    private IEnumerable<TimelineBar> BuildBars()
+    {
+        if (fixedBucketInterval is null)
+        {
+            return rows
+                .Select(row => new TimelineBar(row.StartLocal, row.TotalTokens, row.CachedInputTokens))
+                .ToList();
+        }
+
+        var interval = fixedBucketInterval.Value;
+        var spanTicks = Math.Max(interval.Ticks, (endLocal - startLocal).Ticks);
+        var bucketCount = Math.Max(1, (int)Math.Ceiling(spanTicks / (double)interval.Ticks));
+        var values = new TimelineBar[bucketCount];
+        for (var i = 0; i < bucketCount; i++)
+        {
+            values[i] = new TimelineBar(startLocal.AddTicks(interval.Ticks * i), 0, 0);
+        }
+
+        foreach (var row in rows)
+        {
+            var offsetTicks = Math.Clamp((row.StartLocal - startLocal).Ticks, 0, spanTicks - 1);
+            var index = (int)(offsetTicks / interval.Ticks);
+            index = Math.Clamp(index, 0, bucketCount - 1);
+            values[index] = values[index] with
+            {
+                TotalTokens = values[index].TotalTokens + row.TotalTokens,
+                CachedInputTokens = values[index].CachedInputTokens + row.CachedInputTokens
+            };
+        }
+
+        return values;
+    }
+
+    private float XForTime(Rectangle plot, DateTimeOffset value)
+    {
+        var spanTicks = Math.Max(1, (endLocal - startLocal).Ticks);
+        var ratio = Math.Clamp((value - startLocal).Ticks / (double)spanTicks, 0d, 1d);
+        return plot.Left + (float)(ratio * plot.Width);
     }
 
     private void DrawTimeTicks(
@@ -205,7 +247,7 @@ internal sealed class TokenTimelineControl : Control
 
         if (span.TotalDays <= 8)
         {
-            return TimeSpan.FromDays(1);
+            return width >= 900 ? TimeSpan.FromHours(12) : TimeSpan.FromDays(1);
         }
 
         if (span.TotalDays <= 35)
@@ -251,9 +293,14 @@ internal sealed class TokenTimelineControl : Control
             return hour < 12 ? $"{hour} AM" : $"{hour - 12} PM";
         }
 
-        return span.TotalDays <= 35
-            ? value.ToString("M/d")
-            : value.ToString("M/d");
+        if (span.TotalDays <= 8)
+        {
+            return value.Hour < 12
+                ? $"{value:M/d} AM"
+                : $"{value:M/d} PM";
+        }
+
+        return value.ToString("M/d");
     }
 
     private static int GetBucketCount(int width, TimeSpan span)
@@ -284,4 +331,9 @@ internal sealed class TokenTimelineControl : Control
 
         return value.ToString("N0");
     }
+
+    private sealed record TimelineBar(
+        DateTimeOffset StartLocal,
+        long TotalTokens,
+        long CachedInputTokens);
 }

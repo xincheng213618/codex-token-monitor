@@ -3,6 +3,8 @@ namespace CodexTokenMonitor;
 public partial class Form1 : Form
 {
     private const int BackgroundCacheIntervalMs = 120_000;
+    private const int CostCardWidth = 218;
+    private const int CostCardRightMargin = 14;
     private const decimal MinimumStableQuotaDeltaPercent = 3m;
     private static readonly TimeSpan MultiDayBreakdownInterval = TimeSpan.FromMinutes(10);
     private static readonly DateTimeOffset BackgroundCacheStart = new(
@@ -1400,8 +1402,7 @@ public partial class Form1 : Form
         UsageSource source)
     {
         Text = $"{SourceTitle(source)} Token 额度监控器 - {range.Title}";
-        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(SourceKey(source), count: 0);
-        var tablePresets = displayPresets.ToList();
+        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(SourceKey(source), count: 0).ToList();
         priceLabel.Text = "";
         totalValue.Text = FormatTokenMillions(summary.TotalTokens);
         periodValue.Text = $"{summary.StartLocal:yyyy-MM-dd HH:mm} - {summary.EndLocal:yyyy-MM-dd HH:mm:ss}  GMT+8";
@@ -1415,6 +1416,9 @@ public partial class Form1 : Form
         lastEventValue.Text = FormatDuration(codingTime);
 
         ApplyCostCards(displayPresets, summary);
+        var tablePresets = displayPresets
+            .Take(GetVisibleCostCardCount(displayPresets.Count))
+            .ToList();
         currentQuotaSnapshots = source == UsageSource.Codex
             ? quotaSnapshots
             : Array.Empty<CodexQuotaSnapshot>();
@@ -1435,7 +1439,10 @@ public partial class Form1 : Form
         timelineChart.Visible = showTimeline;
         if (showTimeline)
         {
-            timelineChart.SetData(range.Start, range.End, breakdownRows);
+            var chartInterval = range.Mode is RangeMode.Week or RangeMode.Cycle
+                ? MultiDayBreakdownInterval
+                : (TimeSpan?)null;
+            timelineChart.SetData(range.Start, range.End, breakdownRows, chartInterval);
         }
         else
         {
@@ -1483,12 +1490,12 @@ public partial class Form1 : Form
         var profile = preset.ToProfile();
         var panel = new TableLayoutPanel
         {
-            Width = 218,
+            Width = CostCardWidth,
             Height = 118,
             ColumnCount = 1,
             RowCount = 3,
             Padding = new Padding(14, 6, 10, 4),
-            Margin = new Padding(0, 0, 14, 0),
+            Margin = new Padding(0, 0, CostCardRightMargin, 0),
             BackColor = Color.Transparent
         };
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1531,6 +1538,25 @@ public partial class Form1 : Form
         }, 0, 2);
 
         return panel;
+    }
+
+    private int GetVisibleCostCardCount(int presetCount)
+    {
+        if (presetCount <= 0)
+        {
+            return 0;
+        }
+
+        var availableWidth = costCardsFlow.ClientSize.Width > 0
+            ? costCardsFlow.ClientSize.Width
+            : costCardsFlow.Width;
+        if (availableWidth <= 0)
+        {
+            return Math.Min(3, presetCount);
+        }
+
+        var visible = (availableWidth + CostCardRightMargin) / (CostCardWidth + CostCardRightMargin);
+        return Math.Clamp(visible, 1, presetCount);
     }
 
     private static string SourceKey(UsageSource source)
