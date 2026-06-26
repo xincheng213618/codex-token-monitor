@@ -39,6 +39,8 @@ dotnet build .\CodexTokenMonitor.slnx -c Release
 
 ## 发布单文件 exe
 
+便携版会把 .NET runtime 一起打进 exe，体积较大，但复制到没装 .NET 的 Windows 机器也能直接运行：
+
 ```powershell
 dotnet publish .\src\CodexTokenMonitor\CodexTokenMonitor.csproj -c Release -o .\outputs\CodexTokenMonitor
 ```
@@ -47,6 +49,18 @@ dotnet publish .\src\CodexTokenMonitor\CodexTokenMonitor.csproj -c Release -o .\
 
 ```text
 outputs/CodexTokenMonitor/CodexTokenMonitor.exe
+```
+
+轻量版只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime，exe 体积会小很多：
+
+```powershell
+dotnet publish .\src\CodexTokenMonitor\CodexTokenMonitor.csproj -c Lite -o .\outputs\CodexTokenMonitor-lite
+```
+
+生成文件：
+
+```text
+outputs/CodexTokenMonitor-lite/CodexTokenMonitor.exe
 ```
 
 ## 本地数据位置
