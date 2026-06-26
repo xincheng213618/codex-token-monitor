@@ -27,6 +27,12 @@ public partial class Form1 : Form
         ZCode
     }
 
+    private enum QuotaWindowDisplayMode
+    {
+        FiveHour,
+        Week
+    }
+
     private readonly Label titleLabel = new();
     private readonly TabControl sourceTabs = new();
     private readonly Button planSettingsButton = new();
@@ -461,7 +467,7 @@ public partial class Form1 : Form
         quotaPanel.Controls.Add(layout);
 
         layout.Controls.Add(BuildQuotaCard("5h", quota5hValue, quota5hDetail), 0, 0);
-        layout.Controls.Add(BuildQuotaCard("1周", quotaWeekValue, quotaWeekDetail), 1, 0);
+        layout.Controls.Add(BuildQuotaCard("周", quotaWeekValue, quotaWeekDetail), 1, 0);
         layout.Controls.Add(BuildQuotaCard("套餐", planSpendValue, planSpendDetail), 2, 0);
         layout.Controls.Add(BuildQuotaCalculationCard(), 3, 0);
         return quotaPanel;
@@ -1415,15 +1421,15 @@ public partial class Form1 : Form
         if (!show || quota is null)
         {
             quota5hValue.Text = "-";
-            quota5hDetail.Text = "-";
+            quota5hDetail.Text = "";
             quotaWeekValue.Text = "-";
-            quotaWeekDetail.Text = "-";
+            quotaWeekDetail.Text = "";
             quotaLimitValue.Text = "";
             return;
         }
 
-        ApplyQuotaWindow(quota5hValue, quota5hDetail, quota.FiveHour);
-        ApplyQuotaWindow(quotaWeekValue, quotaWeekDetail, quota.Week);
+        ApplyQuotaWindow(quota5hValue, quota5hDetail, quota.FiveHour, QuotaWindowDisplayMode.FiveHour);
+        ApplyQuotaWindow(quotaWeekValue, quotaWeekDetail, quota.Week, QuotaWindowDisplayMode.Week);
         quotaLimitValue.Text = "";
     }
 
@@ -1449,7 +1455,8 @@ public partial class Form1 : Form
     private static void ApplyQuotaWindow(
         Label valueLabel,
         Label detailLabel,
-        CodexQuotaWindowEstimate? window)
+        CodexQuotaWindowEstimate? window,
+        QuotaWindowDisplayMode mode)
     {
         if (window is null)
         {
@@ -1460,7 +1467,10 @@ public partial class Form1 : Form
 
         var remainingPercent = Math.Max(0m, 100m - window.UsedPercent);
         valueLabel.Text = $"{remainingPercent:N0}%";
-        detailLabel.Text = "";
+        var resetAt = window.ResetAtLocal ?? window.WindowEndLocal;
+        detailLabel.Text = mode == QuotaWindowDisplayMode.FiveHour
+            ? $"刷新 {resetAt:MM-dd HH:mm} · 已花 {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
+            : $"刷新 {resetAt:MM-dd HH:mm} · 总额 {FormatQuotaLimit(window)}";
     }
 
     private void UpdateQuotaLimitCalculation()
