@@ -475,9 +475,9 @@ public partial class Form1 : Form
     private Control BuildQuotaPanel()
     {
         quotaPanel.Dock = DockStyle.Top;
-        quotaPanel.Height = 86;
+        quotaPanel.Height = 104;
         quotaPanel.Margin = new Padding(0, 0, 0, 12);
-        quotaPanel.Padding = new Padding(14, 10, 14, 10);
+        quotaPanel.Padding = new Padding(14, 8, 14, 8);
         quotaPanel.BackColor = Color.White;
         quotaPanel.Visible = false;
 
@@ -511,7 +511,7 @@ public partial class Form1 : Form
             Padding = new Padding(8, 0, 8, 0),
             BackColor = Color.Transparent
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         valueLabel.Dock = DockStyle.Fill;
@@ -528,7 +528,7 @@ public partial class Form1 : Form
         detailLabel.AutoSize = false;
         detailLabel.Text = "-";
         detailLabel.TextAlign = ContentAlignment.MiddleLeft;
-        detailLabel.Font = new Font("Segoe UI", 16f, FontStyle.Bold);
+        detailLabel.Font = new Font("Segoe UI", 14.5f, FontStyle.Bold);
         detailLabel.ForeColor = Color.FromArgb(29, 40, 55);
         detailLabel.Margin = new Padding(0);
         detailLabel.AutoEllipsis = true;
@@ -547,7 +547,7 @@ public partial class Form1 : Form
             Padding = new Padding(8, 0, 0, 0),
             BackColor = Color.Transparent
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var titleLabel = new Label
@@ -566,7 +566,7 @@ public partial class Form1 : Form
         quotaCalculateButton.Dock = DockStyle.Left;
         quotaCalculateButton.Width = 86;
         quotaCalculateButton.Height = 30;
-        quotaCalculateButton.Margin = new Padding(0, 6, 0, 0);
+        quotaCalculateButton.Margin = new Padding(0, 4, 0, 0);
         quotaCalculateButton.BackColor = Color.FromArgb(21, 128, 106);
         quotaCalculateButton.ForeColor = Color.White;
         quotaCalculateButton.FlatStyle = FlatStyle.Flat;
@@ -1642,7 +1642,7 @@ public partial class Form1 : Form
         var effectiveQuota = quota ?? currentQuotaEstimate;
         currentQuotaEstimate = effectiveQuota;
         quotaPanel.Visible = show;
-        quotaPanel.Height = 86;
+        quotaPanel.Height = 104;
         quotaPanel.Margin = new Padding(0, 0, 0, 12);
         quotaCalculateButton.Enabled = effectiveQuota is not null;
         ApplyCurrentPlanSummary();
