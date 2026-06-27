@@ -165,11 +165,11 @@ public partial class Form1 : Form
     {
         Text = "Codex Token 额度监控器";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1000, 900);
+        MinimumSize = new Size(1000, 1000);
         var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 960);
         Size = new Size(
             Math.Min(1180, Math.Max(1000, workingArea.Width - 80)),
-            Math.Min(1100, Math.Max(1020, workingArea.Height - 40)));
+            Math.Min(1200, Math.Max(1120, workingArea.Height - 40)));
         BackColor = Color.FromArgb(246, 248, 251);
         Font = new Font("Microsoft YaHei UI", 9.5f);
 
@@ -344,9 +344,9 @@ public partial class Form1 : Form
     private Control BuildSummaryPanel()
     {
         var summaryPanel = CreatePanel();
-        summaryPanel.Padding = new Padding(22, 12, 22, 12);
+        summaryPanel.Padding = new Padding(22, 8, 22, 8);
         summaryPanel.Margin = new Padding(0, 0, 0, 12);
-        summaryPanel.Height = 150;
+        summaryPanel.Height = 126;
         summaryPanel.Dock = DockStyle.Top;
 
         var layout = new TableLayoutPanel
@@ -367,7 +367,7 @@ public partial class Form1 : Form
             RowCount = 3,
             BackColor = Color.Transparent
         };
-        totalLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        totalLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         totalLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         totalLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.Controls.Add(totalLayout, 0, 0);
@@ -376,7 +376,7 @@ public partial class Form1 : Form
         totalValue.AutoSize = false;
         totalValue.Dock = DockStyle.Fill;
         totalValue.Text = "-";
-        totalValue.Font = new Font("Segoe UI", 25f, FontStyle.Bold);
+        totalValue.Font = new Font("Segoe UI", 23f, FontStyle.Bold);
         totalValue.ForeColor = Color.FromArgb(18, 114, 97);
         totalValue.TextAlign = ContentAlignment.MiddleLeft;
         totalValue.Margin = new Padding(0);
@@ -475,7 +475,7 @@ public partial class Form1 : Form
     private Control BuildQuotaPanel()
     {
         quotaPanel.Dock = DockStyle.Top;
-        quotaPanel.Height = 116;
+        quotaPanel.Height = 86;
         quotaPanel.Margin = new Padding(0, 0, 0, 12);
         quotaPanel.Padding = new Padding(14, 10, 14, 10);
         quotaPanel.BackColor = Color.White;
@@ -496,7 +496,7 @@ public partial class Form1 : Form
 
         layout.Controls.Add(BuildQuotaCard("5h", quota5hValue, quota5hDetail), 0, 0);
         layout.Controls.Add(BuildQuotaCard("周", quotaWeekValue, quotaWeekDetail), 1, 0);
-        layout.Controls.Add(BuildQuotaCard("套餐", planSpendValue, planSpendDetail), 2, 0);
+        layout.Controls.Add(BuildQuotaCard("Pro 20x", planSpendValue, planSpendDetail), 2, 0);
         layout.Controls.Add(BuildQuotaCalculationCard(), 3, 0);
         return quotaPanel;
     }
@@ -507,44 +507,32 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 2,
             Padding = new Padding(8, 0, 8, 0),
             BackColor = Color.Transparent
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-
-        var titleLabel = new Label
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = false,
-            Text = title,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Microsoft YaHei UI", 9.2f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(90, 103, 119),
-            Margin = new Padding(0)
-        };
-        layout.Controls.Add(titleLabel, 0, 0);
 
         valueLabel.Dock = DockStyle.Fill;
         valueLabel.AutoSize = false;
-        valueLabel.Text = "-";
+        valueLabel.Text = title;
         valueLabel.TextAlign = ContentAlignment.MiddleLeft;
-        valueLabel.Font = new Font("Segoe UI", 16f, FontStyle.Bold);
-        valueLabel.ForeColor = Color.FromArgb(29, 40, 55);
+        valueLabel.Font = new Font("Microsoft YaHei UI", 9.4f, FontStyle.Bold);
+        valueLabel.ForeColor = Color.FromArgb(90, 103, 119);
         valueLabel.Margin = new Padding(0);
-        layout.Controls.Add(valueLabel, 0, 1);
+        valueLabel.AutoEllipsis = true;
+        layout.Controls.Add(valueLabel, 0, 0);
 
         detailLabel.Dock = DockStyle.Fill;
         detailLabel.AutoSize = false;
         detailLabel.Text = "-";
         detailLabel.TextAlign = ContentAlignment.MiddleLeft;
-        detailLabel.Font = new Font("Microsoft YaHei UI", 8.6f);
-        detailLabel.ForeColor = Color.FromArgb(87, 99, 116);
+        detailLabel.Font = new Font("Segoe UI", 16f, FontStyle.Bold);
+        detailLabel.ForeColor = Color.FromArgb(29, 40, 55);
         detailLabel.Margin = new Padding(0);
         detailLabel.AutoEllipsis = true;
-        layout.Controls.Add(detailLabel, 0, 2);
+        layout.Controls.Add(detailLabel, 0, 1);
 
         return layout;
     }
@@ -555,12 +543,11 @@ public partial class Form1 : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 2,
             Padding = new Padding(8, 0, 0, 0),
             BackColor = Color.Transparent
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var titleLabel = new Label
@@ -579,22 +566,14 @@ public partial class Form1 : Form
         quotaCalculateButton.Dock = DockStyle.Left;
         quotaCalculateButton.Width = 86;
         quotaCalculateButton.Height = 30;
-        quotaCalculateButton.Margin = new Padding(0, 2, 0, 2);
+        quotaCalculateButton.Margin = new Padding(0, 6, 0, 0);
         quotaCalculateButton.BackColor = Color.FromArgb(21, 128, 106);
         quotaCalculateButton.ForeColor = Color.White;
         quotaCalculateButton.FlatStyle = FlatStyle.Flat;
         quotaCalculateButton.FlatAppearance.BorderSize = 0;
         layout.Controls.Add(quotaCalculateButton, 0, 1);
 
-        quotaLimitValue.Dock = DockStyle.Fill;
-        quotaLimitValue.AutoSize = false;
         quotaLimitValue.Text = "";
-        quotaLimitValue.TextAlign = ContentAlignment.TopLeft;
-        quotaLimitValue.Font = new Font("Microsoft YaHei UI", 8.6f);
-        quotaLimitValue.ForeColor = Color.FromArgb(87, 99, 116);
-        quotaLimitValue.Margin = new Padding(0, 2, 0, 0);
-        quotaLimitValue.AutoEllipsis = true;
-        layout.Controls.Add(quotaLimitValue, 0, 2);
 
         return layout;
     }
@@ -1651,24 +1630,34 @@ public partial class Form1 : Form
     private void ApplyQuotaSummary(UsageSource source, CodexQuotaEstimate? quota)
     {
         var show = source == UsageSource.Codex;
-        currentQuotaEstimate = show ? quota : null;
-        quotaPanel.Visible = show;
-        quotaPanel.Height = show ? 116 : 0;
-        quotaPanel.Margin = show ? new Padding(0, 0, 0, 12) : new Padding(0);
-        quotaCalculateButton.Enabled = show && quota is not null;
-        ApplyCurrentPlanSummary();
-        if (!show || quota is null)
+        if (!show)
         {
-            quota5hValue.Text = "-";
+            quotaPanel.Visible = false;
+            quotaPanel.Height = 0;
+            quotaPanel.Margin = new Padding(0);
+            quotaCalculateButton.Enabled = false;
+            return;
+        }
+
+        var effectiveQuota = quota ?? currentQuotaEstimate;
+        currentQuotaEstimate = effectiveQuota;
+        quotaPanel.Visible = show;
+        quotaPanel.Height = 86;
+        quotaPanel.Margin = new Padding(0, 0, 0, 12);
+        quotaCalculateButton.Enabled = effectiveQuota is not null;
+        ApplyCurrentPlanSummary();
+        if (effectiveQuota is null)
+        {
+            quota5hValue.Text = "5h";
             quota5hDetail.Text = "";
-            quotaWeekValue.Text = "-";
+            quotaWeekValue.Text = "周";
             quotaWeekDetail.Text = "";
             quotaLimitValue.Text = "";
             return;
         }
 
-        ApplyQuotaWindow(quota5hValue, quota5hDetail, quota.FiveHour, QuotaWindowDisplayMode.FiveHour);
-        ApplyQuotaWindow(quotaWeekValue, quotaWeekDetail, quota.Week, QuotaWindowDisplayMode.Week);
+        ApplyQuotaWindow(quota5hValue, quota5hDetail, effectiveQuota.FiveHour, QuotaWindowDisplayMode.FiveHour);
+        ApplyQuotaWindow(quotaWeekValue, quotaWeekDetail, effectiveQuota.Week, QuotaWindowDisplayMode.Week);
         quotaLimitValue.Text = "";
     }
 
@@ -1687,8 +1676,8 @@ public partial class Form1 : Form
         }
 
         var amount = active.Sum(item => item.AmountCny);
-        planSpendValue.Text = FormatCny(amount);
-        planSpendDetail.Text = string.Join(" / ", active.Select(item => item.PlanName).Distinct());
+        planSpendValue.Text = string.Join(" / ", active.Select(item => item.PlanName).Distinct());
+        planSpendDetail.Text = FormatCny(amount);
     }
 
     private static void ApplyQuotaWindow(
@@ -1699,17 +1688,20 @@ public partial class Form1 : Form
     {
         if (window is null)
         {
-            valueLabel.Text = "-";
+            valueLabel.Text = mode == QuotaWindowDisplayMode.FiveHour ? "5h" : "周";
             detailLabel.Text = "";
             return;
         }
 
         var remainingPercent = Math.Max(0m, 100m - window.UsedPercent);
-        valueLabel.Text = $"{remainingPercent:N0}%";
         var resetAt = window.ResetAtLocal ?? window.WindowEndLocal;
-        detailLabel.Text = mode == QuotaWindowDisplayMode.FiveHour
-            ? $"{resetAt:HH:mm} · {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
-            : $"{resetAt:MM-dd HH:mm} · {FormatQuotaLimit(window)}";
+        valueLabel.Text = mode == QuotaWindowDisplayMode.FiveHour
+            ? $"5h {resetAt:HH:mm}"
+            : $"周 {resetAt:MM-dd HH:mm}";
+        var moneyText = mode == QuotaWindowDisplayMode.FiveHour
+            ? FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)
+            : FormatQuotaLimit(window);
+        detailLabel.Text = $"{remainingPercent:N0}% ≈ {moneyText}";
     }
 
     private void UpdateQuotaLimitCalculation()
@@ -2208,7 +2200,7 @@ public partial class Form1 : Form
             return null;
         }
 
-        return includeLiveToday ? CodexUsageReader.ReadQuotaEstimate() : cachedQuota;
+        return includeLiveToday ? CodexUsageReader.ReadQuotaEstimate() ?? cachedQuota : cachedQuota;
     }
 
     private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsForRefresh(
