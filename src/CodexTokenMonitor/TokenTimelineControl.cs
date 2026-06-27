@@ -108,10 +108,6 @@ internal sealed class TokenTimelineControl : UserControl
         cumulativePlot.Axes.YAxis = plot.Axes.Right;
         cumulativePlot.LineWidth = 2.2f;
         cumulativePlot.MarkerSize = 0;
-        cumulativePlot.FillY = true;
-        cumulativePlot.FillYValue = 0;
-        cumulativePlot.FillYBelowColor = PlotColor.FromSDColor(DrawingColor.FromArgb(26, 241, 115, 55));
-
         var bottom = plot.Axes.DateTimeTicksBottom();
         bottom.TickLabelStyle.FontName = "Segoe UI";
         bottom.TickLabelStyle.FontSize = 11;
