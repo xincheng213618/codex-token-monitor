@@ -1237,15 +1237,9 @@ public partial class Form1 : Form
                     }
 
                     SetStatus($"缓存 {completed + 1}/{total} 额度 {day:MM-dd}");
-                    await usageQueryGate.WaitAsync(token);
-                    try
-                    {
-                        await Task.Run(() => CodexUsageReader.WarmQuotaSnapshotDay(day), token);
-                    }
-                    finally
-                    {
-                        usageQueryGate.Release();
-                    }
+                    // Background warming only touches historical data. Let it avoid the foreground gate so
+                    // switching to today can use cached/incremental reads immediately.
+                    await Task.Run(() => CodexUsageReader.WarmQuotaSnapshotDay(day), token);
 
                     completed++;
                     await Task.Delay(20, token);
@@ -1265,15 +1259,7 @@ public partial class Form1 : Form
                     }
 
                     SetStatus($"缓存 {completed + 1}/{total} {SourceTitle(source)} {day:MM-dd}");
-                    await usageQueryGate.WaitAsync(token);
-                    try
-                    {
-                        await Task.Run(() => WarmSourceDay(source, day), token);
-                    }
-                    finally
-                    {
-                        usageQueryGate.Release();
-                    }
+                    await Task.Run(() => WarmSourceDay(source, day), token);
 
                     completed++;
                     await Task.Delay(20, token);

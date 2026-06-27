@@ -1301,13 +1301,13 @@ internal static class CodexUsageReader
     public static CodexQuotaEstimate? ReadQuotaEstimate()
     {
         var now = DateTimeOffset.UtcNow.ToOffset(BeijingOffset);
-        var snapshots = ReadLatestRateLimitSnapshots(now.AddDays(-8), now.AddMinutes(5));
-        foreach (var item in snapshots)
-        {
-            AppendQuotaHistoryIfNew(item);
-        }
-
-        var snapshot = SelectDisplayedQuotaSnapshot(snapshots);
+        var liveEnd = now.AddMinutes(5);
+        var snapshot = ReadQuotaSnapshotsCached(StartOfDay(now), liveEnd)
+            .OrderByDescending(item => item.SnapshotLocal)
+            .FirstOrDefault()
+            ?? ReadCachedQuotaSnapshots(now.AddDays(-8), liveEnd)
+            .OrderByDescending(item => item.SnapshotLocal)
+            .FirstOrDefault();
         if (snapshot is null)
         {
             return null;
@@ -1410,7 +1410,13 @@ internal static class CodexUsageReader
         DateTimeOffset startLocal,
         DateTimeOffset endLocal)
     {
-        return MergeQuotaSnapshots(ReadRateLimitSnapshots(startLocal, endLocal)
+        var liveSnapshots = ReadRateLimitSnapshots(startLocal, endLocal);
+        foreach (var item in liveSnapshots)
+        {
+            AppendQuotaHistoryIfNew(item);
+        }
+
+        return MergeQuotaSnapshots(liveSnapshots
                 .Concat(ReadQuotaHistorySnapshots(startLocal, endLocal))
                 .Where(IsDisplayedQuotaSnapshot)
                 .Select(ToCodexQuotaSnapshot))
@@ -1433,6 +1439,32 @@ internal static class CodexUsageReader
             snapshot.LimitName,
             BuildQuotaWindowEstimate("5h", snapshot.Primary, now),
             BuildQuotaWindowEstimate("1周", snapshot.Secondary, now));
+    }
+
+    private static CodexQuotaEstimate BuildQuotaEstimate(CodexQuotaSnapshot snapshot, DateTimeOffset now)
+    {
+        return new CodexQuotaEstimate(
+            snapshot.SnapshotLocal,
+            snapshot.LimitId,
+            snapshot.LimitName,
+            BuildQuotaWindowEstimate(
+                "5h",
+                ToRateLimitWindow(snapshot.FiveHourUsedPercent, 5 * 60, snapshot.FiveHourResetAtLocal),
+                now),
+            BuildQuotaWindowEstimate(
+                "1周",
+                ToRateLimitWindow(snapshot.WeekUsedPercent, 7 * 24 * 60, snapshot.WeekResetAtLocal),
+                now));
+    }
+
+    private static RateLimitWindowSnapshot? ToRateLimitWindow(
+        decimal? usedPercent,
+        int windowMinutes,
+        DateTimeOffset? resetAtLocal)
+    {
+        return usedPercent is null
+            ? null
+            : new RateLimitWindowSnapshot(usedPercent.Value, windowMinutes, resetAtLocal);
     }
 
     private static CodexQuotaWindowEstimate? BuildQuotaWindowEstimate(
