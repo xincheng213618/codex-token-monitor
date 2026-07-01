@@ -289,25 +289,24 @@
             </StackPanel>
         </Border>
 
-        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="18,8" Height="96" Margin="0,0,0,8">
+        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="22,8" Height="126" Margin="0,0,0,8">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="2*" />
-                    <ColumnDefinition Width="5*" />
+                    <ColumnDefinition Width="430" />
+                    <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
-                    <TextBlock Foreground="#5A6777" FontWeight="SemiBold" Text="总 Token" />
-                    <TextBlock x:Name="TotalValue" FontSize="34" FontWeight="Bold" Foreground="#18212F" Text="-" />
+                    <TextBlock Foreground="#5A6777" FontWeight="SemiBold" Text="TOTAL TOKENS" />
+                    <TextBlock x:Name="TotalValue" FontSize="34" FontWeight="Bold" Foreground="#127261" Text="-" />
                     <TextBlock x:Name="PeriodValue" Foreground="#657282" Text="-" TextWrapping="Wrap" />
                 </StackPanel>
-                <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled">
-                    <ItemsControl x:Name="CostCardsPanel">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <StackPanel Orientation="Horizontal" />
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                    </ItemsControl>
+                <ScrollViewer x:Name="CostCardsViewport"
+                              Grid.Column="1"
+                              HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollBarVisibility="Disabled"
+                              ClipToBounds="True"
+                              SizeChanged="CostCardsViewport_SizeChanged">
+                    <StackPanel x:Name="CostCardsPanel" Orientation="Horizontal" />
                 </ScrollViewer>
             </Grid>
         </Border>
@@ -347,16 +346,6 @@
                 </Grid.RowDefinitions>
                 <Grid x:Name="TimelineHost" Grid.Row="0" Margin="0,0,0,12" Visibility="Collapsed">
                     <local:WpfTokenTimelineControl x:Name="Timeline" />
-                    <Button x:Name="TimelineResetButton"
-                            Style="{StaticResource ToolButton}"
-                            Content="重置视图"
-                            MinHeight="28"
-                            Padding="10,0"
-                            Margin="0,8,10,0"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Top"
-                            ToolTip="恢复完整时间范围"
-                            Click="TimelineResetButton_Click" />
                 </Grid>
                 <DataGrid x:Name="BreakdownGrid" Grid.Row="1" />
             </Grid>

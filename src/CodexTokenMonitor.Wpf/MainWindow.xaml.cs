@@ -14,6 +14,8 @@ namespace CodexTokenMonitor;
 
 public partial class MainWindow : Window
 {
+    private const double CostCardWidth = 218;
+    private const double CostCardRightMargin = 14;
     private static readonly TimeSpan DayTimelineInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan MultiDayBreakdownInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MonthTimelineInterval = TimeSpan.FromHours(1);
@@ -34,6 +36,7 @@ public partial class MainWindow : Window
     private bool isRefreshing;
     private bool isQuotaRefreshing;
     private bool isClosed;
+    private int lastVisibleCostColumnCount = -1;
 
     public MainWindow()
     {
@@ -82,11 +85,6 @@ public partial class MainWindow : Window
         await ClearCacheAsync();
     }
 
-    private void TimelineResetButton_Click(object sender, RoutedEventArgs e)
-    {
-        Timeline.ResetView();
-    }
-
     private async void WeekPickerButton_Click(object sender, RoutedEventArgs e)
     {
         await OpenWeekPickerAsync();
@@ -95,6 +93,16 @@ public partial class MainWindow : Window
     private async void RefreshDayButton_Click(object sender, RoutedEventArgs e)
     {
         await RefreshSelectedDayFromCacheAsync();
+    }
+
+    private void CostCardsViewport_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (initializing)
+        {
+            return;
+        }
+
+        ReflowCostColumnsForCurrentDisplay();
     }
 
     private async void PreviousButton_Click(object sender, RoutedEventArgs e)
@@ -631,7 +639,7 @@ public partial class MainWindow : Window
         CacheRatioValue.Text = "-";
         EventsValue.Text = "-";
         CodingTimeValue.Text = "-";
-        CostCardsPanel.Items.Clear();
+        CostCardsPanel.Children.Clear();
         SetTimelineVisible(false);
         ApplyQuotaSummary(module, module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null);
         ApplyBreakdownRows(GetSelectedRange(), Array.Empty<TokenUsageBucket>(), Array.Empty<CodexQuotaSnapshot>(), module.Source, PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList());
@@ -639,44 +647,83 @@ public partial class MainWindow : Window
 
     private void ApplyCostCards(IReadOnlyList<PricePreset> presets, TokenUsageSummary summary)
     {
-        CostCardsPanel.Items.Clear();
-        foreach (var preset in presets.Take(6))
+        CostCardsPanel.Children.Clear();
+        foreach (var preset in presets.Take(GetVisibleCostColumnCount(presets.Count)))
         {
-            var profile = preset.ToProfile();
-            CostCardsPanel.Items.Add(new StackPanel
-            {
-                Width = 185,
-                Height = 96,
-                Margin = new Thickness(0, 0, 18, 0),
-                Children =
-                {
-                    new TextBlock
-                    {
-                        Text = string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
-                        Foreground = new SolidColorBrush(MediaColor.FromRgb(92, 105, 122)),
-                        FontWeight = FontWeights.SemiBold,
-                        FontSize = 12,
-                        TextTrimming = TextTrimming.CharacterEllipsis
-                    },
-                    new TextBlock
-                    {
-                        Text = preset.Model,
-                        Foreground = new SolidColorBrush(MediaColor.FromRgb(101, 114, 130)),
-                        TextTrimming = TextTrimming.CharacterEllipsis,
-                        FontSize = 12,
-                        Margin = new Thickness(0, 2, 0, 10)
-                    },
-                    new TextBlock
-                    {
-                        Text = FormatCost(summary.EstimateCost(profile), profile),
-                        Foreground = new SolidColorBrush(MediaColor.FromRgb(31, 41, 55)),
-                        FontSize = 24,
-                        FontWeight = FontWeights.Bold,
-                        TextTrimming = TextTrimming.CharacterEllipsis
-                    }
-                }
-            });
+            CostCardsPanel.Children.Add(CreateCostCard(preset, summary));
         }
+    }
+
+    private void ReflowCostColumnsForCurrentDisplay()
+    {
+        var module = CurrentModule();
+        if (!module.TryGetDisplay(out var range, out var result))
+        {
+            return;
+        }
+
+        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList();
+        var visibleCostColumnCount = GetVisibleCostColumnCount(displayPresets.Count);
+        if (visibleCostColumnCount == lastVisibleCostColumnCount)
+        {
+            return;
+        }
+
+        ApplyCostCards(displayPresets, result.Summary);
+        ApplyBreakdownRows(range, result.BreakdownRows, result.QuotaSnapshots, module.Source, displayPresets);
+    }
+
+    private static UIElement CreateCostCard(PricePreset preset, TokenUsageSummary summary)
+    {
+        var profile = preset.ToProfile();
+        var card = new Grid();
+        card.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        card.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        card.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        var title = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
+            Foreground = new SolidColorBrush(MediaColor.FromRgb(92, 105, 122)),
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 12,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Grid.SetRow(title, 0);
+        card.Children.Add(title);
+
+        var subtitle = new TextBlock
+        {
+            Text = preset.Model,
+            Foreground = new SolidColorBrush(MediaColor.FromRgb(101, 114, 130)),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            FontSize = 12,
+            Margin = new Thickness(0, 2, 0, 4)
+        };
+        Grid.SetRow(subtitle, 1);
+        card.Children.Add(subtitle);
+
+        var value = new TextBlock
+        {
+            Text = FormatCost(summary.EstimateCost(profile), profile),
+            Foreground = new SolidColorBrush(MediaColor.FromRgb(31, 41, 55)),
+            FontSize = 24,
+            FontWeight = FontWeights.Bold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetRow(value, 2);
+        card.Children.Add(value);
+
+        return new Border
+        {
+            Width = CostCardWidth,
+            Height = 110,
+            Padding = new Thickness(14, 6, 10, 4),
+            Margin = new Thickness(0, 0, CostCardRightMargin, 0),
+            Background = System.Windows.Media.Brushes.Transparent,
+            Child = card
+        };
     }
 
     private void ApplyBreakdownRows(
@@ -687,6 +734,7 @@ public partial class MainWindow : Window
         IReadOnlyList<PricePreset> displayPresets)
     {
         var tablePresets = displayPresets.Take(GetVisibleCostColumnCount(displayPresets.Count)).ToList();
+        lastVisibleCostColumnCount = tablePresets.Count;
         var eventBreakdown = UsesEventBreakdown(range, buckets);
         var rows = new List<BreakdownRow>();
         foreach (var bucket in buckets)
@@ -1430,9 +1478,21 @@ public partial class MainWindow : Window
         return text.Length <= 18 ? text : $"{text[..16]}...";
     }
 
-    private static int GetVisibleCostColumnCount(int presetCount)
+    private int GetVisibleCostColumnCount(int presetCount)
     {
-        return Math.Clamp(presetCount, 0, 3);
+        if (presetCount <= 0)
+        {
+            return 0;
+        }
+
+        var availableWidth = CostCardsViewport.ActualWidth;
+        if (double.IsNaN(availableWidth) || availableWidth <= 0)
+        {
+            return Math.Min(3, presetCount);
+        }
+
+        var visible = (int)Math.Floor((availableWidth + CostCardRightMargin) / (CostCardWidth + CostCardRightMargin));
+        return Math.Clamp(visible, 1, presetCount);
     }
 
     private static string FormatTokenMillions(long value)
