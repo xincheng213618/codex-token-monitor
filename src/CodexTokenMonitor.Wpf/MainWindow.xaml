@@ -4,10 +4,10 @@
         xmlns:local="clr-namespace:CodexTokenMonitor"
         xmlns:xctk="http://schemas.xceed.com/wpf/xaml/toolkit"
         Title="Codex Token 额度监控器"
-        MinWidth="1100"
-        MinHeight="820"
+        MinWidth="1060"
+        MinHeight="720"
         Width="1380"
-        Height="980"
+        Height="900"
         WindowStartupLocation="CenterScreen"
         Background="#F6F8FB"
         FontFamily="Microsoft YaHei UI">
@@ -80,6 +80,7 @@
             <Setter Property="Background" Value="#E8EEF5" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="3" />
+            <Setter Property="SelectedIndex" Value="0" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabControl">
@@ -87,6 +88,7 @@
                                 CornerRadius="6"
                                 Padding="{TemplateBinding Padding}">
                             <TabPanel IsItemsHost="True"
+                                      HorizontalAlignment="Left"
                                       KeyboardNavigation.TabIndex="1"
                                       Background="Transparent" />
                         </Border>
@@ -174,7 +176,7 @@
         </Style>
     </Window.Resources>
 
-    <Grid Margin="20,14,20,18">
+    <Grid Margin="16,12,16,14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -193,7 +195,7 @@
             </Grid.ColumnDefinitions>
             <TabControl x:Name="SourceTabs"
                         Grid.Column="0"
-                        Width="278"
+                        Width="304"
                         Height="34"
                         HorizontalAlignment="Left"
                         Style="{StaticResource SourceTabsStyle}"
@@ -215,7 +217,7 @@
             </StackPanel>
         </Grid>
 
-        <Border x:Name="QuotaPanel" Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="18,10" Margin="0,0,0,10" Visibility="Collapsed">
+        <Border x:Name="QuotaPanel" Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,8" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -260,7 +262,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="14,10" Margin="0,0,0,10">
+        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="12,8" Margin="0,0,0,8">
             <StackPanel Orientation="Horizontal">
                 <ComboBox x:Name="RangeModeBox" Width="110" Margin="0,0,12,0" SelectionChanged="RangeModeBox_SelectionChanged" />
                 <Button x:Name="PreviousButton" Style="{StaticResource ToolButton}" Width="42" Content="&lt;" Click="PreviousButton_Click" />
@@ -287,7 +289,7 @@
             </StackPanel>
         </Border>
 
-        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="22,8" Height="126" Margin="0,0,0,12">
+        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="18,8" Height="96" Margin="0,0,0,8">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="2*" />
@@ -310,7 +312,7 @@
             </Grid>
         </Border>
 
-        <UniformGrid Grid.Row="4" Columns="4" Rows="2" Height="224" Margin="0,0,0,12">
+        <UniformGrid Grid.Row="4" Columns="4" Rows="2" Height="132" Margin="0,0,0,8">
             <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Input" /><TextBlock x:Name="InputValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
@@ -337,7 +339,7 @@
             </Border>
         </UniformGrid>
 
-        <Border Grid.Row="5" Style="{StaticResource PanelBorder}" Padding="14">
+        <Border Grid.Row="5" Style="{StaticResource PanelBorder}" Padding="12">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition x:Name="TimelineRow" Height="0" />

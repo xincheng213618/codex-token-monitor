@@ -561,7 +561,7 @@ public partial class MainWindow : Window
             codexModule.CurrentQuotaEstimate = FreshQuotaOrNull(quota);
             if (CurrentModule() is CodexUsageModule)
             {
-                ApplyQuotaSummary(quota);
+                ApplyQuotaSummary(codexModule, quota);
                 if (CurrentModule().Mode == RangeMode.Cycle)
                 {
                     UpdateCycleOptions(keepSelection: true);
@@ -598,7 +598,7 @@ public partial class MainWindow : Window
             codexModule.CurrentQuotaSnapshots = result.QuotaSnapshots;
         }
 
-        ApplyQuotaSummary(result.Quota);
+        ApplyQuotaSummary(module, result.Quota);
         if (module.Source == UsageSource.Codex && range.Mode == RangeMode.Cycle)
         {
             UpdateCycleOptions(keepSelection: true);
@@ -633,7 +633,7 @@ public partial class MainWindow : Window
         CodingTimeValue.Text = "-";
         CostCardsPanel.Items.Clear();
         SetTimelineVisible(false);
-        ApplyQuotaSummary(module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null);
+        ApplyQuotaSummary(module, module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null);
         ApplyBreakdownRows(GetSelectedRange(), Array.Empty<TokenUsageBucket>(), Array.Empty<CodexQuotaSnapshot>(), module.Source, PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList());
     }
 
@@ -715,7 +715,12 @@ public partial class MainWindow : Window
 
     private void ApplyQuotaSummary(CodexQuotaEstimate? quota)
     {
-        var show = CurrentModule() is CodexUsageModule;
+        ApplyQuotaSummary(CurrentModule(), quota);
+    }
+
+    private void ApplyQuotaSummary(UsageSourceModule module, CodexQuotaEstimate? quota)
+    {
+        var show = module is CodexUsageModule;
         QuotaPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         ResetSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         PlanSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
@@ -724,7 +729,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var codexModule = CurrentCodexModule();
+        var codexModule = (CodexUsageModule)module;
         var effectiveQuota = FreshQuotaOrNull(quota) ?? FreshQuotaOrNull(codexModule.CurrentQuotaEstimate);
         codexModule.CurrentQuotaEstimate = effectiveQuota;
         QuotaEstimateButton.IsEnabled = effectiveQuota is not null;
@@ -1044,7 +1049,7 @@ public partial class MainWindow : Window
     private void SetTimelineVisible(bool visible)
     {
         TimelineHost.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        TimelineRow.Height = visible ? new GridLength(300) : new GridLength(0);
+        TimelineRow.Height = visible ? new GridLength(95) : new GridLength(0);
         if (!visible)
         {
             Timeline.ClearData();
