@@ -707,7 +707,7 @@ public partial class MainWindow : Window
         {
             Text = FormatCost(summary.EstimateCost(profile), profile),
             Foreground = new SolidColorBrush(MediaColor.FromRgb(31, 41, 55)),
-            FontSize = 24,
+            FontSize = 22,
             FontWeight = FontWeights.Bold,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
@@ -718,7 +718,7 @@ public partial class MainWindow : Window
         return new Border
         {
             Width = CostCardWidth,
-            Height = 110,
+            Height = 96,
             Padding = new Thickness(14, 6, 10, 4),
             Margin = new Thickness(0, 0, CostCardRightMargin, 0),
             Background = System.Windows.Media.Brushes.Transparent,
