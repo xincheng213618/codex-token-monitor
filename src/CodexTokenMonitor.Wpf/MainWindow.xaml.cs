@@ -41,7 +41,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        backgroundCacheWarmer = new BackgroundCacheWarmer(CurrentSource, () => isRefreshing, SetStatus);
+        backgroundCacheWarmer = new BackgroundCacheWarmer(CurrentSource, () => isRefreshing, SetBackgroundStatus);
         breakdownGridAdapter = new BreakdownGridAdapter(BreakdownGrid);
         ConfigureBreakdownGrid();
         SyncRangeModeItems(CurrentModule());
@@ -778,7 +778,7 @@ public partial class MainWindow : Window
         }
 
         var codexModule = (CodexUsageModule)module;
-        var effectiveQuota = FreshQuotaOrNull(quota) ?? FreshQuotaOrNull(codexModule.CurrentQuotaEstimate);
+        var effectiveQuota = LatestFreshQuota(codexModule.CurrentQuotaEstimate, quota);
         codexModule.CurrentQuotaEstimate = effectiveQuota;
         QuotaEstimateButton.IsEnabled = effectiveQuota is not null;
         ApplyCurrentPlanSummary();
@@ -1113,6 +1113,11 @@ public partial class MainWindow : Window
     private void SetStatus(string text)
     {
         StatusText.Text = text;
+    }
+
+    private void SetBackgroundStatus(string text)
+    {
+        StatusText.Text = text;
         QueryStatusText.Text = text;
     }
 
@@ -1232,6 +1237,23 @@ public partial class MainWindow : Window
 
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         return QuotaFreshness.IsFresh(quota.SnapshotLocal, now) ? quota : null;
+    }
+
+    private static CodexQuotaEstimate? LatestFreshQuota(CodexQuotaEstimate? first, CodexQuotaEstimate? second)
+    {
+        var freshFirst = FreshQuotaOrNull(first);
+        var freshSecond = FreshQuotaOrNull(second);
+        if (freshFirst is null)
+        {
+            return freshSecond;
+        }
+
+        if (freshSecond is null)
+        {
+            return freshFirst;
+        }
+
+        return freshFirst.SnapshotLocal >= freshSecond.SnapshotLocal ? freshFirst : freshSecond;
     }
 
     private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsForRefresh(SelectedRange range, bool includeLiveToday, CodexQuotaEstimate? quota)

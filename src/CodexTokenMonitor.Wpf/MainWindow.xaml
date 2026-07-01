@@ -209,6 +209,7 @@
                        VerticalAlignment="Center"
                        HorizontalAlignment="Right"
                        Foreground="#576374"
+                       Text="准备就绪"
                        TextTrimming="CharacterEllipsis" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button x:Name="ResetSettingsButton" Style="{StaticResource ToolButton}" Content="重置设置" Click="ResetSettingsButton_Click" />
