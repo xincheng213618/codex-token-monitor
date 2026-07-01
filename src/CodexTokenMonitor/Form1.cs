@@ -18,14 +18,6 @@ public partial class Form1 : Form
         0,
         CodexUsageReader.BeijingOffset);
 
-    private enum RangeMode
-    {
-        Day,
-        Week,
-        Month,
-        Cycle
-    }
-
     private enum QuotaWindowDisplayMode
     {
         FiveHour,
@@ -92,15 +84,16 @@ public partial class Form1 : Form
     private readonly System.Windows.Forms.Timer refreshTimer = new();
     private readonly System.Windows.Forms.Timer backgroundCacheTimer = new();
     private readonly SemaphoreSlim usageQueryGate = new(1, 1);
+    private readonly IReadOnlyDictionary<UsageSource, UsageSourceModule> usageModules = UsageSourceModules.Create();
+    private ColumnStyle? resetSettingsColumn;
+    private ColumnStyle? planSettingsColumn;
     private RowStyle? timelineRowStyle;
     private CancellationTokenSource? backgroundCacheCts;
-    private DateTimeOffset? customStartLocal;
-    private CodexQuotaEstimate? currentQuotaEstimate;
-    private IReadOnlyList<CodexQuotaSnapshot> currentQuotaSnapshots = Array.Empty<CodexQuotaSnapshot>();
-    private IReadOnlyList<CodexQuotaCycle> quotaCycles = Array.Empty<CodexQuotaCycle>();
+    private UsageSource activeSource = UsageSource.Codex;
     private bool isRefreshing;
     private bool isQuotaRefreshing;
     private bool isBackgroundCaching;
+    private bool suppressRangeRefresh;
     private bool suppressDateRefresh;
     private bool suppressCycleRefresh;
     private bool suppressStartTimeRefresh;
@@ -122,11 +115,18 @@ public partial class Form1 : Form
         startTimePicker.ValueChanged += async (_, _) => await StartTimeChangedAsync();
         weekPickerButton.Click += async (_, _) => await OpenWeekPickerAsync();
         sourceTabs.SelectedIndexChanged += async (_, _) => await SourceChangedAsync();
-        rangeModeBox.SelectedIndexChanged += async (_, _) => await RangeModeChangedAsync();
+        rangeModeBox.SelectedIndexChanged += async (_, _) =>
+        {
+            if (!suppressRangeRefresh)
+            {
+                await RangeModeChangedAsync();
+            }
+        };
         cycleBox.SelectedIndexChanged += async (_, _) =>
         {
             if (!suppressCycleRefresh)
             {
+                CurrentCodexModule().SelectedCycle = SelectedCycle();
                 ClearCustomStart();
                 UpdateRangeControls();
                 await RefreshUsageAsync();
@@ -136,6 +136,7 @@ public partial class Form1 : Form
         {
             if (!suppressDateRefresh)
             {
+                CurrentModule().PickerValue = datePicker.Value;
                 ClearCustomStart();
                 UpdateRangeControls();
                 await RefreshUsageAsync();
@@ -222,8 +223,10 @@ public partial class Form1 : Form
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+        resetSettingsColumn = new ColumnStyle(SizeType.Absolute, 96);
+        planSettingsColumn = new ColumnStyle(SizeType.Absolute, 96);
+        panel.ColumnStyles.Add(resetSettingsColumn);
+        panel.ColumnStyles.Add(planSettingsColumn);
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -289,7 +292,7 @@ public partial class Form1 : Form
         panel.Controls.Add(layout);
 
         rangeModeBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        rangeModeBox.Items.AddRange(new object[] { "按天", "按周", "按月", "按周期" });
+        SyncRangeModeItems(CurrentModule());
         rangeModeBox.Width = 110;
         rangeModeBox.Margin = new Padding(0, 5, 12, 0);
         layout.Controls.Add(rangeModeBox);
@@ -779,6 +782,7 @@ public partial class Form1 : Form
             suppressCycleRefresh = true;
             cycleBox.SelectedIndex = targetIndex;
             suppressCycleRefresh = false;
+            CurrentCodexModule().SelectedCycle = SelectedCycle();
             UpdateRangeControls();
             await RefreshUsageAsync();
             return;
@@ -793,6 +797,7 @@ public partial class Form1 : Form
             _ => datePicker.Value
         };
         suppressDateRefresh = false;
+        CurrentModule().PickerValue = datePicker.Value;
         UpdateRangeControls();
         await RefreshUsageAsync();
     }
@@ -808,6 +813,7 @@ public partial class Form1 : Form
                 suppressCycleRefresh = true;
                 cycleBox.SelectedIndex = 0;
                 suppressCycleRefresh = false;
+                CurrentCodexModule().SelectedCycle = SelectedCycle();
             }
 
             UpdateRangeControls();
@@ -820,6 +826,7 @@ public partial class Form1 : Form
             ? DateTime.Now
             : DateTime.Today;
         suppressDateRefresh = false;
+        CurrentModule().PickerValue = datePicker.Value;
         UpdateRangeControls();
         await RefreshUsageAsync();
     }
@@ -827,20 +834,29 @@ public partial class Form1 : Form
     private async Task RangeModeChangedAsync()
     {
         ClearCustomStart();
-        if (CurrentMode() == RangeMode.Cycle && CurrentSource() != UsageSource.Codex)
+        var module = CurrentModule();
+        var mode = CurrentMode();
+        if (mode == RangeMode.Cycle && !module.SupportsCycle)
         {
-            sourceTabs.SelectedIndex = 0;
+            module.Mode = RangeMode.Day;
+            suppressRangeRefresh = true;
+            rangeModeBox.SelectedIndex = 0;
+            suppressRangeRefresh = false;
+            UpdateRangeControls();
+            await RefreshUsageAsync();
             return;
         }
 
-        if (CurrentMode() == RangeMode.Week && datePicker.Value.Date == DateTime.Today)
+        module.Mode = mode;
+        if (mode == RangeMode.Week && datePicker.Value.Date == DateTime.Today)
         {
             suppressDateRefresh = true;
             datePicker.Value = DateTime.Now;
             suppressDateRefresh = false;
+            module.PickerValue = datePicker.Value;
         }
 
-        if (CurrentMode() == RangeMode.Cycle)
+        if (mode == RangeMode.Cycle)
         {
             UpdateCycleOptions(keepSelection: false);
         }
@@ -849,34 +865,47 @@ public partial class Form1 : Form
         await RefreshUsageAsync();
     }
 
-    private async Task SourceChangedAsync()
+    private Task SourceChangedAsync()
     {
-        ClearCustomStart();
-        if (CurrentMode() == RangeMode.Cycle && CurrentSource() != UsageSource.Codex)
+        SaveActiveModuleState();
+        activeSource = CurrentSource();
+        var module = CurrentModule();
+        RestoreModuleControls(module);
+        if (module.TryGetDisplay(out var range, out var result))
         {
-            rangeModeBox.SelectedIndex = 0;
-            return;
+            ApplySummary(
+                result.Summary,
+                range,
+                result.BreakdownRows,
+                result.CodingTime,
+                result.Quota,
+                result.QuotaSnapshots,
+                module.Source);
+            SetStatus($"已切换 {module.Title}");
+            return Task.CompletedTask;
         }
 
-        UpdateRangeControls();
-        await RefreshUsageAsync();
+        ApplyEmptyModuleState(module);
+        SetStatus($"{module.Title} 未刷新");
+        return Task.CompletedTask;
     }
 
     private async Task StartFromNowAsync()
     {
-        customStartLocal = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        CurrentModule().CustomStartLocal = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         UpdateStartNowButtonState();
         await RefreshUsageAsync();
     }
 
     private async Task StartTimeChangedAsync()
     {
-        if (suppressStartTimeRefresh || customStartLocal is null)
+        var module = CurrentModule();
+        if (suppressStartTimeRefresh || module.CustomStartLocal is null)
         {
             return;
         }
 
-        customStartLocal = new DateTimeOffset(
+        module.CustomStartLocal = new DateTimeOffset(
             startTimePicker.Value.Year,
             startTimePicker.Value.Month,
             startTimePicker.Value.Day,
@@ -989,24 +1018,27 @@ public partial class Form1 : Form
             previous.Minute,
             previous.Second);
         suppressDateRefresh = false;
+        CurrentModule().PickerValue = datePicker.Value;
         UpdateRangeControls();
         await RefreshUsageAsync();
     }
 
     private void ClearCustomStart()
     {
-        if (customStartLocal is null)
+        var module = CurrentModule();
+        if (module.CustomStartLocal is null)
         {
             UpdateStartNowButtonState();
             return;
         }
 
-        customStartLocal = null;
+        module.CustomStartLocal = null;
         UpdateStartNowButtonState();
     }
 
     private void UpdateStartNowButtonState()
     {
+        var customStartLocal = CurrentModule().CustomStartLocal;
         var enabled = CurrentMode() == RangeMode.Day || customStartLocal is not null;
         startNowButton.Enabled = enabled;
         if (customStartLocal is not null)
@@ -1069,6 +1101,7 @@ public partial class Form1 : Form
         SetStatus(deleted
             ? $"已清除 {selectedDay:yyyy-MM-dd}，正在重新解析..."
             : $"{selectedDay:yyyy-MM-dd} 无缓存，正在解析...");
+        CurrentModule().ClearDisplay();
         await RefreshUsageAsync();
         _ = WarmCacheInBackgroundAsync();
     }
@@ -1094,6 +1127,7 @@ public partial class Form1 : Form
         }
 
         SetStatus(deleted ? "缓存已清理，正在重新统计..." : "没有缓存，正在统计...");
+        CurrentModule().ClearDisplay();
         await RefreshUsageAsync();
         _ = WarmCacheInBackgroundAsync();
     }
@@ -1103,13 +1137,23 @@ public partial class Form1 : Form
         using var form = new PriceSettingsForm();
         if (form.ShowDialog(this) == DialogResult.OK)
         {
-            currentQuotaEstimate = null;
+            CurrentCodexModule().CurrentQuotaEstimate = null;
+            foreach (var module in usageModules.Values)
+            {
+                module.ClearDisplay();
+            }
+
             await RefreshUsageAsync();
         }
     }
 
     private Task OpenResetOpportunitySettingsAsync()
     {
+        if (CurrentModule() is not CodexUsageModule)
+        {
+            return Task.CompletedTask;
+        }
+
         using var form = new ResetOpportunityForm();
         form.ShowDialog(this);
         ApplyResetOpportunitySummary();
@@ -1143,6 +1187,11 @@ public partial class Form1 : Form
 
     private async Task OpenSubscriptionPlanSettingsAsync()
     {
+        if (CurrentModule() is not CodexUsageModule)
+        {
+            return;
+        }
+
         using var form = new SubscriptionPlanForm();
         if (form.ShowDialog(this) == DialogResult.OK)
         {
@@ -1166,10 +1215,13 @@ public partial class Form1 : Form
         try
         {
             var range = GetSelectedRange();
-            var source = CurrentSource();
-            var reader = UsageSourceReaders.For(source);
+            var module = CurrentModule();
+            var source = module.Source;
+            var reader = module.Reader;
             var includeLiveToday = !cacheOnly && ShouldIncludeLiveToday(range);
-            var cachedQuota = currentQuotaEstimate;
+            var cachedQuota = module is CodexUsageModule codexModule
+                ? codexModule.CurrentQuotaEstimate
+                : null;
             if (!cacheOnly && reader.SupportsQuota)
             {
                 _ = RefreshQuotaSummaryAsync();
@@ -1182,7 +1234,7 @@ public partial class Form1 : Form
             }
 
             await usageQueryGate.WaitAsync();
-            QueryResult result;
+            UsageQueryResult result;
             try
             {
                 result = await Task.Run(() =>
@@ -1198,7 +1250,7 @@ public partial class Form1 : Form
                                 includeLiveToday,
                                 transientQuota)
                             : Array.Empty<CodexQuotaSnapshot>();
-                        return new QueryResult(
+                        return new UsageQueryResult(
                             transientSummary,
                             transientRows,
                             EstimateCodingTime(transientRows),
@@ -1213,7 +1265,7 @@ public partial class Form1 : Form
                         var dayQuotaSnapshots = reader.SupportsQuota
                             ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, dayQuota)
                             : Array.Empty<CodexQuotaSnapshot>();
-                        return new QueryResult(
+                        return new UsageQueryResult(
                             dayUsage.Summary,
                             dayUsage.Rows,
                             EstimateCodingTime(dayUsage.Rows),
@@ -1230,12 +1282,18 @@ public partial class Form1 : Form
                     var quotaSnapshots = reader.SupportsQuota
                         ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, quota)
                         : Array.Empty<CodexQuotaSnapshot>();
-                    return new QueryResult(summary, rows, codingTime, quota, quotaSnapshots);
+                    return new UsageQueryResult(summary, rows, codingTime, quota, quotaSnapshots);
                 });
             }
             finally
             {
                 usageQueryGate.Release();
+            }
+
+            module.StoreDisplay(range, result);
+            if (CurrentSource() != source)
+            {
+                return;
             }
 
             ApplySummary(
@@ -1271,10 +1329,10 @@ public partial class Form1 : Form
             return;
         }
 
-        var source = CurrentSource();
-        if (source != UsageSource.Codex)
+        var module = CurrentModule();
+        if (module is not CodexUsageModule codexModule)
         {
-            ApplyQuotaSummary(source, null);
+            ApplyQuotaSummary(module.Source, null);
             return;
         }
 
@@ -1282,12 +1340,13 @@ public partial class Form1 : Form
         try
         {
             var quota = await Task.Run(CodexUsageReader.ReadQuotaEstimate);
-            if (IsDisposed || Disposing || CurrentSource() != source)
+            codexModule.CurrentQuotaEstimate = FreshQuotaOrNull(quota);
+            if (IsDisposed || Disposing || CurrentSource() != module.Source)
             {
                 return;
             }
 
-            ApplyQuotaSummary(source, quota);
+            ApplyQuotaSummary(module.Source, quota);
             if (CurrentMode() == RangeMode.Cycle)
             {
                 UpdateCycleOptions(keepSelection: true);
@@ -1454,7 +1513,8 @@ public partial class Form1 : Form
         IReadOnlyList<CodexQuotaSnapshot> quotaSnapshots,
         UsageSource source)
     {
-        var reader = UsageSourceReaders.For(source);
+        var module = usageModules[source];
+        var reader = module.Reader;
         Text = $"{reader.Title} Token 额度监控器 - {range.Title}";
         var displayPresets = PriceSettingsStore.DisplayPresetsForSource(reader.Source, count: 0).ToList();
         priceLabel.Text = "";
@@ -1473,9 +1533,11 @@ public partial class Form1 : Form
         var tablePresets = displayPresets
             .Take(GetVisibleCostCardCount(displayPresets.Count))
             .ToList();
-        currentQuotaSnapshots = source == UsageSource.Codex
-            ? quotaSnapshots
-            : Array.Empty<CodexQuotaSnapshot>();
+        if (module is CodexUsageModule codexModule)
+        {
+            codexModule.CurrentQuotaSnapshots = quotaSnapshots;
+        }
+
         ApplyQuotaSummary(source, quota);
         if (source == UsageSource.Codex && range.Mode == RangeMode.Cycle)
         {
@@ -1533,6 +1595,54 @@ public partial class Form1 : Form
         {
             breakdownList.EndUpdate();
         }
+    }
+
+    private void ApplyEmptyModuleState(UsageSourceModule module)
+    {
+        Text = $"{module.Title} Token 额度监控器";
+        priceLabel.Text = "";
+        totalValue.Text = "-";
+        periodValue.Text = "-";
+        inputValue.Text = "-";
+        cachedValue.Text = "-";
+        uncachedValue.Text = "-";
+        outputValue.Text = "-";
+        reasoningValue.Text = "-";
+        cacheRatioValue.Text = "-";
+        eventsValue.Text = "-";
+        lastEventValue.Text = "-";
+        costCardsFlow.Controls.Clear();
+
+        var range = GetSelectedRange();
+        var displayPresets = PriceSettingsStore
+            .DisplayPresetsForSource(module.Source, count: 0)
+            .ToList();
+        var tablePresets = displayPresets
+            .Take(GetVisibleCostCardCount(displayPresets.Count))
+            .ToList();
+        var quota = module is CodexUsageModule codexModule
+            ? codexModule.CurrentQuotaEstimate
+            : null;
+        ApplyQuotaSummary(module.Source, quota);
+
+        breakdownList.BeginUpdate();
+        try
+        {
+            breakdownList.Items.Clear();
+            RebuildBreakdownColumns(range, eventBreakdown: false, tablePresets);
+        }
+        finally
+        {
+            breakdownList.EndUpdate();
+        }
+
+        if (timelineRowStyle is not null)
+        {
+            timelineRowStyle.Height = 0;
+        }
+
+        timelineChart.Visible = false;
+        timelineChart.ClearData();
     }
 
     private static TimeSpan? GetTimelineInterval(RangeMode mode)
@@ -1711,8 +1821,9 @@ public partial class Form1 : Form
             return;
         }
 
-        var effectiveQuota = FreshQuotaOrNull(quota) ?? FreshQuotaOrNull(currentQuotaEstimate);
-        currentQuotaEstimate = effectiveQuota;
+        var codexModule = CurrentCodexModule();
+        var effectiveQuota = FreshQuotaOrNull(quota) ?? FreshQuotaOrNull(codexModule.CurrentQuotaEstimate);
+        codexModule.CurrentQuotaEstimate = effectiveQuota;
         quotaPanel.Visible = show;
         quotaPanel.Height = 104;
         quotaPanel.Margin = new Padding(0, 0, 0, 12);
@@ -1799,14 +1910,15 @@ public partial class Form1 : Form
 
     private void UpdateQuotaLimitCalculation()
     {
-        if (currentQuotaEstimate is null)
+        var quota = CurrentCodexModule().CurrentQuotaEstimate;
+        if (quota is null)
         {
             quotaLimitValue.Text = "";
             return;
         }
 
         quotaLimitValue.Text = "";
-        var form = new QuotaEstimateForm(currentQuotaEstimate);
+        var form = new QuotaEstimateForm(quota);
         form.Show(this);
     }
 
@@ -2150,6 +2262,7 @@ public partial class Form1 : Form
 
     private SelectedRange GetSelectedRange()
     {
+        var module = CurrentModule();
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var selectedDay = new DateTimeOffset(
             datePicker.Value.Year,
@@ -2168,9 +2281,9 @@ public partial class Form1 : Form
             datePicker.Value.Second,
             CodexUsageReader.BeijingOffset);
 
-        if (customStartLocal is not null)
+        if (module.CustomStartLocal is not null)
         {
-            var startFromNow = customStartLocal.Value;
+            var startFromNow = module.CustomStartLocal.Value;
             var customEnd = now < startFromNow ? startFromNow : now;
             return new SelectedRange(
                 startFromNow,
@@ -2255,6 +2368,7 @@ public partial class Form1 : Form
 
     private void UpdateRangeControls()
     {
+        UpdateCodexOnlyControls();
         var mode = CurrentMode();
         if (mode == RangeMode.Cycle)
         {
@@ -2307,23 +2421,22 @@ public partial class Form1 : Form
 
     private void UpdateCycleOptions(bool keepSelection)
     {
-        if (CurrentSource() != UsageSource.Codex)
+        if (CurrentModule() is not CodexUsageModule codexModule)
         {
-            quotaCycles = Array.Empty<CodexQuotaCycle>();
             suppressCycleRefresh = true;
             cycleBox.Items.Clear();
             suppressCycleRefresh = false;
             return;
         }
 
-        var selected = keepSelection ? SelectedCycle() : null;
+        var selected = keepSelection ? codexModule.SelectedCycle ?? SelectedCycle() : null;
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        quotaCycles = CodexQuotaCycleReader.ReadWeeklyCycles(currentQuotaEstimate, now);
+        codexModule.QuotaCycles = CodexQuotaCycleReader.ReadWeeklyCycles(codexModule.CurrentQuotaEstimate, now);
 
         suppressCycleRefresh = true;
         cycleBox.BeginUpdate();
         cycleBox.Items.Clear();
-        foreach (var cycle in quotaCycles)
+        foreach (var cycle in codexModule.QuotaCycles)
         {
             cycleBox.Items.Add(cycle);
         }
@@ -2332,8 +2445,13 @@ public partial class Form1 : Form
         {
             var selectedIndex = selected is null
                 ? 0
-                : quotaCycles.ToList().FindIndex(item => SameCycle(item, selected));
+                : codexModule.QuotaCycles.ToList().FindIndex(item => SameCycle(item, selected));
             cycleBox.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+            codexModule.SelectedCycle = SelectedCycle();
+        }
+        else
+        {
+            codexModule.SelectedCycle = null;
         }
 
         cycleBox.EndUpdate();
@@ -2354,7 +2472,7 @@ public partial class Form1 : Form
 
     private void UpdateWeekPickerState()
     {
-        var show = CurrentMode() == RangeMode.Week && customStartLocal is null;
+        var show = CurrentMode() == RangeMode.Week && CurrentModule().CustomStartLocal is null;
         weekPickerButton.Visible = show;
         weekPickerButton.Enabled = show;
     }
@@ -2393,7 +2511,106 @@ public partial class Form1 : Form
 
     private IUsageSourceReader CurrentReader()
     {
-        return UsageSourceReaders.For(CurrentSource());
+        return CurrentModule().Reader;
+    }
+
+    private UsageSourceModule CurrentModule()
+    {
+        return usageModules[CurrentSource()];
+    }
+
+    private CodexUsageModule CurrentCodexModule()
+    {
+        return (CodexUsageModule)usageModules[UsageSource.Codex];
+    }
+
+    private void SaveActiveModuleState()
+    {
+        if (!usageModules.TryGetValue(activeSource, out var module))
+        {
+            return;
+        }
+
+        module.Mode = CurrentMode();
+        module.PickerValue = datePicker.Value;
+        if (module is CodexUsageModule codexModule)
+        {
+            codexModule.SelectedCycle = SelectedCycle();
+        }
+    }
+
+    private void RestoreModuleControls(UsageSourceModule module)
+    {
+        suppressRangeRefresh = true;
+        suppressDateRefresh = true;
+        suppressCycleRefresh = true;
+        suppressStartTimeRefresh = true;
+        try
+        {
+            SyncRangeModeItems(module);
+            rangeModeBox.SelectedIndex = ModeToIndex(module.Mode);
+            datePicker.Value = module.PickerValue;
+        }
+        finally
+        {
+            suppressRangeRefresh = false;
+            suppressDateRefresh = false;
+            suppressCycleRefresh = false;
+            suppressStartTimeRefresh = false;
+        }
+
+        UpdateRangeControls();
+    }
+
+    private void SyncRangeModeItems(UsageSourceModule module)
+    {
+        var expectedCount = module.SupportsCycle ? 4 : 3;
+        if (rangeModeBox.Items.Count == expectedCount)
+        {
+            return;
+        }
+
+        rangeModeBox.BeginUpdate();
+        try
+        {
+            rangeModeBox.Items.Clear();
+            rangeModeBox.Items.AddRange(module.SupportsCycle
+                ? new object[] { "按天", "按周", "按月", "按周期" }
+                : new object[] { "按天", "按周", "按月" });
+        }
+        finally
+        {
+            rangeModeBox.EndUpdate();
+        }
+    }
+
+    private void UpdateCodexOnlyControls()
+    {
+        var show = CurrentModule() is CodexUsageModule;
+        resetSettingsButton.Visible = show;
+        resetSettingsButton.Enabled = show;
+        planSettingsButton.Visible = show;
+        planSettingsButton.Enabled = show;
+        if (resetSettingsColumn is not null)
+        {
+            resetSettingsColumn.Width = show ? 96 : 0;
+        }
+
+        if (planSettingsColumn is not null)
+        {
+            planSettingsColumn.Width = show ? 96 : 0;
+        }
+    }
+
+    private static int ModeToIndex(RangeMode mode)
+    {
+        return mode switch
+        {
+            RangeMode.Week => 1,
+            RangeMode.Month => 2,
+            RangeMode.Cycle => 3,
+            _ => 0
+        };
     }
 
     private static CodexQuotaEstimate? ReadQuotaForRefresh(
@@ -2754,21 +2971,6 @@ public partial class Form1 : Form
 
         return $"{Math.Max(1, (int)Math.Round(value.TotalMinutes))}m";
     }
-
-    private sealed record SelectedRange(
-        DateTimeOffset Start,
-        DateTimeOffset End,
-        string Title,
-        string BreakdownTitle,
-        RangeMode Mode,
-        bool IsCustomStart = false);
-
-    private sealed record QueryResult(
-        TokenUsageSummary Summary,
-        IReadOnlyList<TokenUsageBucket> BreakdownRows,
-        TimeSpan CodingTime,
-        CodexQuotaEstimate? Quota,
-        IReadOnlyList<CodexQuotaSnapshot> QuotaSnapshots);
 
     private sealed record QuotaDeltaEstimate(
         string Label,

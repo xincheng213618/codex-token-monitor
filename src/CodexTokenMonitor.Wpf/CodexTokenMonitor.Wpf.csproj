@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>CodexTokenMonitor</AssemblyName>
+    <RootNamespace>CodexTokenMonitor</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Lite'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Extended.Wpf.Toolkit" Version="5.1.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <PackageReference Include="ScottPlot.WPF" Version="5.1.59" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\CodexTokenMonitor\ClaudeUsageReader.cs" Link="Core\ClaudeUsageReader.cs" />
+    <Compile Include="..\CodexTokenMonitor\CodexQuotaCycle.cs" Link="Core\CodexQuotaCycle.cs" />
+    <Compile Include="..\CodexTokenMonitor\CodexUsageReader.cs" Link="Core\CodexUsageReader.cs" />
+    <Compile Include="..\CodexTokenMonitor\PriceSettings.cs" Link="Core\PriceSettings.cs" />
+    <Compile Include="..\CodexTokenMonitor\QuotaEstimateCalculator.cs" Link="Core\QuotaEstimateCalculator.cs" />
+    <Compile Include="..\CodexTokenMonitor\QuotaPace.cs" Link="Core\QuotaPace.cs" />
+    <Compile Include="..\CodexTokenMonitor\ResetOpportunities.cs" Link="Core\ResetOpportunities.cs" />
+    <Compile Include="..\CodexTokenMonitor\SubscriptionPlanImporter.cs" Link="Core\SubscriptionPlanImporter.cs" />
+    <Compile Include="..\CodexTokenMonitor\SubscriptionPlans.cs" Link="Core\SubscriptionPlans.cs" />
+    <Compile Include="..\CodexTokenMonitor\UsageModules.cs" Link="Core\UsageModules.cs" />
+    <Compile Include="..\CodexTokenMonitor\UsageSourceReader.cs" Link="Core\UsageSourceReader.cs" />
+    <Compile Include="..\CodexTokenMonitor\ZCodeUsageReader.cs" Link="Core\ZCodeUsageReader.cs" />
+    <Compile Include="..\CodexTokenMonitor\PriceSettingsForm.cs" Link="LegacyDialogs\PriceSettingsForm.cs" />
+    <Compile Include="..\CodexTokenMonitor\ResetOpportunityForm.cs" Link="LegacyDialogs\ResetOpportunityForm.cs" />
+    <Compile Include="..\CodexTokenMonitor\SubscriptionPlanForm.cs" Link="LegacyDialogs\SubscriptionPlanForm.cs" />
+  </ItemGroup>
+
+</Project>
