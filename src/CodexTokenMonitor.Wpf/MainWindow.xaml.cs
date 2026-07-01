@@ -848,10 +848,10 @@ public partial class MainWindow : Window
 
         var remainingPercent = Math.Max(0m, 100m - window.UsedPercent);
         var resetAt = window.ResetAtLocal ?? window.WindowEndLocal;
-        valueBlock.Text = mode == QuotaWindowDisplayMode.FiveHour ? $"5h {resetAt:HH:mm}" : $"周 {resetAt:MM-dd HH:mm}";
+        valueBlock.Text = $"{remainingPercent:N0}%";
         detailBlock.Text = mode == QuotaWindowDisplayMode.FiveHour
-            ? $"{remainingPercent:N0}% ≈ {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
-            : $"{remainingPercent:N0}% {FormatQuotaLimit(window)}";
+            ? $"5h {resetAt:HH:mm} · ≈ {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
+            : $"周 {resetAt:MM-dd HH:mm} · {FormatQuotaLimit(window)}";
     }
 
     private SelectedRange GetSelectedRange()
