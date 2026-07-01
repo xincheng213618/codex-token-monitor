@@ -3,7 +3,6 @@ namespace CodexTokenMonitor;
 internal sealed class QuotaEstimateForm : Form
 {
     private const decimal MinimumStableQuotaDeltaPercent = 3m;
-    private static readonly TimeSpan ResetClusterTolerance = TimeSpan.FromMinutes(10);
 
     private readonly CodexQuotaEstimate currentQuota;
     private readonly CurrentWindowCardBindings fiveHourCard = new();
@@ -39,8 +38,8 @@ internal sealed class QuotaEstimateForm : Form
     {
         Text = "Codex 额度估算";
         StartPosition = FormStartPosition.CenterParent;
-        Size = new Size(1360, 760);
-        MinimumSize = new Size(980, 620);
+        Size = new Size(1360, 820);
+        MinimumSize = new Size(980, 680);
         BackColor = Color.FromArgb(246, 248, 251);
         Font = new Font("Microsoft YaHei UI", 9.5f);
 
@@ -49,11 +48,12 @@ internal sealed class QuotaEstimateForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(16),
             ColumnCount = 1,
-            RowCount = 6,
+            RowCount = 7,
             BackColor = BackColor
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 158));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -63,11 +63,12 @@ internal sealed class QuotaEstimateForm : Form
         root.Controls.Add(CreateHeader("当前窗口"), 0, 0);
         root.Controls.Add(BuildCurrentWindowPanel(), 0, 1);
 
-        root.Controls.Add(BuildManualEstimateBar(), 0, 2);
+        root.Controls.Add(BuildResetOpportunityPanel(), 0, 2);
+        root.Controls.Add(BuildManualEstimateBar(), 0, 3);
 
-        root.Controls.Add(CreateHeader("历史 7d 周期"), 0, 3);
+        root.Controls.Add(CreateHeader("历史 7d 周期"), 0, 4);
         ConfigureWeeklyList();
-        root.Controls.Add(weeklyList, 0, 4);
+        root.Controls.Add(weeklyList, 0, 5);
 
         var footer = new FlowLayoutPanel
         {
@@ -96,7 +97,7 @@ internal sealed class QuotaEstimateForm : Form
         statusLabel.ForeColor = Color.FromArgb(87, 99, 116);
         statusLabel.Margin = new Padding(0, 8, 20, 0);
         footer.Controls.Add(statusLabel);
-        root.Controls.Add(footer, 0, 5);
+        root.Controls.Add(footer, 0, 6);
     }
 
     private static Label CreateHeader(string text)
@@ -135,15 +136,15 @@ internal sealed class QuotaEstimateForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 2,
             RowCount = 3,
-            Padding = new Padding(14, 10, 14, 10),
+            Padding = new Padding(16, 14, 16, 14),
             Margin = new Padding(0, 0, 12, 0),
             BackColor = Color.White
         };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 126));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
 
         var titleLabel = new Label
         {
@@ -169,7 +170,7 @@ internal sealed class QuotaEstimateForm : Form
         bindings.Value.AutoSize = false;
         bindings.Value.Text = "-";
         bindings.Value.TextAlign = ContentAlignment.MiddleLeft;
-        bindings.Value.Font = new Font("Segoe UI", 22f, FontStyle.Bold);
+        bindings.Value.Font = new Font("Segoe UI", 24f, FontStyle.Bold);
         bindings.Value.ForeColor = Color.FromArgb(29, 40, 55);
         bindings.Value.Margin = new Padding(0);
         panel.Controls.Add(bindings.Value, 0, 1);
@@ -178,7 +179,7 @@ internal sealed class QuotaEstimateForm : Form
         bindings.Detail.AutoSize = false;
         bindings.Detail.Text = "-";
         bindings.Detail.TextAlign = ContentAlignment.MiddleLeft;
-        bindings.Detail.Font = new Font("Microsoft YaHei UI", 9.2f);
+        bindings.Detail.Font = new Font("Microsoft YaHei UI", 9.8f);
         bindings.Detail.ForeColor = Color.FromArgb(55, 65, 81);
         bindings.Detail.AutoEllipsis = true;
         bindings.Detail.Margin = new Padding(0, 4, 0, 0);
@@ -187,12 +188,71 @@ internal sealed class QuotaEstimateForm : Form
         bindings.Stable.Dock = DockStyle.Fill;
         bindings.Stable.AutoSize = false;
         bindings.Stable.TextAlign = ContentAlignment.MiddleLeft;
-        bindings.Stable.Font = new Font("Microsoft YaHei UI", 8.8f);
+        bindings.Stable.Font = new Font("Microsoft YaHei UI", 9.2f);
         bindings.Stable.ForeColor = Color.FromArgb(87, 99, 116);
         bindings.Stable.AutoEllipsis = true;
         bindings.Stable.Margin = new Padding(0);
         panel.Controls.Add(bindings.Stable, 0, 2);
         panel.SetColumnSpan(bindings.Stable, 2);
+
+        return panel;
+    }
+
+    private static Control BuildResetOpportunityPanel()
+    {
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        var summary = ResetOpportunityStore.Summarize(now);
+
+        var panel = new Panel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            BackColor = Color.White,
+            Margin = new Padding(0, 0, 0, 10),
+            Padding = new Padding(12, 8, 12, 8)
+        };
+
+        var layout = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            BackColor = Color.Transparent
+        };
+        panel.Controls.Add(layout);
+
+        layout.Controls.Add(new Label
+        {
+            AutoSize = true,
+            Text = ResetOpportunityFormatter.FormatPanelTitle(summary),
+            Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(31, 41, 55),
+            Margin = new Padding(0, 3, 18, 4)
+        });
+
+        if (summary.AvailableCount == 0)
+        {
+            layout.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Text = "无未过期重置卡",
+                ForeColor = Color.FromArgb(87, 99, 116),
+                Margin = new Padding(0, 3, 0, 4)
+            });
+            return panel;
+        }
+
+        foreach (var record in summary.AvailableRecords)
+        {
+            layout.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Text = ResetOpportunityFormatter.FormatRecordLine(record, now),
+                ForeColor = Color.FromArgb(55, 65, 81),
+                Margin = new Padding(0, 3, 24, 4)
+            });
+        }
 
         return panel;
     }
@@ -296,16 +356,18 @@ internal sealed class QuotaEstimateForm : Form
         weeklyList.FullRowSelect = true;
         weeklyList.GridLines = false;
         weeklyList.HideSelection = false;
-        weeklyList.Columns.Add("周期", 260);
-        weeklyList.Columns.Add("重置", 110);
-        weeklyList.Columns.Add("快照", 64, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("剩余", 74, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("已用", 70, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("Tokens", 112, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("已用 $", 90, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("100% $", 90, HorizontalAlignment.Right);
-        weeklyList.Columns.Add("套餐", 120);
-        weeklyList.Columns.Add("实际 ¥", 90, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("周期", 230);
+        weeklyList.Columns.Add("重置", 96);
+        weeklyList.Columns.Add("快照", 58, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("剩余", 66, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("已用", 62, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("应%", 62, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("节奏", 126, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("Tokens", 108, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("已用 $", 82, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("100% $", 82, HorizontalAlignment.Right);
+        weeklyList.Columns.Add("套餐", 96);
+        weeklyList.Columns.Add("实际 ¥", 84, HorizontalAlignment.Right);
     }
 
     private async Task LoadRowsAsync()
@@ -417,7 +479,7 @@ internal sealed class QuotaEstimateForm : Form
         var snapshots = CodexUsageReader.ReadQuotaSnapshots(week.WindowStartLocal, week.WindowEndLocal.AddMinutes(1))
             .Where(item =>
                 item.WeekUsedPercent is not null &&
-                IsSameQuotaReset(item.WeekResetAtLocal, resetAt))
+                CodexQuotaCycleReader.IsSameQuotaReset(item.WeekResetAtLocal, resetAt))
             .Append(new CodexQuotaSnapshot(
                 currentQuota.SnapshotLocal,
                 currentQuota.LimitId,
@@ -496,115 +558,6 @@ internal sealed class QuotaEstimateForm : Form
         return CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now);
     }
 
-    private static List<WeeklyQuotaPeriod> BuildActualWeeklyPeriods(
-        IReadOnlyList<CodexQuotaSnapshot> snapshots,
-        DateTimeOffset now)
-    {
-        var periods = new List<WeeklyQuotaPeriod>();
-        if (snapshots.Count == 0)
-        {
-            return periods;
-        }
-
-        var current = new List<CodexQuotaSnapshot> { snapshots[0] };
-        for (var index = 1; index < snapshots.Count; index++)
-        {
-            var previous = snapshots[index - 1];
-            var snapshot = snapshots[index];
-            if (StartsNewQuotaCycle(previous, snapshot))
-            {
-                AddWeeklyPeriod(periods, current, snapshot.SnapshotLocal, isCurrent: false);
-                current = new List<CodexQuotaSnapshot> { snapshot };
-            }
-            else
-            {
-                current.Add(snapshot);
-            }
-        }
-
-        AddWeeklyPeriod(periods, current, now, isCurrent: true);
-        return periods;
-    }
-
-    private static void AddWeeklyPeriod(
-        List<WeeklyQuotaPeriod> periods,
-        IReadOnlyList<CodexQuotaSnapshot> snapshots,
-        DateTimeOffset periodEnd,
-        bool isCurrent)
-    {
-        if (snapshots.Count == 0)
-        {
-            return;
-        }
-
-        var periodStart = snapshots[0].SnapshotLocal;
-        var nominalReset = snapshots
-            .Select(item => item.WeekResetAtLocal)
-            .Where(item => item is not null)
-            .Select(item => item!.Value)
-            .OrderBy(item => item)
-            .LastOrDefault();
-        if (!isCurrent &&
-            nominalReset != default &&
-            nominalReset > periodStart &&
-            nominalReset < periodEnd)
-        {
-            periodEnd = nominalReset;
-        }
-
-        if (periodEnd <= periodStart)
-        {
-            periodEnd = periodStart.AddSeconds(1);
-        }
-
-        periods.Add(new WeeklyQuotaPeriod(
-            periodStart,
-            periodEnd,
-            isCurrent
-                ? snapshots[^1].WeekResetAtLocal ?? periodEnd
-                : periodEnd,
-            snapshots,
-            isCurrent));
-    }
-
-    private static bool StartsNewQuotaCycle(CodexQuotaSnapshot previous, CodexQuotaSnapshot current)
-    {
-        if (previous.WeekUsedPercent is not { } previousUsed ||
-            current.WeekUsedPercent is not { } currentUsed)
-        {
-            return false;
-        }
-
-        var resetChanged = !IsSameQuotaReset(previous.WeekResetAtLocal, current.WeekResetAtLocal);
-        var resetMovedForward =
-            previous.WeekResetAtLocal is not null &&
-            current.WeekResetAtLocal is not null &&
-            current.WeekResetAtLocal.Value > previous.WeekResetAtLocal.Value.Add(ResetClusterTolerance);
-        var usedDroppedHard = currentUsed <= 2m && previousUsed >= 10m;
-        var usedDropped = currentUsed + 2m < previousUsed;
-
-        return usedDroppedHard ||
-               resetMovedForward && (usedDropped || currentUsed <= 5m) ||
-               resetChanged && usedDroppedHard;
-    }
-
-    private static IEnumerable<CodexQuotaSnapshot> CurrentWeekSnapshot(CodexQuotaEstimate quota)
-    {
-        if (quota.Week is null)
-        {
-            yield break;
-        }
-
-        yield return new CodexQuotaSnapshot(
-            quota.SnapshotLocal,
-            quota.LimitId,
-            quota.LimitName,
-            null,
-            null,
-            quota.Week.UsedPercent,
-            quota.Week.ResetAtLocal);
-    }
-
     private static CurrentWindowRow BuildCurrentRow(string label, CodexQuotaWindowEstimate? window)
     {
         if (window is null)
@@ -671,6 +624,7 @@ internal sealed class QuotaEstimateForm : Form
             ? usedCost / (maxUsed.Value / 100m)
             : (decimal?)null;
         var plan = SubscriptionPlanStore.Summarize(period.PeriodStart, period.PeriodEnd);
+        var pace = QuotaPaceAnalyzer.FormatWeeklyCycle(period, maxUsed, usedCost, estimatedLimit, FormatMoney);
 
         return new ListViewItem(new[]
         {
@@ -679,6 +633,8 @@ internal sealed class QuotaEstimateForm : Form
             period.Snapshots.Count.ToString("N0"),
             FormatRemainingChange(maxUsed),
             maxUsed is null ? "-" : $"{maxUsed.Value:N0}%",
+            pace.ExpectedText,
+            pace.RhythmText,
             FormatTokenMillions(usage.TotalTokens),
             FormatMoney(usedCost),
             FormatNullableMoney(estimatedLimit),
@@ -723,7 +679,7 @@ internal sealed class QuotaEstimateForm : Form
                 continue;
             }
 
-            if (IsSameQuotaReset(resetAtSelector(previous), currentReset))
+            if (CodexQuotaCycleReader.IsSameQuotaReset(resetAtSelector(previous), currentReset))
             {
                 candidates.Add(new QuotaDeltaCandidate(previous, previousUsed.Value, usedDelta));
             }
@@ -778,16 +734,6 @@ internal sealed class QuotaEstimateForm : Form
         }
 
         return $"{Math.Max(0m, 100m - maxUsed.Value):N0}%";
-    }
-
-    private static bool IsSameQuotaReset(DateTimeOffset? first, DateTimeOffset? second)
-    {
-        if (first is null || second is null)
-        {
-            return true;
-        }
-
-        return (first.Value - second.Value).Duration() <= ResetClusterTolerance;
     }
 
     private static string FormatTokenMillions(long value)
@@ -853,12 +799,5 @@ internal sealed class QuotaEstimateForm : Form
         string DetailText,
         string PlanText,
         string StableText);
-
-    private sealed record WeeklyQuotaPeriod(
-        DateTimeOffset PeriodStart,
-        DateTimeOffset PeriodEnd,
-        DateTimeOffset ResetAt,
-        IReadOnlyList<CodexQuotaSnapshot> Snapshots,
-        bool IsCurrent);
 
 }

@@ -23,6 +23,9 @@
   - 可记录实际购买套餐和金额。
   - 当前默认示例：`2026-05-01 - 2026-06-01 Plus ¥128`、`2026-06-02 - 2026-07-02 Pro 20x ¥1380`。
   - 会尝试从本地 Codex sqlite 数据库自动识别套餐记录；识别不到时保留手动设置。
+- 重置机会设置：
+  - 可手动记录 Codex rate limit reset bank 的获得时间、过期时间、是否已用。
+  - 当前默认示例包含 `2026-06-16`、`2026-06-24`、`2026-06-27` 三次机会，过期默认按获得时间 + 30 天。
 
 ## 运行环境
 
@@ -77,6 +80,7 @@ outputs/CodexTokenMonitor-lite/CodexTokenMonitor.exe
 - quota 快照缓存
 - 价格设置
 - 套餐设置
+- 重置机会设置
 
 读取的数据来源通常包括：
 
@@ -121,6 +125,7 @@ src/CodexTokenMonitor/CodexTokenMonitor.csproj
 - `QuotaEstimateForm.cs`：额度估算窗口。
 - `PriceSettings*.cs`：价格档案设置。
 - `SubscriptionPlan*.cs`：套餐/实际花费设置和导入。
+- `ResetOpportunity*.cs`：rate limit reset bank 手动记录和展示。
 
 ## 隐私
 

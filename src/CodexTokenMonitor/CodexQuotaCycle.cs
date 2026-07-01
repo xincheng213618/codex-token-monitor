@@ -40,8 +40,12 @@ internal static class CodexQuotaCycleReader
         DateTimeOffset now)
     {
         var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(DefaultStart, now.AddMinutes(1))
-            .Where(item => item.WeekResetAtLocal is not null && item.WeekUsedPercent is not null)
+            .Where(item =>
+                CodexUsageReader.IsGeneralCodexQuotaSnapshot(item) &&
+                item.WeekResetAtLocal is not null &&
+                item.WeekUsedPercent is not null)
             .Concat(CurrentWeekSnapshot(currentQuota))
+            .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot)
             .GroupBy(item => item.SnapshotLocal)
             .Select(group => group.OrderByDescending(item => item.WeekUsedPercent ?? -1m).First())
             .OrderBy(item => item.SnapshotLocal)

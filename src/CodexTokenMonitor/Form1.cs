@@ -26,13 +26,6 @@ public partial class Form1 : Form
         Cycle
     }
 
-    private enum UsageSource
-    {
-        Codex,
-        ClaudeCode,
-        ZCode
-    }
-
     private enum QuotaWindowDisplayMode
     {
         FiveHour,
@@ -41,6 +34,7 @@ public partial class Form1 : Form
 
     private readonly Label titleLabel = new();
     private readonly TabControl sourceTabs = new();
+    private readonly Button resetSettingsButton = new();
     private readonly Button planSettingsButton = new();
     private readonly Button priceSettingsButton = new();
     private readonly ComboBox rangeModeBox = new();
@@ -50,6 +44,7 @@ public partial class Form1 : Form
     private readonly Button nextButton = new();
     private readonly Button currentButton = new();
     private readonly Button startNowButton = new();
+    private readonly Button refreshDayButton = new();
     private readonly Label queryStatusValue = new();
     private readonly DateTimePicker startTimePicker = new();
     private readonly Button weekPickerButton = new();
@@ -71,6 +66,10 @@ public partial class Form1 : Form
     private readonly Label quotaWeekDetail = new();
     private readonly Label planSpendValue = new();
     private readonly Label planSpendDetail = new();
+    private readonly Label resetOpportunityValue = new();
+    private readonly Label resetOpportunityDetail = new();
+    private readonly Label resetPaceValue = new();
+    private readonly Label resetPaceDetail = new();
     private readonly Button quotaCalculateButton = new();
     private readonly Label quotaLimitValue = new();
     private readonly Label gpt55CostValue = new();
@@ -89,7 +88,7 @@ public partial class Form1 : Form
     private readonly Button clearCacheButton = new();
     private readonly CheckBox autoRefreshBox = new();
     private readonly TokenTimelineControl timelineChart = new();
-    private readonly ListView breakdownList = new();
+    private readonly ListView breakdownList = new NoHorizontalScrollListView();
     private readonly System.Windows.Forms.Timer refreshTimer = new();
     private readonly System.Windows.Forms.Timer backgroundCacheTimer = new();
     private readonly SemaphoreSlim usageQueryGate = new(1, 1);
@@ -100,6 +99,7 @@ public partial class Form1 : Form
     private IReadOnlyList<CodexQuotaSnapshot> currentQuotaSnapshots = Array.Empty<CodexQuotaSnapshot>();
     private IReadOnlyList<CodexQuotaCycle> quotaCycles = Array.Empty<CodexQuotaCycle>();
     private bool isRefreshing;
+    private bool isQuotaRefreshing;
     private bool isBackgroundCaching;
     private bool suppressDateRefresh;
     private bool suppressCycleRefresh;
@@ -111,12 +111,14 @@ public partial class Form1 : Form
         BuildUi();
 
         quotaCalculateButton.Click += (_, _) => UpdateQuotaLimitCalculation();
+        resetSettingsButton.Click += async (_, _) => await OpenResetOpportunitySettingsAsync();
         planSettingsButton.Click += async (_, _) => await OpenSubscriptionPlanSettingsAsync();
         priceSettingsButton.Click += async (_, _) => await OpenPriceSettingsAsync();
         previousButton.Click += async (_, _) => await ShiftPeriodAsync(-1);
         nextButton.Click += async (_, _) => await ShiftPeriodAsync(1);
         currentButton.Click += async (_, _) => await JumpToCurrentPeriodAsync();
         startNowButton.Click += async (_, _) => await StartFromNowAsync();
+        refreshDayButton.Click += async (_, _) => await RefreshSelectedDayFromCacheAsync();
         startTimePicker.ValueChanged += async (_, _) => await StartTimeChangedAsync();
         weekPickerButton.Click += async (_, _) => await OpenWeekPickerAsync();
         sourceTabs.SelectedIndexChanged += async (_, _) => await SourceChangedAsync();
@@ -140,7 +142,11 @@ public partial class Form1 : Form
             }
         };
         refreshTimer.Interval = 30_000;
-        refreshTimer.Tick += async (_, _) => await RefreshUsageAsync();
+        refreshTimer.Tick += async (_, _) =>
+        {
+            _ = RefreshQuotaSummaryAsync();
+            await RefreshUsageAsync();
+        };
         backgroundCacheTimer.Interval = BackgroundCacheIntervalMs;
         backgroundCacheTimer.Tick += async (_, _) => await WarmCacheInBackgroundAsync();
     }
@@ -148,7 +154,10 @@ public partial class Form1 : Form
     protected override async void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        await RefreshUsageAsync();
+        await RefreshUsageAsync(cacheOnly: true);
+        _ = RefreshQuotaSummaryAsync();
+        _ = RefreshUsageAsync();
+        _ = SyncResetOpportunitiesFromCodexAsync(showError: false);
         backgroundCacheTimer.Enabled = true;
         _ = WarmCacheInBackgroundAsync();
     }
@@ -168,7 +177,7 @@ public partial class Form1 : Form
         MinimumSize = new Size(1000, 1000);
         var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 960);
         Size = new Size(
-            Math.Min(1180, Math.Max(1000, workingArea.Width - 80)),
+            Math.Min(1380, Math.Max(1000, workingArea.Width - 80)),
             Math.Min(1200, Math.Max(1120, workingArea.Height - 40)));
         BackColor = Color.FromArgb(246, 248, 251);
         Font = new Font("Microsoft YaHei UI", 9.5f);
@@ -208,11 +217,12 @@ public partial class Form1 : Form
             Height = 38,
             Margin = new Padding(0, 0, 0, 10),
             BackColor = BackColor,
-            ColumnCount = 4,
+            ColumnCount = 5,
             RowCount = 1
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -236,12 +246,16 @@ public partial class Form1 : Form
         queryStatusValue.Margin = new Padding(0, 4, 12, 0);
         panel.Controls.Add(queryStatusValue, 1, 0);
 
+        ConfigureTopButton(resetSettingsButton, "重置设置");
+        resetSettingsButton.Margin = new Padding(0, 0, 8, 0);
+        panel.Controls.Add(resetSettingsButton, 2, 0);
+
         ConfigureTopButton(planSettingsButton, "套餐设置");
         planSettingsButton.Margin = new Padding(0, 0, 8, 0);
-        panel.Controls.Add(planSettingsButton, 2, 0);
+        panel.Controls.Add(planSettingsButton, 3, 0);
 
         ConfigureTopButton(priceSettingsButton, "价格设置");
-        panel.Controls.Add(priceSettingsButton, 3, 0);
+        panel.Controls.Add(priceSettingsButton, 4, 0);
 
         return panel;
     }
@@ -328,6 +342,16 @@ public partial class Form1 : Form
         startNowButton.FlatStyle = FlatStyle.Flat;
         startNowButton.FlatAppearance.BorderSize = 0;
         layout.Controls.Add(startNowButton);
+
+        refreshDayButton.Text = "刷新";
+        refreshDayButton.Width = 72;
+        refreshDayButton.Height = 32;
+        refreshDayButton.Margin = new Padding(0, 4, 12, 0);
+        refreshDayButton.BackColor = Color.FromArgb(229, 234, 242);
+        refreshDayButton.ForeColor = Color.FromArgb(55, 65, 81);
+        refreshDayButton.FlatStyle = FlatStyle.Flat;
+        refreshDayButton.FlatAppearance.BorderSize = 0;
+        layout.Controls.Add(refreshDayButton);
 
         startTimePicker.Format = DateTimePickerFormat.Custom;
         startTimePicker.CustomFormat = "yyyy-MM-dd HH:mm:ss";
@@ -484,20 +508,29 @@ public partial class Form1 : Form
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 6,
             RowCount = 1,
             BackColor = Color.Transparent
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 27));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 27));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 17));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 17));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12));
         quotaPanel.Controls.Add(layout);
 
         layout.Controls.Add(BuildQuotaCard("5h", quota5hValue, quota5hDetail), 0, 0);
         layout.Controls.Add(BuildQuotaCard("周", quotaWeekValue, quotaWeekDetail), 1, 0);
         layout.Controls.Add(BuildQuotaCard("Pro 20x", planSpendValue, planSpendDetail), 2, 0);
-        layout.Controls.Add(BuildQuotaCalculationCard(), 3, 0);
+        layout.Controls.Add(BuildQuotaCard("重置过期", resetOpportunityValue, resetOpportunityDetail), 3, 0);
+        resetOpportunityValue.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Bold);
+        resetOpportunityDetail.Font = new Font("Segoe UI", 11.2f, FontStyle.Bold);
+        layout.Controls.Add(BuildQuotaCard("重置评估", resetPaceValue, resetPaceDetail), 4, 0);
+        resetPaceValue.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Regular);
+        resetPaceDetail.Font = new Font("Microsoft YaHei UI", 9.4f, FontStyle.Regular);
+        resetPaceDetail.ForeColor = Color.FromArgb(55, 65, 81);
+        layout.Controls.Add(BuildQuotaCalculationCard(), 5, 0);
         return quotaPanel;
     }
 
@@ -539,39 +572,24 @@ public partial class Form1 : Form
 
     private Control BuildQuotaCalculationCard()
     {
-        var layout = new TableLayoutPanel
+        var layout = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 2,
-            Padding = new Padding(8, 0, 0, 0),
-            BackColor = Color.Transparent
+            Padding = new Padding(8, 30, 0, 0),
+            BackColor = Color.Transparent,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var titleLabel = new Label
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = false,
-            Text = "估算",
-            TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Microsoft YaHei UI", 9.2f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(90, 103, 119),
-            Margin = new Padding(0)
-        };
-        layout.Controls.Add(titleLabel, 0, 0);
-
-        quotaCalculateButton.Text = "计算";
-        quotaCalculateButton.Dock = DockStyle.Left;
+        quotaCalculateButton.Text = "估算";
         quotaCalculateButton.Width = 86;
-        quotaCalculateButton.Height = 30;
-        quotaCalculateButton.Margin = new Padding(0, 4, 0, 0);
+        quotaCalculateButton.Height = 34;
+        quotaCalculateButton.Margin = new Padding(0);
         quotaCalculateButton.BackColor = Color.FromArgb(21, 128, 106);
         quotaCalculateButton.ForeColor = Color.White;
         quotaCalculateButton.FlatStyle = FlatStyle.Flat;
         quotaCalculateButton.FlatAppearance.BorderSize = 0;
-        layout.Controls.Add(quotaCalculateButton, 0, 1);
+        layout.Controls.Add(quotaCalculateButton);
 
         quotaLimitValue.Text = "";
 
@@ -1012,6 +1030,47 @@ public partial class Form1 : Form
             startTimePicker.Enabled = false;
             suppressStartTimeRefresh = false;
         }
+
+        UpdateRefreshDayButtonState();
+    }
+
+    private void UpdateRefreshDayButtonState()
+    {
+        var visible = CurrentMode() == RangeMode.Day;
+        refreshDayButton.Visible = visible;
+        refreshDayButton.Enabled = visible && !isRefreshing;
+    }
+
+    private async Task RefreshSelectedDayFromCacheAsync()
+    {
+        if (isRefreshing || CurrentMode() != RangeMode.Day)
+        {
+            return;
+        }
+
+        backgroundCacheCts?.Cancel();
+        refreshDayButton.Enabled = false;
+
+        var reader = CurrentReader();
+        var selectedDay = DateOnly.FromDateTime(datePicker.Value.Date);
+        SetStatus($"清除 {reader.Title} {selectedDay:yyyy-MM-dd} 缓存...");
+
+        bool deleted;
+        await usageQueryGate.WaitAsync();
+        try
+        {
+            deleted = await Task.Run(() => reader.RefreshCachedDay(selectedDay));
+        }
+        finally
+        {
+            usageQueryGate.Release();
+        }
+
+        SetStatus(deleted
+            ? $"已清除 {selectedDay:yyyy-MM-dd}，正在重新解析..."
+            : $"{selectedDay:yyyy-MM-dd} 无缓存，正在解析...");
+        await RefreshUsageAsync();
+        _ = WarmCacheInBackgroundAsync();
     }
 
     private async Task ClearCacheAsync()
@@ -1022,18 +1081,12 @@ public partial class Form1 : Form
         }
 
         backgroundCacheCts?.Cancel();
-        var source = CurrentSource();
+        var reader = CurrentReader();
         await usageQueryGate.WaitAsync();
         bool deleted;
         try
         {
-            deleted = source switch
-            {
-                UsageSource.Codex => CodexUsageReader.ClearCache(),
-                UsageSource.ClaudeCode => ClaudeUsageReader.ClearCache(),
-                UsageSource.ZCode => ZCodeUsageReader.ClearCache(),
-                _ => false
-            };
+            deleted = reader.ClearCache();
         }
         finally
         {
@@ -1055,6 +1108,39 @@ public partial class Form1 : Form
         }
     }
 
+    private Task OpenResetOpportunitySettingsAsync()
+    {
+        using var form = new ResetOpportunityForm();
+        form.ShowDialog(this);
+        ApplyResetOpportunitySummary();
+
+        return Task.CompletedTask;
+    }
+
+    private async Task SyncResetOpportunitiesFromCodexAsync(bool showError)
+    {
+        try
+        {
+            var result = await ResetOpportunityStore.SyncFromCodexAsync();
+            if (IsDisposed)
+            {
+                return;
+            }
+
+            if (result.Success)
+            {
+                ApplyResetOpportunitySummary();
+            }
+            else if (showError)
+            {
+                MessageBox.Show(this, result.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
     private async Task OpenSubscriptionPlanSettingsAsync()
     {
         using var form = new SubscriptionPlanForm();
@@ -1064,7 +1150,7 @@ public partial class Form1 : Form
         }
     }
 
-    private async Task RefreshUsageAsync()
+    private async Task RefreshUsageAsync(bool cacheOnly = false)
     {
         if (isRefreshing)
         {
@@ -1074,18 +1160,25 @@ public partial class Form1 : Form
         isRefreshing = true;
         refreshButton.Enabled = false;
         clearCacheButton.Enabled = false;
-        SetStatus("正在刷新...");
+        refreshDayButton.Enabled = false;
+        SetStatus(cacheOnly ? "正在读取缓存..." : "正在刷新...");
 
         try
         {
             var range = GetSelectedRange();
             var source = CurrentSource();
-            var includeLiveToday = ShouldIncludeLiveToday(range);
+            var reader = UsageSourceReaders.For(source);
+            var includeLiveToday = !cacheOnly && ShouldIncludeLiveToday(range);
             var cachedQuota = currentQuotaEstimate;
+            if (!cacheOnly && reader.SupportsQuota)
+            {
+                _ = RefreshQuotaSummaryAsync();
+            }
+
             if (isBackgroundCaching)
             {
                 backgroundCacheCts?.Cancel();
-                SetStatus("正在刷新（暂停缓存）...");
+                SetStatus("正在刷新...");
             }
 
             await usageQueryGate.WaitAsync();
@@ -1096,13 +1189,14 @@ public partial class Form1 : Form
                 {
                     if (range.IsCustomStart)
                     {
-                        var transientRows = BuildTransientBreakdownRows(source, range);
+                        var transientRows = reader.ReadTransientDetailRows(range.Start, range.End);
                         var transientSummary = CreateSummaryFromRows(range, transientRows);
-                        var transientQuota = source == UsageSource.Codex
-                            ? CodexUsageReader.ReadQuotaEstimate()
-                            : null;
-                        var transientQuotaSnapshots = source == UsageSource.Codex
-                            ? CodexUsageReader.ReadQuotaSnapshots(range.Start, range.End)
+                        var transientQuota = ReadQuotaForRefresh(reader, includeLiveToday, cachedQuota);
+                        var transientQuotaSnapshots = reader.SupportsQuota
+                            ? ReadQuotaSnapshotsForRefresh(
+                                range,
+                                includeLiveToday,
+                                transientQuota)
                             : Array.Empty<CodexQuotaSnapshot>();
                         return new QueryResult(
                             transientSummary,
@@ -1114,41 +1208,26 @@ public partial class Form1 : Form
 
                     if (range.Mode == RangeMode.Day)
                     {
-                        var dayRows = includeLiveToday
-                            ? ReadSourceDetailRows(source, range.Start, range.End, includeLiveToday)
-                            : ReadSourceCachedDetailRows(source, range.Start, range.End);
-                        var daySummary = includeLiveToday
-                            ? CreateSummaryFromRows(range, dayRows)
-                            : ReadSourceCachedRange(source, range.Start, range.End);
-                        var dayQuota = ReadQuotaForRefresh(source, includeLiveToday, cachedQuota);
-                        var dayQuotaSnapshots = source == UsageSource.Codex
+                        var dayUsage = reader.ReadDay(range.Start, range.End, includeLiveToday);
+                        var dayQuota = ReadQuotaForRefresh(reader, includeLiveToday, cachedQuota);
+                        var dayQuotaSnapshots = reader.SupportsQuota
                             ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, dayQuota)
                             : Array.Empty<CodexQuotaSnapshot>();
                         return new QueryResult(
-                            daySummary,
-                            dayRows,
-                            EstimateCodingTime(dayRows),
+                            dayUsage.Summary,
+                            dayUsage.Rows,
+                            EstimateCodingTime(dayUsage.Rows),
                             dayQuota,
                             dayQuotaSnapshots);
                     }
 
-                    var summary = source switch
-                    {
-                        UsageSource.Codex => includeLiveToday
-                            ? CodexUsageReader.ReadRange(range.Start, range.End, includeLiveToday)
-                            : CodexUsageReader.ReadCachedRange(range.Start, range.End),
-                        UsageSource.ClaudeCode => includeLiveToday
-                            ? ClaudeUsageReader.ReadRange(range.Start, range.End, includeLiveToday)
-                            : ClaudeUsageReader.ReadCachedRange(range.Start, range.End),
-                        UsageSource.ZCode => includeLiveToday
-                            ? ZCodeUsageReader.ReadRange(range.Start, range.End, includeLiveToday)
-                            : ZCodeUsageReader.ReadCachedRange(range.Start, range.End),
-                        _ => throw new InvalidOperationException("Unknown usage source.")
-                    };
-                    var rows = BuildBreakdownRows(source, range, summary);
-                    var codingTime = EstimateCodingTimeForRange(source, range, rows, includeLiveToday, cacheOnly: !includeLiveToday);
-                    var quota = ReadQuotaForRefresh(source, includeLiveToday, cachedQuota);
-                    var quotaSnapshots = source == UsageSource.Codex
+                    var summary = includeLiveToday
+                        ? reader.ReadRange(range.Start, range.End, includeLiveToday)
+                        : reader.ReadCachedRange(range.Start, range.End);
+                    var rows = BuildBreakdownRows(reader, range, summary);
+                    var codingTime = EstimateCodingTimeForRange(reader, range, rows, includeLiveToday, cacheOnly: !includeLiveToday);
+                    var quota = ReadQuotaForRefresh(reader, includeLiveToday, cachedQuota);
+                    var quotaSnapshots = reader.SupportsQuota
                         ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, quota)
                         : Array.Empty<CodexQuotaSnapshot>();
                     return new QueryResult(summary, rows, codingTime, quota, quotaSnapshots);
@@ -1181,6 +1260,46 @@ public partial class Form1 : Form
             refreshButton.Enabled = true;
             clearCacheButton.Enabled = true;
             isRefreshing = false;
+            UpdateRefreshDayButtonState();
+        }
+    }
+
+    private async Task RefreshQuotaSummaryAsync()
+    {
+        if (isQuotaRefreshing || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        var source = CurrentSource();
+        if (source != UsageSource.Codex)
+        {
+            ApplyQuotaSummary(source, null);
+            return;
+        }
+
+        isQuotaRefreshing = true;
+        try
+        {
+            var quota = await Task.Run(CodexUsageReader.ReadQuotaEstimate);
+            if (IsDisposed || Disposing || CurrentSource() != source)
+            {
+                return;
+            }
+
+            ApplyQuotaSummary(source, quota);
+            if (CurrentMode() == RangeMode.Cycle)
+            {
+                UpdateCycleOptions(keepSelection: true);
+            }
+        }
+        catch
+        {
+            // Quota refresh is best-effort and should not block token usage data.
+        }
+        finally
+        {
+            isQuotaRefreshing = false;
         }
     }
 
@@ -1210,7 +1329,7 @@ public partial class Form1 : Form
             var sources = GetBackgroundSourceOrder();
             var pending = sources.ToDictionary(
                 source => source,
-                source => GetIncompleteCacheDays(source, BackgroundCacheStart, lastHistoricalDay)
+                source => UsageSourceReaders.For(source).GetIncompleteHistoricalDays(BackgroundCacheStart, lastHistoricalDay)
                     .Select(day => DateOnly.FromDateTime(day.DateTime))
                     .ToHashSet());
             var pendingQuota = CodexUsageReader.GetIncompleteQuotaSnapshotDays(BackgroundCacheStart, lastHistoricalDay)
@@ -1252,14 +1371,15 @@ public partial class Form1 : Form
                         continue;
                     }
 
+                    var reader = UsageSourceReaders.For(source);
                     token.ThrowIfCancellationRequested();
                     while (isRefreshing)
                     {
                         await Task.Delay(250, token);
                     }
 
-                    SetStatus($"缓存 {completed + 1}/{total} {SourceTitle(source)} {day:MM-dd}");
-                    await Task.Run(() => WarmSourceDay(source, day), token);
+                    SetStatus($"缓存 {completed + 1}/{total} {reader.Title} {day:MM-dd}");
+                    await Task.Run(() => reader.WarmHistoricalDay(day), token);
 
                     completed++;
                     await Task.Delay(20, token);
@@ -1301,40 +1421,6 @@ public partial class Form1 : Form
             .ToArray();
     }
 
-    private static IReadOnlyList<DateTimeOffset> GetIncompleteCacheDays(
-        UsageSource source,
-        DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
-    {
-        return source switch
-        {
-            UsageSource.Codex => CodexUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive),
-            UsageSource.ClaudeCode => ClaudeUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive),
-            UsageSource.ZCode => ZCodeUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive),
-            _ => Array.Empty<DateTimeOffset>()
-        };
-    }
-
-    private static void WarmSourceDay(UsageSource source, DateTimeOffset dayStart)
-    {
-        var dayEnd = dayStart.AddDays(1);
-        _ = source switch
-        {
-            UsageSource.Codex => CodexUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false),
-            UsageSource.ClaudeCode => ClaudeUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false),
-            UsageSource.ZCode => ZCodeUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false),
-            _ => throw new InvalidOperationException("Unknown usage source.")
-        };
-
-        _ = source switch
-        {
-            UsageSource.Codex => CodexUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false),
-            UsageSource.ClaudeCode => ClaudeUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false),
-            UsageSource.ZCode => ZCodeUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false),
-            _ => throw new InvalidOperationException("Unknown usage source.")
-        };
-    }
-
     private static TokenUsageSummary CreateSummaryFromRows(
         SelectedRange range,
         IReadOnlyList<TokenUsageBucket> rows)
@@ -1368,8 +1454,9 @@ public partial class Form1 : Form
         IReadOnlyList<CodexQuotaSnapshot> quotaSnapshots,
         UsageSource source)
     {
-        Text = $"{SourceTitle(source)} Token 额度监控器 - {range.Title}";
-        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(SourceKey(source), count: 0).ToList();
+        var reader = UsageSourceReaders.For(source);
+        Text = $"{reader.Title} Token 额度监控器 - {range.Title}";
+        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(reader.Source, count: 0).ToList();
         priceLabel.Text = "";
         totalValue.Text = FormatTokenMillions(summary.TotalTokens);
         periodValue.Text = $"{summary.StartLocal:yyyy-MM-dd HH:mm} - {summary.EndLocal:yyyy-MM-dd HH:mm:ss}  GMT+8";
@@ -1395,48 +1482,57 @@ public partial class Form1 : Form
             UpdateCycleOptions(keepSelection: true);
         }
 
+        var scrollAnchor = CaptureBreakdownScrollAnchor();
         breakdownList.BeginUpdate();
-        breakdownList.Items.Clear();
         var showTimeline = breakdownRows.Count > 0;
-        if (timelineRowStyle is not null)
+        try
         {
-            timelineRowStyle.Height = showTimeline ? 300 : 0;
-        }
-
-        timelineChart.Visible = showTimeline;
-        if (showTimeline)
-        {
-            var chartInterval = GetTimelineInterval(range.Mode);
-            var chartRows = GetTimelineRows(source, range, breakdownRows);
-            timelineChart.SetData(range.Start, range.End, chartRows, chartInterval);
-        }
-        else
-        {
-            timelineChart.ClearData();
-        }
-
-        var eventBreakdown = UsesEventBreakdown(range, breakdownRows);
-        RebuildBreakdownColumns(range, eventBreakdown, tablePresets);
-        foreach (var bucket in breakdownRows)
-        {
-            var rowIsEvent = IsEventBucket(range, bucket);
-            var item = new ListViewItem(FormatBucketLabel(range, bucket.StartLocal, rowIsEvent));
-            item.SubItems.Add(FormatBreakdownToken(bucket.TotalTokens, rowIsEvent));
-            item.SubItems.Add(FormatBreakdownToken(bucket.InputTokens, rowIsEvent));
-            item.SubItems.Add(FormatBreakdownToken(bucket.CachedInputTokens, rowIsEvent));
-            item.SubItems.Add(FormatBreakdownToken(bucket.UncachedInputTokens, rowIsEvent));
-            item.SubItems.Add(FormatTokenAdaptive(bucket.OutputTokens));
-            foreach (var preset in tablePresets)
+            breakdownList.Items.Clear();
+            if (timelineRowStyle is not null)
             {
-                AddPresetCost(item, bucket, preset);
+                timelineRowStyle.Height = showTimeline ? 300 : 0;
             }
 
-            item.SubItems.Add(source == UsageSource.Codex
-                ? FormatQuotaSnapshotForBucket(range, bucket, quotaSnapshots, rowIsEvent)
-                : "-");
-            breakdownList.Items.Add(item);
+            timelineChart.Visible = showTimeline;
+            if (showTimeline)
+            {
+                var chartInterval = GetTimelineInterval(range.Mode);
+            var chartRows = GetTimelineRows(reader, range, breakdownRows);
+                timelineChart.SetData(range.Start, range.End, chartRows, chartInterval);
+            }
+            else
+            {
+                timelineChart.ClearData();
+            }
+
+            var eventBreakdown = UsesEventBreakdown(range, breakdownRows);
+            RebuildBreakdownColumns(range, eventBreakdown, tablePresets);
+            foreach (var bucket in breakdownRows)
+            {
+                var rowIsEvent = IsEventBucket(range, bucket);
+                var item = new ListViewItem(FormatBucketLabel(range, bucket.StartLocal, rowIsEvent));
+                item.SubItems.Add(FormatBreakdownToken(bucket.TotalTokens, rowIsEvent));
+                item.SubItems.Add(FormatBreakdownToken(bucket.InputTokens, rowIsEvent));
+                item.SubItems.Add(FormatBreakdownToken(bucket.CachedInputTokens, rowIsEvent));
+                item.SubItems.Add(FormatBreakdownToken(bucket.UncachedInputTokens, rowIsEvent));
+                item.SubItems.Add(FormatTokenAdaptive(bucket.OutputTokens));
+                foreach (var preset in tablePresets)
+                {
+                    AddPresetCost(item, bucket, preset);
+                }
+
+                item.SubItems.Add(source == UsageSource.Codex
+                    ? FormatQuotaSnapshotForBucket(range, bucket, quotaSnapshots, rowIsEvent)
+                    : "-");
+                breakdownList.Items.Add(item);
+            }
+
+            RestoreBreakdownScrollAnchor(scrollAnchor);
         }
-        breakdownList.EndUpdate();
+        finally
+        {
+            breakdownList.EndUpdate();
+        }
     }
 
     private static TimeSpan? GetTimelineInterval(RangeMode mode)
@@ -1451,7 +1547,7 @@ public partial class Form1 : Form
     }
 
     private static IReadOnlyList<TokenUsageBucket> GetTimelineRows(
-        UsageSource source,
+        IUsageSourceReader reader,
         SelectedRange range,
         IReadOnlyList<TokenUsageBucket> breakdownRows)
     {
@@ -1460,7 +1556,7 @@ public partial class Form1 : Form
             return breakdownRows;
         }
 
-        var detailRows = ReadSourceCachedDetailRows(source, range.Start, range.End);
+        var detailRows = reader.ReadCachedDetailRows(range.Start, range.End);
         return detailRows.Count > 0 ? detailRows : breakdownRows;
     }
 
@@ -1550,16 +1646,6 @@ public partial class Form1 : Form
         return Math.Clamp(visible, 1, presetCount);
     }
 
-    private static string SourceKey(UsageSource source)
-    {
-        return source switch
-        {
-            UsageSource.ClaudeCode => "claude",
-            UsageSource.ZCode => "zcode",
-            _ => "codex"
-        };
-    }
-
     private static void ApplyCostDisplay(
         Label titleLabel,
         Label subtitleLabel,
@@ -1625,19 +1711,23 @@ public partial class Form1 : Form
             return;
         }
 
-        var effectiveQuota = quota ?? currentQuotaEstimate;
+        var effectiveQuota = FreshQuotaOrNull(quota) ?? FreshQuotaOrNull(currentQuotaEstimate);
         currentQuotaEstimate = effectiveQuota;
         quotaPanel.Visible = show;
         quotaPanel.Height = 104;
         quotaPanel.Margin = new Padding(0, 0, 0, 12);
         quotaCalculateButton.Enabled = effectiveQuota is not null;
         ApplyCurrentPlanSummary();
+        ApplyResetOpportunitySummary();
+        ApplyResetPaceSummary(effectiveQuota?.Week);
         if (effectiveQuota is null)
         {
             quota5hValue.Text = "5h";
             quota5hDetail.Text = "";
             quotaWeekValue.Text = "周";
             quotaWeekDetail.Text = "";
+            resetPaceValue.Text = "重置评估";
+            resetPaceDetail.Text = "";
             quotaLimitValue.Text = "";
             return;
         }
@@ -1666,6 +1756,24 @@ public partial class Form1 : Form
         planSpendDetail.Text = FormatCny(amount);
     }
 
+    private void ApplyResetOpportunitySummary()
+    {
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        var summary = ResetOpportunityStore.Summarize(now);
+        resetOpportunityValue.Text = "重置过期";
+        resetOpportunityDetail.Text = summary.AvailableRecords.Count == 0
+            ? "无可用"
+            : string.Join(" / ", summary.AvailableRecords
+                .Take(4)
+                .Select(item => item.ExpiresLocal.ToString("MM-dd")));
+    }
+
+    private void ApplyResetPaceSummary(CodexQuotaWindowEstimate? week)
+    {
+        resetPaceValue.Text = "重置评估";
+        resetPaceDetail.Text = QuotaPaceAnalyzer.FormatShort(week);
+    }
+
     private static void ApplyQuotaWindow(
         Label valueLabel,
         Label detailLabel,
@@ -1684,10 +1792,9 @@ public partial class Form1 : Form
         valueLabel.Text = mode == QuotaWindowDisplayMode.FiveHour
             ? $"5h {resetAt:HH:mm}"
             : $"周 {resetAt:MM-dd HH:mm}";
-        var moneyText = mode == QuotaWindowDisplayMode.FiveHour
-            ? FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)
-            : FormatQuotaLimit(window);
-        detailLabel.Text = $"{remainingPercent:N0}% ≈ {moneyText}";
+        detailLabel.Text = mode == QuotaWindowDisplayMode.FiveHour
+            ? $"{remainingPercent:N0}% ≈ {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
+            : $"{remainingPercent:N0}% {FormatQuotaLimit(window)}";
     }
 
     private void UpdateQuotaLimitCalculation()
@@ -1842,23 +1949,141 @@ public partial class Form1 : Form
         bool eventBreakdown,
         IReadOnlyList<PricePreset> tablePresets)
     {
-        breakdownList.Columns.Clear();
-        breakdownList.Columns.Add(eventBreakdown ? "时间" : "日期", 104, HorizontalAlignment.Left);
-        breakdownList.Columns.Add("Total", 96, HorizontalAlignment.Right);
-        breakdownList.Columns.Add("Input", 96, HorizontalAlignment.Right);
-        breakdownList.Columns.Add("Cached", 96, HorizontalAlignment.Right);
-        breakdownList.Columns.Add("Uncached", 104, HorizontalAlignment.Right);
-        breakdownList.Columns.Add("Output", 88, HorizontalAlignment.Right);
+        var expectedTitles = new List<string>
+        {
+            eventBreakdown ? "时间" : "日期",
+            "Total",
+            "Input",
+            "Cached",
+            "Uncached",
+            "Output"
+        };
         for (var i = 0; i < tablePresets.Count; i++)
         {
-            breakdownList.Columns.Add(
-                FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}"),
-                108,
-                HorizontalAlignment.Right);
+            expectedTitles.Add(FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}"));
         }
 
-        breakdownList.Columns.Add("额度(5h/7d)", 126, HorizontalAlignment.Right);
+        expectedTitles.Add("额度(5h/7d)");
+
+        if (!BreakdownColumnsMatch(expectedTitles))
+        {
+            breakdownList.Columns.Clear();
+            breakdownList.Columns.Add(expectedTitles[0], 104, HorizontalAlignment.Left);
+            breakdownList.Columns.Add("Total", 96, HorizontalAlignment.Right);
+            breakdownList.Columns.Add("Input", 96, HorizontalAlignment.Right);
+            breakdownList.Columns.Add("Cached", 96, HorizontalAlignment.Right);
+            breakdownList.Columns.Add("Uncached", 104, HorizontalAlignment.Right);
+            breakdownList.Columns.Add("Output", 88, HorizontalAlignment.Right);
+            for (var i = 0; i < tablePresets.Count; i++)
+            {
+                breakdownList.Columns.Add(expectedTitles[6 + i], 108, HorizontalAlignment.Right);
+            }
+
+            breakdownList.Columns.Add("额度(5h/7d)", 126, HorizontalAlignment.Right);
+        }
+
         ApplyBreakdownColumnWidths(range, eventBreakdown, tablePresets.Count);
+    }
+
+    private bool BreakdownColumnsMatch(IReadOnlyList<string> expectedTitles)
+    {
+        if (breakdownList.Columns.Count != expectedTitles.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < expectedTitles.Count; i++)
+        {
+            if (!string.Equals(breakdownList.Columns[i].Text, expectedTitles[i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private ListScrollAnchor? CaptureBreakdownScrollAnchor()
+    {
+        if (breakdownList.Items.Count == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var topItem = breakdownList.TopItem;
+            return topItem is null
+                ? null
+                : new ListScrollAnchor(topItem.Index, topItem.Text);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
+    private void RestoreBreakdownScrollAnchor(ListScrollAnchor? anchor)
+    {
+        if (anchor is null || breakdownList.Items.Count == 0)
+        {
+            return;
+        }
+
+        var index = FindBreakdownAnchorIndex(anchor);
+        if (index < 0)
+        {
+            return;
+        }
+
+        try
+        {
+            breakdownList.TopItem = breakdownList.Items[index];
+        }
+        catch (InvalidOperationException)
+        {
+            breakdownList.Items[index].EnsureVisible();
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            breakdownList.Items[^1].EnsureVisible();
+        }
+    }
+
+    private int FindBreakdownAnchorIndex(ListScrollAnchor anchor)
+    {
+        var count = breakdownList.Items.Count;
+        if (count == 0)
+        {
+            return -1;
+        }
+
+        var clampedIndex = Math.Clamp(anchor.Index, 0, count - 1);
+        if (breakdownList.Items[clampedIndex].Text == anchor.Text)
+        {
+            return clampedIndex;
+        }
+
+        for (var distance = 1; distance < count; distance++)
+        {
+            var before = clampedIndex - distance;
+            if (before >= 0 && breakdownList.Items[before].Text == anchor.Text)
+            {
+                return before;
+            }
+
+            var after = clampedIndex + distance;
+            if (after < count && breakdownList.Items[after].Text == anchor.Text)
+            {
+                return after;
+            }
+        }
+
+        return clampedIndex;
     }
 
     private void ApplyBreakdownColumnWidths(SelectedRange range, bool eventBreakdown, int priceColumnCount)
@@ -2166,27 +2391,34 @@ public partial class Form1 : Form
         };
     }
 
-    private static string SourceTitle(UsageSource source)
+    private IUsageSourceReader CurrentReader()
     {
-        return source switch
-        {
-            UsageSource.ClaudeCode => "Claude Code",
-            UsageSource.ZCode => "ZCode",
-            _ => "Codex"
-        };
+        return UsageSourceReaders.For(CurrentSource());
     }
 
     private static CodexQuotaEstimate? ReadQuotaForRefresh(
-        UsageSource source,
+        IUsageSourceReader reader,
         bool includeLiveToday,
         CodexQuotaEstimate? cachedQuota)
     {
-        if (source != UsageSource.Codex)
+        if (!reader.SupportsQuota)
         {
             return null;
         }
 
-        return includeLiveToday ? CodexUsageReader.ReadQuotaEstimate() ?? cachedQuota : cachedQuota;
+        _ = includeLiveToday;
+        return FreshQuotaOrNull(cachedQuota) ?? CodexUsageReader.ReadCachedQuotaEstimate();
+    }
+
+    private static CodexQuotaEstimate? FreshQuotaOrNull(CodexQuotaEstimate? quota)
+    {
+        if (quota is null)
+        {
+            return null;
+        }
+
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        return QuotaFreshness.IsFresh(quota.SnapshotLocal, now) ? quota : null;
     }
 
     private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsForRefresh(
@@ -2194,7 +2426,9 @@ public partial class Form1 : Form
         bool includeLiveToday,
         CodexQuotaEstimate? quota)
     {
-        var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(range.Start, range.End);
+        var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(range.Start, range.End)
+            .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot)
+            .ToList();
         if (!includeLiveToday || quota is null ||
             quota.SnapshotLocal < range.Start ||
             quota.SnapshotLocal >= range.End)
@@ -2230,30 +2464,30 @@ public partial class Form1 : Form
     }
 
     private static IReadOnlyList<TokenUsageBucket> BuildBreakdownRows(
-        UsageSource source,
+        IUsageSourceReader reader,
         SelectedRange range,
         TokenUsageSummary summary)
     {
         if (range.Mode == RangeMode.Day)
         {
-            return ReadSourceCachedDetailRows(source, range.Start, range.End);
+            return reader.ReadCachedDetailRows(range.Start, range.End);
         }
 
         if (range.Mode is RangeMode.Week or RangeMode.Cycle)
         {
-            return BuildIntervalBreakdownRows(source, range, summary, MultiDayBreakdownInterval);
+            return BuildIntervalBreakdownRows(reader, range, summary, MultiDayBreakdownInterval);
         }
 
         return summary.DailyBuckets;
     }
 
     private static IReadOnlyList<TokenUsageBucket> BuildIntervalBreakdownRows(
-        UsageSource source,
+        IUsageSourceReader reader,
         SelectedRange range,
         TokenUsageSummary summary,
         TimeSpan interval)
     {
-        var detailRows = ReadSourceCachedDetailRows(source, range.Start, range.End);
+        var detailRows = reader.ReadCachedDetailRows(range.Start, range.End);
         if (detailRows.Count == 0)
         {
             return summary.DailyBuckets;
@@ -2299,7 +2533,7 @@ public partial class Form1 : Form
     }
 
     private static TimeSpan EstimateCodingTimeForRange(
-        UsageSource source,
+        IUsageSourceReader reader,
         SelectedRange range,
         IReadOnlyList<TokenUsageBucket> breakdownRows,
         bool includeLiveToday,
@@ -2310,7 +2544,7 @@ public partial class Form1 : Form
             return EstimateCodingTime(breakdownRows);
         }
 
-        var cachedRows = ReadSourceCachedDetailRows(source, range.Start, range.End);
+        var cachedRows = reader.ReadCachedDetailRows(range.Start, range.End);
         if (cachedRows.Count > 0)
         {
             return EstimateCodingTime(cachedRows);
@@ -2327,69 +2561,13 @@ public partial class Form1 : Form
             var nextDay = StartOfDay(segmentStart).AddDays(1);
             var segmentEnd = nextDay < range.End ? nextDay : range.End;
             var dayRows = cacheOnly
-                ? ReadSourceCachedDetailRows(source, segmentStart, segmentEnd)
-                : ReadSourceDetailRows(source, segmentStart, segmentEnd, includeLiveToday);
+                ? reader.ReadCachedDetailRows(segmentStart, segmentEnd)
+                : reader.ReadDetailRows(segmentStart, segmentEnd, includeLiveToday);
             total += EstimateCodingTime(dayRows);
             segmentStart = segmentEnd;
         }
 
         return total;
-    }
-
-    private static TokenUsageSummary ReadSourceCachedRange(
-        UsageSource source,
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
-    {
-        return source switch
-        {
-            UsageSource.Codex => CodexUsageReader.ReadCachedRange(startLocal, endLocal),
-            UsageSource.ClaudeCode => ClaudeUsageReader.ReadCachedRange(startLocal, endLocal),
-            UsageSource.ZCode => ZCodeUsageReader.ReadCachedRange(startLocal, endLocal),
-            _ => new TokenUsageSummary { StartLocal = startLocal, EndLocal = endLocal }
-        };
-    }
-
-    private static IReadOnlyList<TokenUsageBucket> ReadSourceCachedDetailRows(
-        UsageSource source,
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
-    {
-        return source switch
-        {
-            UsageSource.Codex => CodexUsageReader.ReadCachedDetailRows(startLocal, endLocal),
-            UsageSource.ClaudeCode => ClaudeUsageReader.ReadCachedDetailRows(startLocal, endLocal),
-            UsageSource.ZCode => ZCodeUsageReader.ReadCachedDetailRows(startLocal, endLocal),
-            _ => Array.Empty<TokenUsageBucket>()
-        };
-    }
-
-    private static IReadOnlyList<TokenUsageBucket> ReadSourceDetailRows(
-        UsageSource source,
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
-        bool includeLiveToday)
-    {
-        return source switch
-        {
-            UsageSource.Codex => CodexUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday),
-            UsageSource.ClaudeCode => ClaudeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday),
-            UsageSource.ZCode => ZCodeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday),
-            _ => Array.Empty<TokenUsageBucket>()
-        };
-    }
-
-    private static IReadOnlyList<TokenUsageBucket> BuildTransientBreakdownRows(
-        UsageSource source,
-        SelectedRange range)
-    {
-        return source switch
-        {
-            UsageSource.Codex => CodexUsageReader.ReadTransientDetailRows(range.Start, range.End),
-            UsageSource.ClaudeCode => ClaudeUsageReader.ReadTransientDetailRows(range.Start, range.End),
-            UsageSource.ZCode => ZCodeUsageReader.ReadTransientDetailRows(range.Start, range.End),
-            _ => Array.Empty<TokenUsageBucket>()
-        };
     }
 
     private static bool UsesEventBreakdown(SelectedRange range, IReadOnlyList<TokenUsageBucket> rows)
@@ -2608,4 +2786,60 @@ public partial class Form1 : Form
         CodexQuotaSnapshot Snapshot,
         decimal PreviousUsedPercent,
         decimal UsedDeltaPercent);
+
+    private sealed record ListScrollAnchor(int Index, string Text);
+
+    private sealed class NoHorizontalScrollListView : ListView
+    {
+        private const int SB_HORZ = 0;
+        private const int WM_PAINT = 0x000F;
+        private const int WM_SIZE = 0x0005;
+        private const int WM_NCCALCSIZE = 0x0083;
+        private const int WM_WINDOWPOSCHANGED = 0x0047;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+
+        public NoHorizontalScrollListView()
+        {
+            DoubleBuffered = true;
+            ResizeRedraw = true;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            HideHorizontalScrollBar();
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            HideHorizontalScrollBar();
+        }
+
+        protected override void OnColumnWidthChanged(ColumnWidthChangedEventArgs e)
+        {
+            base.OnColumnWidthChanged(e);
+            HideHorizontalScrollBar();
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            base.WndProc(ref message);
+            if (message.Msg is WM_PAINT or WM_SIZE or WM_NCCALCSIZE or WM_WINDOWPOSCHANGED)
+            {
+                HideHorizontalScrollBar();
+            }
+        }
+
+        private void HideHorizontalScrollBar()
+        {
+            if (IsHandleCreated)
+            {
+                ShowScrollBar(Handle, SB_HORZ, false);
+            }
+        }
+    }
 }

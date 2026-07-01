@@ -25,6 +25,11 @@ internal static class ZCodeUsageReader
         return UsageCacheStore.Delete(CacheFolder);
     }
 
+    public static bool ClearCachedDay(DateOnly date)
+    {
+        return UsageCacheStore.DeleteDay(CacheFolder, date);
+    }
+
     public static IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
         DateTimeOffset startInclusive,
         DateTimeOffset endInclusive)

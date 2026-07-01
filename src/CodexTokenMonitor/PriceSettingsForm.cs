@@ -4,8 +4,6 @@ namespace CodexTokenMonitor;
 
 internal sealed class PriceSettingsForm : Form
 {
-    private static readonly string[] Groups = { "Codex", "Claude Code", "ZCode" };
-
     private readonly TabControl groupTabs = new();
     private readonly Dictionary<string, DataGridView> groupGrids = new(StringComparer.OrdinalIgnoreCase);
 
@@ -42,7 +40,7 @@ internal sealed class PriceSettingsForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            Text = "主界面按当前分组顺序展示价格；选中行可以置顶或上下移动。",
+            Text = "各分组独立保存；主界面只引入当前分组，选中行可以置顶或上下移动。",
             ForeColor = Color.FromArgb(55, 65, 81),
             Margin = new Padding(0, 0, 0, 10)
         }, 0, 0);
@@ -102,7 +100,7 @@ internal sealed class PriceSettingsForm : Form
         groupTabs.Dock = DockStyle.Fill;
         groupTabs.Margin = new Padding(0);
 
-        foreach (var group in Groups)
+        foreach (var group in PricePresetGroups.All)
         {
             var page = new TabPage(group)
             {
@@ -203,15 +201,17 @@ internal sealed class PriceSettingsForm : Form
             grid.Rows.Clear();
         }
 
-        foreach (var preset in settings.Presets)
+        foreach (var group in PricePresetGroups.All)
         {
-            var group = NormalizeGroupName(preset.Group);
             if (!groupGrids.TryGetValue(group, out var grid))
             {
-                grid = groupGrids["Codex"];
+                continue;
             }
 
-            AddPresetRow(grid, preset);
+            foreach (var preset in settings.PresetsForGroup(group))
+            {
+                AddPresetRow(grid, preset);
+            }
         }
     }
 
@@ -292,12 +292,21 @@ internal sealed class PriceSettingsForm : Form
             var presets = ReadPresetRows();
             if (presets.Count == 0)
             {
-                presets = PricePreset.Defaults().Select(item => item.Clone()).ToList();
+                LoadSettings(PriceSettingsStore.Defaults());
+                presets = ReadPresetRows();
             }
 
             var settings = PriceSettingsStore.Current.Clone();
             settings.DisplayOrderVersion = PriceSettingsStore.Defaults().DisplayOrderVersion;
-            settings.Presets = presets;
+            settings.Presets = new();
+            foreach (var group in PricePresetGroups.All)
+            {
+                settings.SetPresetsForGroup(group, presets
+                    .Where(item => string.Equals(NormalizeGroupName(item.Group), group, StringComparison.OrdinalIgnoreCase))
+                    .Select(item => item.Clone())
+                    .ToList());
+            }
+
             ApplyLegacyProfiles(settings, presets);
             PriceSettingsStore.Save(settings);
             DialogResult = DialogResult.OK;
@@ -312,7 +321,7 @@ internal sealed class PriceSettingsForm : Form
     private List<PricePreset> ReadPresetRows()
     {
         var result = new List<PricePreset>();
-        foreach (var group in Groups)
+        foreach (var group in PricePresetGroups.All)
         {
             var grid = groupGrids[group];
             foreach (DataGridViewRow row in grid.Rows)
@@ -359,7 +368,7 @@ internal sealed class PriceSettingsForm : Form
     private static void ApplyLegacyProfiles(PriceSettings settings, IReadOnlyList<PricePreset> presets)
     {
         var codex = presets
-            .Where(item => string.Equals(NormalizeGroupName(item.Group), "Codex", StringComparison.OrdinalIgnoreCase))
+            .Where(item => string.Equals(NormalizeGroupName(item.Group), PricePresetGroups.Codex, StringComparison.OrdinalIgnoreCase))
             .ToList();
         var current = PriceSettingsStore.Current;
 
@@ -395,22 +404,17 @@ internal sealed class PriceSettingsForm : Form
     private DataGridView CurrentGrid()
     {
         var group = CurrentGroup();
-        return groupGrids.TryGetValue(group, out var grid) ? grid : groupGrids["Codex"];
+        return groupGrids.TryGetValue(group, out var grid) ? grid : groupGrids[PricePresetGroups.Codex];
     }
 
     private string CurrentGroup()
     {
-        return groupTabs.SelectedTab?.Text ?? "Codex";
+        return groupTabs.SelectedTab?.Text ?? PricePresetGroups.Codex;
     }
 
     private static string NormalizeGroupName(string group)
     {
-        return group.Trim().ToLowerInvariant() switch
-        {
-            "claude" or "claude code" or "claudecode" => "Claude Code",
-            "zcode" or "glm" or "z.ai" or "zai" or "智谱" => "ZCode",
-            _ => "Codex"
-        };
+        return PricePresetGroups.Normalize(group);
     }
 
     private static string CellText(DataGridViewRow row, int index)
