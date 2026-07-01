@@ -1103,7 +1103,7 @@ public partial class MainWindow : Window
     private void SetTimelineVisible(bool visible)
     {
         TimelineHost.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        TimelineRow.Height = visible ? new GridLength(95) : new GridLength(0);
+        TimelineRow.Height = visible ? new GridLength(170) : new GridLength(0);
         if (!visible)
         {
             Timeline.ClearData();
