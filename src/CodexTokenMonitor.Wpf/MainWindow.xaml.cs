@@ -819,16 +819,22 @@ public partial class MainWindow : Window
     {
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var summary = ResetOpportunityStore.Summarize(now);
-        ResetOpportunityValue.Text = "重置过期";
-        ResetOpportunityDetail.Text = summary.AvailableRecords.Count == 0
-            ? "无可用"
-            : string.Join(" / ", summary.AvailableRecords.Take(4).Select(item => item.ExpiresLocal.ToString("MM-dd")));
+        ResetOpportunityValue.Text = ResetOpportunityFormatter.FormatCompactSummary(summary);
+        ResetOpportunityDetail.Text = summary.AvailableRecords.Count == 0 ? "" : $"{summary.AvailableCount:N0} 张可用";
     }
 
     private void ApplyResetPaceSummary(CodexQuotaWindowEstimate? week)
     {
-        ResetPaceValue.Text = "重置评估";
-        ResetPaceDetail.Text = QuotaPaceAnalyzer.FormatShort(week);
+        if (week is null)
+        {
+            ResetPaceValue.Text = "-";
+            ResetPaceDetail.Text = "";
+            return;
+        }
+
+        var report = QuotaPaceAnalyzer.Analyze(week);
+        ResetPaceValue.Text = report.Rating;
+        ResetPaceDetail.Text = $"已{report.UsedPercent:N0}% / 应{report.ExpectedUsedPercent:N0}%";
     }
 
     private static void ApplyQuotaWindow(TextBlock valueBlock, TextBlock detailBlock, CodexQuotaWindowEstimate? window, QuotaWindowDisplayMode mode)
