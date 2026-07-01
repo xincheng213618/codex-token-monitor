@@ -9,27 +9,21 @@
         Width="1380"
         Height="900"
         WindowStartupLocation="CenterScreen"
-        Background="#F2F5F8"
+        Background="#F6F8FB"
         FontFamily="Microsoft YaHei UI">
     <Window.Resources>
         <Style x:Key="PanelBorder" TargetType="Border">
             <Setter Property="Background" Value="White" />
-            <Setter Property="BorderBrush" Value="#DDE5EE" />
+            <Setter Property="BorderBrush" Value="#E1E8F0" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="3" />
+            <Setter Property="CornerRadius" Value="4" />
             <Setter Property="Padding" Value="12" />
         </Style>
-        <Style x:Key="MetricTileBorder" TargetType="Border">
-            <Setter Property="Background" Value="White" />
-            <Setter Property="BorderBrush" Value="#E5EBF2" />
-            <Setter Property="BorderThickness" Value="0,0,1,1" />
-            <Setter Property="Padding" Value="14,9" />
-        </Style>
         <Style x:Key="ToolButton" TargetType="Button">
-            <Setter Property="MinHeight" Value="30" />
-            <Setter Property="Padding" Value="13,0" />
-            <Setter Property="Margin" Value="0,0,7,0" />
-            <Setter Property="Background" Value="#E8EDF4" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Background" Value="#E5EAF2" />
             <Setter Property="Foreground" Value="#374151" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
@@ -38,7 +32,7 @@
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Root"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="3"
+                                CornerRadius="5"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
@@ -46,7 +40,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="#DCE4EF" />
+                                <Setter TargetName="Root" Property="Background" Value="#D9E2EE" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
@@ -64,7 +58,7 @@
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Root"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="3"
+                                CornerRadius="5"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
@@ -83,14 +77,15 @@
             </Setter>
         </Style>
         <Style x:Key="SourceTabsStyle" TargetType="TabControl">
-            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Background" Value="#E8EEF5" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="0" />
+            <Setter Property="Padding" Value="3" />
             <Setter Property="SelectedIndex" Value="0" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabControl">
                         <Border Background="{TemplateBinding Background}"
+                                CornerRadius="6"
                                 Padding="{TemplateBinding Padding}">
                             <TabPanel IsItemsHost="True"
                                       HorizontalAlignment="Left"
@@ -102,20 +97,18 @@
             </Setter>
         </Style>
         <Style TargetType="TabItem">
-            <Setter Property="MinWidth" Value="94" />
-            <Setter Property="Height" Value="30" />
-            <Setter Property="Margin" Value="0,0,-1,0" />
+            <Setter Property="MinWidth" Value="92" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="Margin" Value="0" />
             <Setter Property="Foreground" Value="#4D5C70" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
                         <Border x:Name="Root"
-                                Background="#F3F6FA"
-                                BorderBrush="#C8D2DE"
-                                BorderThickness="1"
-                                CornerRadius="2,2,0,0"
-                                Padding="13,0">
+                                Background="Transparent"
+                                CornerRadius="5"
+                                Padding="14,0">
                             <ContentPresenter ContentSource="Header"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center" />
@@ -123,11 +116,10 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="Root" Property="Background" Value="White" />
-                                <Setter TargetName="Root" Property="BorderBrush" Value="#8FA1B6" />
                                 <Setter Property="Foreground" Value="#102033" />
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="#FFFFFF" />
+                                <Setter TargetName="Root" Property="Background" Value="#F6F8FB" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -184,7 +176,7 @@
         </Style>
     </Window.Resources>
 
-    <Grid Margin="14,10,14,12">
+    <Grid Margin="16,12,16,14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -195,7 +187,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Margin="0,0,0,6">
+        <Grid Grid.Row="0" Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="320" />
@@ -204,7 +196,7 @@
             <TabControl x:Name="SourceTabs"
                         Grid.Column="0"
                         Width="304"
-                        Height="30"
+                        Height="34"
                         HorizontalAlignment="Left"
                         Style="{StaticResource SourceTabsStyle}"
                         SelectionChanged="SourceTabs_SelectionChanged">
@@ -225,7 +217,7 @@
             </StackPanel>
         </Grid>
 
-        <Border x:Name="QuotaPanel" Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="18,9" Margin="0,0,0,6" Visibility="Collapsed">
+        <Border x:Name="QuotaPanel" Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,8" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -270,7 +262,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="12,7" Margin="0,0,0,6">
+        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="12,8" Margin="0,0,0,8">
             <StackPanel Orientation="Horizontal">
                 <ComboBox x:Name="RangeModeBox" Width="110" Margin="0,0,12,0" SelectionChanged="RangeModeBox_SelectionChanged" />
                 <Button x:Name="PreviousButton" Style="{StaticResource ToolButton}" Width="42" Content="&lt;" Click="PreviousButton_Click" />
@@ -297,7 +289,7 @@
             </StackPanel>
         </Border>
 
-        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="22,9" Height="116" Margin="0,0,0,6">
+        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="22,8" Height="126" Margin="0,0,0,8">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="430" />
@@ -305,7 +297,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
                     <TextBlock Foreground="#5A6777" FontWeight="SemiBold" Text="TOTAL TOKENS" />
-                    <TextBlock x:Name="TotalValue" FontSize="32" FontWeight="Bold" Foreground="#127261" Text="-" />
+                    <TextBlock x:Name="TotalValue" FontSize="34" FontWeight="Bold" Foreground="#127261" Text="-" />
                     <TextBlock x:Name="PeriodValue" Foreground="#657282" Text="-" TextWrapping="Wrap" />
                 </StackPanel>
                 <ScrollViewer x:Name="CostCardsViewport"
@@ -319,34 +311,34 @@
             </Grid>
         </Border>
 
-        <UniformGrid Grid.Row="4" Columns="4" Rows="2" Height="116" Margin="0,0,0,6">
-            <Border Style="{StaticResource MetricTileBorder}" Margin="0,0,1,1">
+        <UniformGrid Grid.Row="4" Columns="4" Rows="2" Height="132" Margin="0,0,0,8">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Input" /><TextBlock x:Name="InputValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
-            <Border Style="{StaticResource MetricTileBorder}" Margin="0,0,1,1">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Cached" /><TextBlock x:Name="CachedValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
-            <Border Style="{StaticResource MetricTileBorder}" Margin="0,0,1,1">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Uncached" /><TextBlock x:Name="UncachedValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
-            <Border Style="{StaticResource MetricTileBorder}" Margin="0,0,0,1">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Output" /><TextBlock x:Name="OutputValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
-            <Border Style="{StaticResource MetricTileBorder}" Margin="0,0,1,0">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Reasoning" /><TextBlock x:Name="ReasoningValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
-            <Border Style="{StaticResource MetricTileBorder}" Margin="0,0,1,0">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Cache Ratio" /><TextBlock x:Name="CacheRatioValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
-            <Border Style="{StaticResource MetricTileBorder}" Margin="0,0,1,0">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Events" /><TextBlock x:Name="EventsValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
-            <Border Style="{StaticResource MetricTileBorder}" Margin="0">
+            <Border Style="{StaticResource PanelBorder}" Margin="0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Coding Time" /><TextBlock x:Name="CodingTimeValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
         </UniformGrid>
 
-        <Border Grid.Row="5" Style="{StaticResource PanelBorder}" Padding="10">
+        <Border Grid.Row="5" Style="{StaticResource PanelBorder}" Padding="12">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition x:Name="TimelineRow" Height="0" />
@@ -359,7 +351,7 @@
             </Grid>
         </Border>
 
-        <DockPanel Grid.Row="6" Margin="0,12,0,0" LastChildFill="False">
+        <DockPanel Grid.Row="6" Margin="0,16,0,0" LastChildFill="False">
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
                 <CheckBox x:Name="AutoRefreshBox" Content="自动刷新" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" />
                 <TextBlock x:Name="StatusText" Text="准备就绪" Foreground="#576374" VerticalAlignment="Center" Margin="0,0,24,0" />
