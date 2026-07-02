@@ -32,7 +32,7 @@
 - Windows 10/11
 - .NET SDK 8.0+
 
-项目使用 WinForms 和 Windows App SDK 无关，目标框架是 `net8.0-windows`。
+项目主界面使用 WPF，目标框架是 `net8.0-windows`。少量设置窗口仍复用 WinForms 对话框。
 
 ## 构建
 
@@ -45,7 +45,7 @@ dotnet build .\CodexTokenMonitor.slnx -c Release
 便携版会把 .NET runtime 一起打进 exe，体积较大，但复制到没装 .NET 的 Windows 机器也能直接运行：
 
 ```powershell
-dotnet publish .\src\CodexTokenMonitor\CodexTokenMonitor.csproj -c Release -o .\outputs\CodexTokenMonitor
+dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Release -o .\outputs\CodexTokenMonitor
 ```
 
 生成文件：
@@ -57,7 +57,7 @@ outputs/CodexTokenMonitor/CodexTokenMonitor.exe
 轻量版只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime，exe 体积会小很多：
 
 ```powershell
-dotnet publish .\src\CodexTokenMonitor\CodexTokenMonitor.csproj -c Lite -o .\outputs\CodexTokenMonitor-lite
+dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Lite -o .\outputs\CodexTokenMonitor-lite
 ```
 
 生成文件：
@@ -113,19 +113,20 @@ cost = uncached_input_millions * input_price
 主项目：
 
 ```text
-src/CodexTokenMonitor/CodexTokenMonitor.csproj
+src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj
 ```
 
 关键文件：
 
-- `CodexUsageReader.cs`：Codex 日志、token、quota 读取与缓存。
-- `ClaudeUsageReader.cs`：Claude Code 日志读取。
-- `ZCodeUsageReader.cs`：ZCode 日志读取。
-- `Form1.cs`：主界面。
-- `QuotaEstimateForm.cs`：额度估算窗口。
-- `PriceSettings*.cs`：价格档案设置。
-- `SubscriptionPlan*.cs`：套餐/实际花费设置和导入。
-- `ResetOpportunity*.cs`：rate limit reset bank 手动记录和展示。
+- `src/CodexTokenMonitor.Wpf/MainWindow.xaml(.cs)`：WPF 主界面。
+- `src/CodexTokenMonitor.Wpf/QuotaEstimateWindow.xaml(.cs)`：额度估算窗口。
+- `src/CodexTokenMonitor.Core/CodexUsageReader.cs`：Codex 日志、token、quota 读取与缓存。
+- `src/CodexTokenMonitor.Core/ClaudeUsageReader.cs`：Claude Code 日志读取。
+- `src/CodexTokenMonitor.Core/ZCodeUsageReader.cs`：ZCode 日志读取。
+- `src/CodexTokenMonitor.Core/PriceSettings.cs`：价格档案和分组默认值。
+- `src/CodexTokenMonitor.Core/SubscriptionPlan*.cs`：套餐/实际花费设置和导入。
+- `src/CodexTokenMonitor.Core/ResetOpportunities.cs`：rate limit reset bank 数据与汇总。
+- `src/CodexTokenMonitor.LegacyDialogs/*.cs`：WPF 暂时复用的设置对话框。
 
 ## 隐私
 
