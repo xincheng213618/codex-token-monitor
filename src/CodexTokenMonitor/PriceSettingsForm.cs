@@ -40,7 +40,7 @@ internal sealed class PriceSettingsForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            Text = "各分组独立保存；主界面只引入当前分组，选中行可以置顶或上下移动。",
+            Text = "各分组独立保存；主界面使用当前分组的对比价格库，选中行可以置顶或上下移动。",
             ForeColor = Color.FromArgb(55, 65, 81),
             Margin = new Padding(0, 0, 0, 10)
         }, 0, 0);

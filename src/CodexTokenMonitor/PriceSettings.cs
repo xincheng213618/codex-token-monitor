@@ -34,7 +34,7 @@ internal static class PricePresetGroups
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 7;
+    public int DisplayOrderVersion { get; set; } = 8;
     public string GptName { get; set; } = "GPT-5.5 Standard Short";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
@@ -239,42 +239,55 @@ internal sealed class PricePreset
     public static IReadOnlyList<PricePreset> DefaultsForGroup(string group)
     {
         var normalizedGroup = PricePresetGroups.Normalize(group);
-        return Defaults()
-            .Where(item => PricePresetGroups.Normalize(
-                string.IsNullOrWhiteSpace(item.Group) ? InferDefaultGroup(item) : item.Group) == normalizedGroup)
-            .Select(item =>
+        var result = new List<PricePreset>();
+        foreach (var preset in Defaults())
+        {
+            if (result.Any(item => SameCatalogPreset(item, preset)))
             {
-                var clone = item.Clone();
-                clone.Group = normalizedGroup;
-                return clone;
-            })
-            .ToList();
-    }
+                continue;
+            }
 
-    private static string InferDefaultGroup(PricePreset preset)
-    {
-        if (ContainsIgnoreCase(preset.Provider, "Claude") ||
-            ContainsIgnoreCase(preset.Model, "Claude") ||
-            ContainsIgnoreCase(preset.Model, "Opus") ||
-            ContainsIgnoreCase(preset.Model, "Sonnet") ||
-            ContainsIgnoreCase(preset.Model, "Haiku"))
-        {
-            return PricePresetGroups.ClaudeCode;
+            var clone = preset.Clone();
+            clone.Group = normalizedGroup;
+            result.Add(clone);
         }
 
-        if (ContainsIgnoreCase(preset.Provider, "智谱") ||
-            ContainsIgnoreCase(preset.Provider, "Z.AI") ||
-            ContainsIgnoreCase(preset.Model, "GLM"))
-        {
-            return PricePresetGroups.ZCode;
-        }
-
-        return PricePresetGroups.Codex;
+        return ApplyDefaultDisplayOrder(result, normalizedGroup);
     }
 
     private static bool ContainsIgnoreCase(string value, string pattern)
     {
         return value.Contains(pattern, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static List<PricePreset> ApplyDefaultDisplayOrder(List<PricePreset> presets, string group)
+    {
+        var preferred = PricePresetGroups.Normalize(group) switch
+        {
+            PricePresetGroups.ClaudeCode => ("Claude", "Opus 4.8 API"),
+            PricePresetGroups.ZCode => ("智谱/Z.AI", "GLM-5.2 1M"),
+            _ => ("OpenAI", "GPT-5.5 Standard Short")
+        };
+        var ordered = new List<PricePreset>();
+        var first = presets.FirstOrDefault(item =>
+            string.Equals(item.Provider, preferred.Item1, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(item.Model, preferred.Item2, StringComparison.OrdinalIgnoreCase));
+        if (first is not null)
+        {
+            ordered.Add(first);
+        }
+
+        ordered.AddRange(presets.Where(item => !ordered.Any(existing => SameCatalogPreset(existing, item))));
+        return ordered;
+    }
+
+    private static bool SameCatalogPreset(PricePreset first, PricePreset second)
+    {
+        return string.Equals(first.Provider, second.Provider, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(first.Model, second.Model, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(first.CurrencySymbol, second.CurrencySymbol, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(first.UnitLabel, second.UnitLabel, StringComparison.OrdinalIgnoreCase) &&
+               first.Divisor == second.Divisor;
     }
 
     private static PricePreset Preset(
@@ -322,7 +335,7 @@ internal static class PriceSettingsStore
     {
         var settings = new PriceSettings
         {
-            DisplayOrderVersion = 7,
+            DisplayOrderVersion = 8,
             Presets = new(),
             CodexPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Codex), PricePresetGroups.Codex),
