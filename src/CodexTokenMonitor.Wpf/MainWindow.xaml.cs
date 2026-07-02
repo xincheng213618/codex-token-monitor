@@ -61,7 +61,12 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             UpdateRangeControls();
-            await RefreshUsageAsync(cacheOnly: true);
+            var restored = TryRestoreLastDisplay();
+            if (!restored)
+            {
+                await RefreshUsageAsync(cacheOnly: true);
+            }
+
             _ = RefreshQuotaSummaryAsync();
             _ = RefreshUsageAsync();
             _ = SyncResetOpportunitiesFromCodexAsync(showError: false);
@@ -641,6 +646,7 @@ public partial class MainWindow : Window
         }
 
         ApplyBreakdownRows(range, result.BreakdownRows, result.QuotaSnapshots, module.Source, displayPresets);
+        LastDisplayStore.Save(module.Source, range, result);
     }
 
     private void ApplyQuotaToCurrentBreakdown(CodexUsageModule module, CodexQuotaEstimate? quota)
@@ -651,10 +657,61 @@ public partial class MainWindow : Window
         }
 
         var snapshots = MergeQuotaSnapshot(result.QuotaSnapshots, range, quota);
+        var updatedResult = result with { Quota = quota, QuotaSnapshots = snapshots };
         module.CurrentQuotaSnapshots = snapshots;
-        module.StoreDisplay(range, result with { Quota = quota, QuotaSnapshots = snapshots });
+        module.StoreDisplay(range, updatedResult);
         var displayPresets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList();
         ApplyBreakdownRows(range, result.BreakdownRows, snapshots, module.Source, displayPresets);
+        LastDisplayStore.Save(module.Source, range, updatedResult);
+    }
+
+    private bool TryRestoreLastDisplay()
+    {
+        var snapshot = LastDisplayStore.Load();
+        if (snapshot is null || !usageModules.TryGetValue(snapshot.Source, out var module))
+        {
+            return false;
+        }
+
+        var previousInitializing = initializing;
+        initializing = true;
+        SourceTabs.SelectedIndex = SourceToTabIndex(snapshot.Source);
+        activeSource = snapshot.Source;
+        RestoreModuleRange(module, snapshot.Range);
+        if (module is CodexUsageModule codexModule)
+        {
+            codexModule.CurrentQuotaEstimate = snapshot.Result.Quota;
+            codexModule.CurrentQuotaSnapshots = snapshot.Result.QuotaSnapshots;
+        }
+
+        module.StoreDisplay(snapshot.Range, snapshot.Result);
+        RestoreModuleControls(module);
+        initializing = previousInitializing;
+        ApplySummary(snapshot.Range, snapshot.Result, module);
+        SetStatus("已恢复上次显示，正在刷新...");
+        return true;
+    }
+
+    private static int SourceToTabIndex(UsageSource source)
+    {
+        return source switch
+        {
+            UsageSource.ClaudeCode => 1,
+            UsageSource.ZCode => 2,
+            _ => 0
+        };
+    }
+
+    private static void RestoreModuleRange(UsageSourceModule module, SelectedRange range)
+    {
+        module.Mode = range.Mode;
+        module.CustomStartLocal = range.IsCustomStart ? range.Start : null;
+        module.PickerValue = range.Mode switch
+        {
+            RangeMode.Week => range.End.DateTime,
+            RangeMode.Month => range.Start.DateTime,
+            _ => range.Start.DateTime
+        };
     }
 
     private void ApplyEmptyModuleState(UsageSourceModule module)
