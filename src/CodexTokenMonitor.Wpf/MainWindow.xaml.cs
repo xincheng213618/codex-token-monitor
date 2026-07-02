@@ -565,11 +565,28 @@ public partial class MainWindow : Window
         isQuotaRefreshing = true;
         try
         {
+            var cachedQuota = FreshQuotaOrNull(CodexUsageReader.ReadCachedQuotaEstimate());
+            if (cachedQuota is not null)
+            {
+                codexModule.CurrentQuotaEstimate = LatestFreshQuota(codexModule.CurrentQuotaEstimate, cachedQuota);
+                if (CurrentModule() is CodexUsageModule)
+                {
+                    ApplyQuotaSummary(codexModule, codexModule.CurrentQuotaEstimate);
+                    ApplyQuotaToCurrentBreakdown(codexModule, codexModule.CurrentQuotaEstimate);
+                }
+            }
+
             var quota = await Task.Run(CodexUsageReader.ReadQuotaEstimate);
-            codexModule.CurrentQuotaEstimate = FreshQuotaOrNull(quota);
+            var freshQuota = FreshQuotaOrNull(quota);
+            if (freshQuota is not null)
+            {
+                codexModule.CurrentQuotaEstimate = LatestFreshQuota(codexModule.CurrentQuotaEstimate, freshQuota);
+            }
+
             if (CurrentModule() is CodexUsageModule)
             {
-                ApplyQuotaSummary(codexModule, quota);
+                ApplyQuotaSummary(codexModule, codexModule.CurrentQuotaEstimate);
+                ApplyQuotaToCurrentBreakdown(codexModule, codexModule.CurrentQuotaEstimate);
                 if (CurrentModule().Mode == RangeMode.Cycle)
                 {
                     UpdateCycleOptions(keepSelection: true);
@@ -624,6 +641,20 @@ public partial class MainWindow : Window
         }
 
         ApplyBreakdownRows(range, result.BreakdownRows, result.QuotaSnapshots, module.Source, displayPresets);
+    }
+
+    private void ApplyQuotaToCurrentBreakdown(CodexUsageModule module, CodexQuotaEstimate? quota)
+    {
+        if (!module.TryGetDisplay(out var range, out var result))
+        {
+            return;
+        }
+
+        var snapshots = MergeQuotaSnapshot(result.QuotaSnapshots, range, quota);
+        module.CurrentQuotaSnapshots = snapshots;
+        module.StoreDisplay(range, result with { Quota = quota, QuotaSnapshots = snapshots });
+        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList();
+        ApplyBreakdownRows(range, result.BreakdownRows, snapshots, module.Source, displayPresets);
     }
 
     private void ApplyEmptyModuleState(UsageSourceModule module)
@@ -1261,7 +1292,15 @@ public partial class MainWindow : Window
         var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(range.Start, range.End)
             .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot)
             .ToList();
-        if (!includeLiveToday || quota is null || quota.SnapshotLocal < range.Start || quota.SnapshotLocal >= range.End)
+        return includeLiveToday ? MergeQuotaSnapshot(snapshots, range, quota) : snapshots;
+    }
+
+    private static IReadOnlyList<CodexQuotaSnapshot> MergeQuotaSnapshot(
+        IReadOnlyList<CodexQuotaSnapshot> snapshots,
+        SelectedRange range,
+        CodexQuotaEstimate? quota)
+    {
+        if (quota is null || quota.SnapshotLocal < range.Start || quota.SnapshotLocal >= range.End)
         {
             return snapshots;
         }
@@ -1471,14 +1510,19 @@ public partial class MainWindow : Window
             return "-";
         }
 
-        var bucketEnd = range.Mode == RangeMode.Day || range.IsCustomStart
-            ? bucket.StartLocal.AddSeconds(1)
-            : eventBreakdown
-                ? bucket.StartLocal.Add(MultiDayBreakdownInterval)
-                : bucket.StartLocal.AddDays(1);
+        var bucketEnd = eventBreakdown
+            ? (range.Mode == RangeMode.Day || range.IsCustomStart
+                ? bucket.StartLocal.AddSeconds(2)
+                : bucket.StartLocal.Add(MultiDayBreakdownInterval))
+            : bucket.StartLocal.AddDays(1);
         var snapshot = snapshots
             .Where(item => item.SnapshotLocal >= bucket.StartLocal && item.SnapshotLocal < bucketEnd)
-            .OrderByDescending(item => item.SnapshotLocal)
+            .LastOrDefault();
+        snapshot ??= snapshots
+            .Where(item => item.SnapshotLocal <= bucket.StartLocal)
+            .LastOrDefault();
+        snapshot ??= snapshots
+            .Where(item => item.SnapshotLocal > bucket.StartLocal && item.SnapshotLocal <= bucket.StartLocal.AddMinutes(2))
             .FirstOrDefault();
         return snapshot is null
             ? "-"

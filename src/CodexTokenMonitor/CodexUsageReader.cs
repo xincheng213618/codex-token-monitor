@@ -1421,7 +1421,12 @@ internal static class CodexUsageReader
     {
         var now = DateTimeOffset.UtcNow.ToOffset(BeijingOffset);
         var liveEnd = now.AddMinutes(5);
-        var snapshot = ReadQuotaSnapshotsCached(StartOfDay(now), liveEnd)
+        var recentStart = now.AddMinutes(-30);
+        var snapshot = ReadQuotaSnapshotsCached(recentStart, liveEnd)
+            .Where(IsGeneralCodexQuotaSnapshot)
+            .OrderByDescending(item => item.SnapshotLocal)
+            .FirstOrDefault()
+            ?? ReadQuotaSnapshotsCached(StartOfDay(now), liveEnd)
             .Where(IsGeneralCodexQuotaSnapshot)
             .OrderByDescending(item => item.SnapshotLocal)
             .FirstOrDefault()
