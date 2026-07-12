@@ -17,6 +17,7 @@ internal sealed class BackgroundCacheWarmer : IDisposable
 
     private readonly Func<UsageSource> currentSource;
     private readonly Func<bool> isForegroundBusy;
+    private readonly SemaphoreSlim workGate;
     private readonly Action<string> setStatus;
     private readonly DispatcherTimer timer = new();
     private CancellationTokenSource? cts;
@@ -26,10 +27,12 @@ internal sealed class BackgroundCacheWarmer : IDisposable
     public BackgroundCacheWarmer(
         Func<UsageSource> currentSource,
         Func<bool> isForegroundBusy,
+        SemaphoreSlim workGate,
         Action<string> setStatus)
     {
         this.currentSource = currentSource;
         this.isForegroundBusy = isForegroundBusy;
+        this.workGate = workGate;
         this.setStatus = setStatus;
         timer.Interval = TimeSpan.FromMilliseconds(BackgroundCacheIntervalMs);
         timer.Tick += Timer_Tick;
@@ -91,7 +94,14 @@ internal sealed class BackgroundCacheWarmer : IDisposable
             var pendingQuota = CodexUsageReader.GetIncompleteQuotaSnapshotDays(BackgroundCacheStart, lastHistoricalDay)
                 .Select(day => DateOnly.FromDateTime(day.DateTime))
                 .ToHashSet();
-            var total = pending.Values.Sum(days => days.Count) + pendingQuota.Count;
+            var pendingTimeline = CodexUsageReader.GetIncompleteQuotaTimelineDays(BackgroundCacheStart, lastHistoricalDay)
+                .Select(day => DateOnly.FromDateTime(day.DateTime))
+                .ToHashSet();
+            var timelineDays = pendingTimeline
+                .Concat(pending[UsageSource.Codex])
+                .Concat(pendingQuota)
+                .ToHashSet();
+            var total = pending.Values.Sum(days => days.Count) + pendingQuota.Count + timelineDays.Count;
             if (total == 0)
             {
                 setStatus($"缓存完成 {DateTime.Now:HH:mm:ss}");
@@ -99,19 +109,22 @@ internal sealed class BackgroundCacheWarmer : IDisposable
             }
 
             var completed = 0;
-            setStatus($"缓存 0/{total}");
+            setStatus($"缓存剩余 {total} 项");
+            if (pendingQuota.Count > 0)
+            {
+                await WaitForForegroundAsync(token);
+                setStatus($"缓存额度 {pendingQuota.Count} 项");
+                var quotaDays = pendingQuota
+                    .Select(date => new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset))
+                    .ToList();
+                await RunExclusiveAsync(() => CodexUsageReader.WarmQuotaSnapshotDays(quotaDays, token), token);
+                completed += pendingQuota.Count;
+                setStatus($"缓存剩余 {total - completed} 项");
+            }
+
             for (var day = lastHistoricalDay; day >= BackgroundCacheStart; day = day.AddDays(-1))
             {
                 var date = DateOnly.FromDateTime(day.DateTime);
-                if (pendingQuota.Contains(date))
-                {
-                    await WaitForForegroundAsync(token);
-                    setStatus($"缓存 {completed + 1}/{total} 额度 {day:MM-dd}");
-                    await Task.Run(() => CodexUsageReader.WarmQuotaSnapshotDay(day), token);
-                    completed++;
-                    await Task.Delay(20, token);
-                }
-
                 foreach (var source in sources)
                 {
                     if (!pending[source].Contains(date))
@@ -121,8 +134,17 @@ internal sealed class BackgroundCacheWarmer : IDisposable
 
                     var reader = UsageSourceReaders.For(source);
                     await WaitForForegroundAsync(token);
-                    setStatus($"缓存 {completed + 1}/{total} {reader.Title} {day:MM-dd}");
-                    await Task.Run(() => reader.WarmHistoricalDay(day), token);
+                    setStatus($"缓存剩余 {total - completed} · {reader.Title} {day:MM-dd}");
+                    await RunExclusiveAsync(() => reader.WarmHistoricalDay(day), token);
+                    completed++;
+                    await Task.Delay(20, token);
+                }
+
+                if (timelineDays.Contains(date))
+                {
+                    await WaitForForegroundAsync(token);
+                    setStatus($"缓存剩余 {total - completed} · 额度明细 {day:MM-dd}");
+                    await RunExclusiveAsync(() => CodexUsageReader.WarmQuotaTimelineDay(day), token);
                     completed++;
                     await Task.Delay(20, token);
                 }
@@ -173,7 +195,7 @@ internal sealed class BackgroundCacheWarmer : IDisposable
     private UsageSource[] GetSourceOrder()
     {
         var current = currentSource();
-        var sources = new[] { UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode };
+        var sources = new[] { UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode, UsageSource.WorkBuddy };
         return sources
             .Where(source => source == current)
             .Concat(sources.Where(source => source != current))
@@ -186,6 +208,19 @@ internal sealed class BackgroundCacheWarmer : IDisposable
         while (isForegroundBusy())
         {
             await Task.Delay(250, token);
+        }
+    }
+
+    private async Task RunExclusiveAsync(Action action, CancellationToken token)
+    {
+        await workGate.WaitAsync(token);
+        try
+        {
+            await Task.Run(action, token);
+        }
+        finally
+        {
+            workGate.Release();
         }
     }
 

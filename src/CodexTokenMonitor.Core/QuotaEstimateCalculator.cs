@@ -27,15 +27,15 @@ internal static class QuotaEstimateCalculator
         var currentRows = BuildCurrentRows(currentQuota);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var periods = knownWeeklyPeriods is { Count: > 0 }
-            ? knownWeeklyPeriods
+        var periods = HasCurrentPeriod(knownWeeklyPeriods, currentQuota)
+            ? knownWeeklyPeriods!
             : BuildWeeklyPeriods(currentQuota, now);
         var usageCache = UsageCacheStore.Load();
         var weeklyRows = new List<QuotaWeeklyCycleRow>(periods.Count);
         foreach (var period in periods)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var row = BuildWeeklyRow(period, currentQuota.Week, usageCache);
+            var row = BuildWeeklyRow(period, currentQuota.Week, usageCache, now);
             if (row is not null)
             {
                 weeklyRows.Add(row);
@@ -45,15 +45,30 @@ internal static class QuotaEstimateCalculator
         return new QuotaEstimateLoadResult(currentRows, weeklyRows, periods.Count);
     }
 
+    private static bool HasCurrentPeriod(
+        IReadOnlyList<CodexQuotaCycle>? periods,
+        CodexQuotaEstimate currentQuota)
+    {
+        var resetAt = currentQuota.Week?.ResetAtLocal;
+        return periods is { Count: > 0 } &&
+               resetAt is not null &&
+               periods.Any(period =>
+                   period.IsCurrent &&
+                   period.PeriodStart <= currentQuota.SnapshotLocal &&
+                   period.PeriodEnd >= currentQuota.SnapshotLocal &&
+                   CodexQuotaCycleReader.IsSameQuotaReset(period.ResetAt, resetAt));
+    }
+
     public static QuotaWeeklyCycleRow? BuildWeeklyRow(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek)
     {
-        return BuildWeeklyRow(period, currentWeek, null);
+        return BuildWeeklyRow(period, currentWeek, null, DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset));
     }
 
     private static QuotaWeeklyCycleRow? BuildWeeklyRow(
         CodexQuotaCycle period,
         CodexQuotaWindowEstimate? currentWeek,
-        UsageCacheStore? usageCache)
+        UsageCacheStore? usageCache,
+        DateTimeOffset now)
     {
         if (period.PeriodEnd <= period.PeriodStart)
         {
@@ -79,9 +94,7 @@ internal static class QuotaEstimateCalculator
         }
 
         var maxUsed = usedPercents.Count > 0 ? usedPercents.Max() : (decimal?)null;
-        var usedCost = period.IsCurrent && currentWeek is not null
-            ? currentWeek.UsedGptCost
-            : usage.EstimateCost(PriceProfiles.Gpt55StandardLong);
+        var usedCost = usage.EstimateCost(PriceProfiles.PrimaryCodex);
         var estimatedLimit = maxUsed is > 0m
             ? usedCost / (maxUsed.Value / 100m)
             : (decimal?)null;
@@ -90,6 +103,7 @@ internal static class QuotaEstimateCalculator
 
         return new QuotaWeeklyCycleRow(
             $"{period.PeriodStart:MM-dd HH:mm} - {period.PeriodEnd:MM-dd HH:mm}",
+            FormatCycleDuration(period, now),
             period.ResetAt.ToString("MM-dd HH:mm"),
             period.Snapshots.Count.ToString("N0"),
             FormatRemainingChange(maxUsed),
@@ -101,6 +115,33 @@ internal static class QuotaEstimateCalculator
             FormatNullableMoney(estimatedLimit),
             plan.PlanNames,
             plan.HasRecords ? FormatCny(plan.AmountCny) : "-");
+    }
+
+    private static string FormatCycleDuration(CodexQuotaCycle period, DateTimeOffset now)
+    {
+        var effectiveEnd = period.IsCurrent && now < period.PeriodEnd ? now : period.PeriodEnd;
+        var duration = effectiveEnd - period.PeriodStart;
+        if (duration < TimeSpan.Zero)
+        {
+            duration = TimeSpan.Zero;
+        }
+
+        var prefix = period.IsCurrent ? "进行中 " : "";
+        if (duration.TotalDays >= 1)
+        {
+            return duration.Hours > 0
+                ? $"{prefix}{(int)duration.TotalDays}天{duration.Hours}小时"
+                : $"{prefix}{(int)duration.TotalDays}天";
+        }
+
+        if (duration.TotalHours >= 1)
+        {
+            return duration.Minutes > 0
+                ? $"{prefix}{(int)duration.TotalHours}小时{duration.Minutes}分"
+                : $"{prefix}{(int)duration.TotalHours}小时";
+        }
+
+        return $"{prefix}{Math.Max(1, (int)Math.Ceiling(duration.TotalMinutes))}分";
     }
 
     public static string BuildManualWeekEstimate(CodexQuotaEstimate currentQuota, decimal firstRemainingInput, decimal secondRemainingInput)
@@ -122,11 +163,12 @@ internal static class QuotaEstimateCalculator
         var startUsedThreshold = 100m - fromRemaining;
         var endUsedThreshold = 100m - toRemaining;
         var resetAt = week.ResetAtLocal ?? week.WindowEndLocal;
-        var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(week.WindowStartLocal, week.WindowEndLocal.AddMinutes(1))
+        var snapshots = CodexQuotaCycleReader.RemoveTransientResetOutliers(
+            CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(week.WindowStartLocal, week.WindowEndLocal.AddMinutes(1))
             .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot)
             .Where(item =>
                 item.WeekUsedPercent is not null &&
-                CodexQuotaCycleReader.IsSameQuotaReset(item.WeekResetAtLocal, resetAt))
+                CodexQuotaCycleReader.IsSameQuotaReset(item.WeekResetAtLocal, resetAt)))
             .Append(new CodexQuotaSnapshot(
                 currentQuota.SnapshotLocal,
                 currentQuota.LimitId,
@@ -168,7 +210,7 @@ internal static class QuotaEstimateCalculator
         }
 
         var usage = CodexUsageReader.ReadCachedRange(start.SnapshotLocal, end.SnapshotLocal);
-        var usedCost = usage.EstimateCost(PriceProfiles.Gpt55StandardLong);
+        var usedCost = usage.EstimateCost(PriceProfiles.PrimaryCodex);
         var estimatedLimit = usedCost / (observedDelta / 100m);
         var actualFromRemaining = 100m - startUsed;
         var actualToRemaining = 100m - endUsed;
@@ -186,9 +228,9 @@ internal static class QuotaEstimateCalculator
             return new QuotaCurrentWindowRow(label, "-", "-", "", "");
         }
 
-        var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(window.WindowStartLocal, window.WindowEndLocal.AddMinutes(1))
-            .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot)
-            .ToList();
+        var snapshots = CodexQuotaCycleReader.RemoveTransientResetOutliers(
+            CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(window.WindowStartLocal, window.WindowEndLocal.AddMinutes(1))
+                .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot));
         var delta = BuildQuotaDeltaEstimate(
             label,
             snapshots,
@@ -196,9 +238,13 @@ internal static class QuotaEstimateCalculator
             label == "5h" ? item => item.FiveHourResetAtLocal : item => item.WeekResetAtLocal);
         var plan = SubscriptionPlanStore.Summarize(window.WindowStartLocal, window.WindowEndLocal);
         var remaining = Math.Max(0m, 100m - window.UsedPercent);
+        var usedCost = window.Usage.EstimateCost(PriceProfiles.PrimaryCodex);
+        var estimatedLimit = window.UsedPercent > 0m
+            ? usedCost / (window.UsedPercent / 100m)
+            : (decimal?)null;
         var detail =
             $"{FormatTokenMillions(window.Usage.TotalTokens)} · " +
-            $"{FormatMoney(window.UsedGptCost)} · 100% {FormatNullableMoney(window.EstimatedGptLimit)}";
+            $"{FormatMoney(usedCost)} · 100% {FormatNullableMoney(estimatedLimit)}";
         var planText = plan.HasRecords
             ? $"{plan.PlanNames} · {FormatCny(plan.AmountCny)}"
             : "";
@@ -269,7 +315,7 @@ internal static class QuotaEstimateCalculator
         }
 
         var usage = CodexUsageReader.ReadCachedRange(candidate.Snapshot.SnapshotLocal, current.SnapshotLocal);
-        var usedCost = usage.EstimateCost(PriceProfiles.Gpt55StandardLong);
+        var usedCost = usage.EstimateCost(PriceProfiles.PrimaryCodex);
         var estimatedLimit = usedCost / (candidate.UsedDeltaPercent / 100m);
         return new QuotaDeltaEstimate(
             label,
@@ -312,12 +358,16 @@ internal static class QuotaEstimateCalculator
 
     private static string FormatMoney(decimal value)
     {
+        var symbol = PriceProfiles.PrimaryCodex.CurrencySymbol;
+        var prefix = string.Equals(symbol, "Credits", StringComparison.OrdinalIgnoreCase)
+            ? "Credits "
+            : symbol;
         return value switch
         {
-            >= 100 => $"${value:N0}",
-            >= 10 => $"${value:N2}",
-            >= 1 => $"${value:N3}",
-            _ => $"${value:N4}"
+            >= 100 => $"{prefix}{value:N0}",
+            >= 10 => $"{prefix}{value:N2}",
+            >= 1 => $"{prefix}{value:N3}",
+            _ => $"{prefix}{value:N4}"
         };
     }
 
@@ -369,6 +419,7 @@ internal sealed record QuotaEstimateLoadResult(
 
 internal sealed record QuotaWeeklyCycleRow(
     string Period,
+    string Duration,
     string ResetAt,
     string SnapshotCount,
     string Remaining,

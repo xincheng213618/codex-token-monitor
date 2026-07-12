@@ -1,5 +1,9 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/CodexTokenMonitor.Core/CodexTokenMonitor.Core.csproj" />
     <Project Path="src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CodexTokenMonitor.Core.Tests/CodexTokenMonitor.Core.Tests.csproj" />
   </Folder>
 </Solution>

@@ -21,7 +21,10 @@ internal sealed record UsageQueryResult(
     IReadOnlyList<TokenUsageBucket> BreakdownRows,
     TimeSpan CodingTime,
     CodexQuotaEstimate? Quota,
-    IReadOnlyList<CodexQuotaSnapshot> QuotaSnapshots);
+    IReadOnlyList<CodexQuotaSnapshot> QuotaSnapshots)
+{
+    public IReadOnlyList<TokenUsageBucket> DetailRows { get; init; } = Array.Empty<TokenUsageBucket>();
+}
 
 internal abstract class UsageSourceModule
 {
@@ -104,6 +107,14 @@ internal sealed class ZCodeUsageModule : UsageSourceModule
     }
 }
 
+internal sealed class WorkBuddyUsageModule : UsageSourceModule
+{
+    public WorkBuddyUsageModule()
+        : base(UsageSourceReaders.For(UsageSource.WorkBuddy))
+    {
+    }
+}
+
 internal static class UsageSourceModules
 {
     public static IReadOnlyDictionary<UsageSource, UsageSourceModule> Create()
@@ -111,12 +122,14 @@ internal static class UsageSourceModules
         var codex = new CodexUsageModule();
         var claude = new ClaudeCodeUsageModule();
         var zcode = new ZCodeUsageModule();
+        var workBuddy = new WorkBuddyUsageModule();
 
         return new Dictionary<UsageSource, UsageSourceModule>
         {
             [codex.Source] = codex,
             [claude.Source] = claude,
-            [zcode.Source] = zcode
+            [zcode.Source] = zcode,
+            [workBuddy.Source] = workBuddy
         };
     }
 }

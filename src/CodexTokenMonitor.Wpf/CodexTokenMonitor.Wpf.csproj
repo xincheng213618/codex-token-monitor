@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
@@ -33,23 +33,11 @@
 
   <ItemGroup>
     <PackageReference Include="Extended.Wpf.Toolkit" Version="5.1.2" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
     <PackageReference Include="ScottPlot.WPF" Version="5.1.59" />
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\CodexTokenMonitor.Core\ClaudeUsageReader.cs" Link="Core\ClaudeUsageReader.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\CodexQuotaCycle.cs" Link="Core\CodexQuotaCycle.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\CodexUsageReader.cs" Link="Core\CodexUsageReader.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\PriceSettings.cs" Link="Core\PriceSettings.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\QuotaEstimateCalculator.cs" Link="Core\QuotaEstimateCalculator.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\QuotaPace.cs" Link="Core\QuotaPace.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\ResetOpportunities.cs" Link="Core\ResetOpportunities.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\SubscriptionPlanImporter.cs" Link="Core\SubscriptionPlanImporter.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\SubscriptionPlans.cs" Link="Core\SubscriptionPlans.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\UsageModules.cs" Link="Core\UsageModules.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\UsageSourceReader.cs" Link="Core\UsageSourceReader.cs" />
-    <Compile Include="..\CodexTokenMonitor.Core\ZCodeUsageReader.cs" Link="Core\ZCodeUsageReader.cs" />
+    <ProjectReference Include="..\CodexTokenMonitor.Core\CodexTokenMonitor.Core.csproj" />
     <Compile Include="..\CodexTokenMonitor.LegacyDialogs\PriceSettingsForm.cs" Link="LegacyDialogs\PriceSettingsForm.cs" />
     <Compile Include="..\CodexTokenMonitor.LegacyDialogs\ResetOpportunityForm.cs" Link="LegacyDialogs\ResetOpportunityForm.cs" />
     <Compile Include="..\CodexTokenMonitor.LegacyDialogs\SubscriptionPlanForm.cs" Link="LegacyDialogs\SubscriptionPlanForm.cs" />

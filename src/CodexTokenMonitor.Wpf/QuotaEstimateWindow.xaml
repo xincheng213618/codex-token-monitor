@@ -4,7 +4,7 @@
         xmlns:xctk="http://schemas.xceed.com/wpf/xaml/toolkit"
         Title="Codex 额度估算"
         Width="1360"
-        Height="820"
+        Height="980"
         MinWidth="980"
         MinHeight="680"
         WindowStartupLocation="CenterOwner"
@@ -56,14 +56,22 @@
             <Setter Property="BorderBrush" Value="#E1E8F0" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
         </Style>
+        <Style TargetType="DataGridRow">
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="FontWeight" Value="Bold" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="158" />
+            <RowDefinition Height="176" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="268" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
@@ -75,6 +83,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="1.15*" />
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
@@ -96,7 +105,7 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Column="1" Style="{StaticResource PanelBorder}" Margin="8,0,0,0">
+            <Border Grid.Column="1" Style="{StaticResource PanelBorder}" Margin="8,0,8,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="142" />
@@ -114,13 +123,13 @@
                     <TextBlock x:Name="WeekStable" Grid.Row="2" Grid.ColumnSpan="2" Foreground="#576374" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                 </Grid>
             </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource PanelBorder}" Margin="8,0,0,0">
+                <StackPanel x:Name="ResetOpportunityPanel" />
+            </Border>
         </Grid>
 
-        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="12,8" Margin="0,0,0,10">
-            <WrapPanel x:Name="ResetOpportunityPanel" />
-        </Border>
-
-        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Height="58" Padding="12,8" Margin="0,0,0,10">
+        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Height="58" Padding="12,8" Margin="0,0,0,10">
             <DockPanel LastChildFill="True">
                 <TextBlock DockPanel.Dock="Left" Text="7d 手动估算" FontWeight="Bold" Foreground="#1F2937" VerticalAlignment="Center" Margin="0,0,12,0" />
                 <TextBlock DockPanel.Dock="Left" Text="剩余" Foreground="#576374" VerticalAlignment="Center" Margin="0,0,6,0" />
@@ -129,15 +138,29 @@
                 <xctk:DecimalUpDown x:Name="ManualToBox" DockPanel.Dock="Left" Width="58" Minimum="0" Maximum="100" Increment="1" Value="85" FormatString="F0" TextAlignment="Right" Margin="0,0,4,0" />
                 <TextBlock DockPanel.Dock="Left" Text="%" Foreground="#576374" VerticalAlignment="Center" Margin="0,0,10,0" />
                 <Button x:Name="ManualEstimateButton" DockPanel.Dock="Left" Style="{StaticResource PrimaryButton}" Content="估算" Width="72" MinWidth="72" Margin="0,0,12,0" Click="ManualEstimateButton_Click" />
+                <Button DockPanel.Dock="Left" Style="{StaticResource PrimaryButton}" Content="放大曲线" Width="96" MinWidth="96" Margin="0,0,12,0" Click="QuotaCurveButton_Click" />
                 <TextBlock x:Name="ManualResultText" Foreground="#374151" Text="输入剩余百分比后估算当前 7d 周额度" TextWrapping="Wrap" VerticalAlignment="Center" />
             </DockPanel>
         </Border>
 
-        <TextBlock Grid.Row="4" Style="{StaticResource SectionHeader}" Text="历史 7d 周期" />
+        <DockPanel Grid.Row="3" Margin="0,0,0,8">
+            <TextBlock Style="{StaticResource SectionHeader}" Margin="0" Text="7d 额度与累计费用曲线" />
+            <ComboBox x:Name="CurvePlanComboBox" DockPanel.Dock="Right" Width="150" Height="30"
+                      VerticalContentAlignment="Center" SelectionChanged="CurvePlanComboBox_SelectionChanged" />
+            <TextBlock DockPanel.Dock="Right" Text="套餐" Foreground="#576374" VerticalAlignment="Center" Margin="0,0,8,0" />
+        </DockPanel>
 
-        <DataGrid x:Name="WeeklyGrid" Grid.Row="5">
+        <Border Grid.Row="4" Background="White" BorderBrush="#E1E8F0" BorderThickness="1"
+                CornerRadius="4" Padding="6" Margin="0,0,0,10">
+            <ContentControl x:Name="EmbeddedCurveHost" />
+        </Border>
+
+        <TextBlock Grid.Row="5" Style="{StaticResource SectionHeader}" Text="历史 7d 周期" />
+
+        <DataGrid x:Name="WeeklyGrid" Grid.Row="6">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="周期" Binding="{Binding Period}" Width="230" />
+                <DataGridTextColumn Header="历时" Binding="{Binding Duration}" Width="106" />
                 <DataGridTextColumn Header="重置" Binding="{Binding ResetAt}" Width="96" />
                 <DataGridTextColumn Header="快照" Binding="{Binding SnapshotCount}" Width="58" />
                 <DataGridTextColumn Header="剩余" Binding="{Binding Remaining}" Width="66" />
@@ -152,7 +175,7 @@
             </DataGrid.Columns>
         </DataGrid>
 
-        <DockPanel Grid.Row="6" Margin="0,12,0,0" LastChildFill="False">
+        <DockPanel Grid.Row="7" Margin="0,12,0,0" LastChildFill="False">
             <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="关闭" Click="CloseButton_Click" />
             <TextBlock x:Name="StatusText" DockPanel.Dock="Right" Text="正在加载..." Foreground="#576374" VerticalAlignment="Center" Margin="0,0,20,0" />
         </DockPanel>

@@ -6,7 +6,12 @@ internal static class LastDisplayStore
 {
     private const string FolderName = "CodexTokenMonitor";
     private const string FileName = "wpf-last-display.json";
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions JsonOptions = new();
+    private static readonly object SyncRoot = new();
+    private static readonly SemaphoreSlim WriteGate = new(1, 1);
+    private static LastDisplayState? pendingState;
+    private static CancellationTokenSource? pendingSave;
+    private static long saveVersion;
 
     public static LastDisplaySnapshot? Load()
     {
@@ -29,6 +34,75 @@ internal static class LastDisplayStore
 
     public static void Save(UsageSource source, SelectedRange range, UsageQueryResult result)
     {
+        var state = FromSnapshot(new LastDisplaySnapshot(source, range, result));
+        CancellationTokenSource cts;
+        long version;
+        lock (SyncRoot)
+        {
+            pendingState = state;
+            pendingSave?.Cancel();
+            pendingSave?.Dispose();
+            pendingSave = cts = new CancellationTokenSource();
+            version = ++saveVersion;
+        }
+
+        _ = SaveLaterAsync(state, version, cts.Token);
+    }
+
+    public static void Flush()
+    {
+        LastDisplayState? state;
+        lock (SyncRoot)
+        {
+            pendingSave?.Cancel();
+            state = pendingState;
+        }
+
+        if (state is not null)
+        {
+            WriteGate.Wait();
+            try
+            {
+                WriteState(state);
+            }
+            finally
+            {
+                WriteGate.Release();
+            }
+        }
+    }
+
+    private static async Task SaveLaterAsync(LastDisplayState state, long version, CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(500, token);
+            await WriteGate.WaitAsync(token);
+            try
+            {
+                if (version != Volatile.Read(ref saveVersion))
+                {
+                    return;
+                }
+
+                await Task.Run(() => WriteState(state), token);
+            }
+            finally
+            {
+                WriteGate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // Last display restore is a startup convenience; it should never block usage refresh.
+        }
+    }
+
+    private static void WriteState(LastDisplayState state)
+    {
         try
         {
             var path = GetPath();
@@ -38,8 +112,9 @@ internal static class LastDisplayStore
                 Directory.CreateDirectory(directory);
             }
 
-            var state = FromSnapshot(new LastDisplaySnapshot(source, range, result));
-            File.WriteAllText(path, JsonSerializer.Serialize(state, JsonOptions));
+            var temporaryPath = path + ".tmp";
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(state, JsonOptions));
+            File.Move(temporaryPath, path, overwrite: true);
         }
         catch
         {
@@ -115,6 +190,10 @@ internal static class LastDisplayStore
             OutputTokens = state.OutputTokens,
             ReasoningOutputTokens = state.ReasoningOutputTokens,
             TotalTokens = state.TotalTokens,
+            LongContextEvents = state.LongContextEvents,
+            LongContextInputTokens = state.LongContextInputTokens,
+            LongContextCachedInputTokens = state.LongContextCachedInputTokens,
+            LongContextOutputTokens = state.LongContextOutputTokens,
             LastTokenEventLocal = state.LastTokenEventLocal
         };
         summary.DailyBuckets.AddRange(state.DailyBuckets.Select(ToBucket));
@@ -134,6 +213,10 @@ internal static class LastDisplayStore
             OutputTokens = summary.OutputTokens,
             ReasoningOutputTokens = summary.ReasoningOutputTokens,
             TotalTokens = summary.TotalTokens,
+            LongContextEvents = summary.LongContextEvents,
+            LongContextInputTokens = summary.LongContextInputTokens,
+            LongContextCachedInputTokens = summary.LongContextCachedInputTokens,
+            LongContextOutputTokens = summary.LongContextOutputTokens,
             LastTokenEventLocal = summary.LastTokenEventLocal,
             DailyBuckets = summary.DailyBuckets.Select(FromBucket).ToList()
         };
@@ -151,6 +234,10 @@ internal static class LastDisplayStore
             OutputTokens = state.OutputTokens,
             ReasoningOutputTokens = state.ReasoningOutputTokens,
             TotalTokens = state.TotalTokens,
+            LongContextEvents = state.LongContextEvents,
+            LongContextInputTokens = state.LongContextInputTokens,
+            LongContextCachedInputTokens = state.LongContextCachedInputTokens,
+            LongContextOutputTokens = state.LongContextOutputTokens,
             LastTokenEventLocal = state.LastTokenEventLocal
         };
     }
@@ -167,6 +254,10 @@ internal static class LastDisplayStore
             OutputTokens = bucket.OutputTokens,
             ReasoningOutputTokens = bucket.ReasoningOutputTokens,
             TotalTokens = bucket.TotalTokens,
+            LongContextEvents = bucket.LongContextEvents,
+            LongContextInputTokens = bucket.LongContextInputTokens,
+            LongContextCachedInputTokens = bucket.LongContextCachedInputTokens,
+            LongContextOutputTokens = bucket.LongContextOutputTokens,
             LastTokenEventLocal = bucket.LastTokenEventLocal
         };
     }
@@ -299,6 +390,10 @@ internal class LastDisplayBucketState
     public long OutputTokens { get; set; }
     public long ReasoningOutputTokens { get; set; }
     public long TotalTokens { get; set; }
+    public long LongContextEvents { get; set; }
+    public long LongContextInputTokens { get; set; }
+    public long LongContextCachedInputTokens { get; set; }
+    public long LongContextOutputTokens { get; set; }
     public DateTimeOffset? LastTokenEventLocal { get; set; }
 }
 

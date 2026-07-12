@@ -25,9 +25,6 @@ internal static class SubscriptionPlanStore
     private const string CacheFolder = "CodexTokenMonitor";
     private static readonly object SyncRoot = new();
     private static bool initialized;
-    private static bool autoImportAttempted;
-
-    public static string LastImportMessage { get; private set; } = "";
 
     public static IReadOnlyList<SubscriptionPlanRecord> Defaults()
     {
@@ -55,36 +52,7 @@ internal static class SubscriptionPlanStore
     public static IReadOnlyList<SubscriptionPlanRecord> Load()
     {
         EnsureInitialized();
-        TryAutoImportOnce();
         return ReadRecords();
-    }
-
-    public static SubscriptionPlanImportResult ImportFromCodex()
-    {
-        EnsureInitialized();
-        var import = SubscriptionPlanImporter.TryImportFromCodex();
-        if (import.Records.Count > 0)
-        {
-            Save(Merge(ReadRecords(), import.Records));
-        }
-
-        LastImportMessage = import.Message;
-        return import;
-    }
-
-    private static void TryAutoImportOnce()
-    {
-        lock (SyncRoot)
-        {
-            if (autoImportAttempted)
-            {
-                return;
-            }
-
-            autoImportAttempted = true;
-        }
-
-        _ = ImportFromCodex();
     }
 
     private static IReadOnlyList<SubscriptionPlanRecord> ReadRecords()
@@ -185,29 +153,6 @@ internal static class SubscriptionPlanStore
             ? "-"
             : string.Join(" / ", matching.Select(item => item.PlanName).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct());
         return new SubscriptionPlanSummary(amount, names, matching);
-    }
-
-    private static IReadOnlyList<SubscriptionPlanRecord> Merge(
-        IReadOnlyList<SubscriptionPlanRecord> existing,
-        IReadOnlyList<SubscriptionPlanRecord> imported)
-    {
-        return existing
-            .Concat(imported)
-            .GroupBy(item => $"{item.StartLocal:O}|{item.EndLocal:O}|{item.PlanName}", StringComparer.OrdinalIgnoreCase)
-            .Select(group =>
-            {
-                var best = group.OrderByDescending(item => item.AmountCny).First();
-                return new SubscriptionPlanRecord
-                {
-                    Id = string.IsNullOrWhiteSpace(best.Id) ? Guid.NewGuid().ToString("N") : best.Id,
-                    StartLocal = best.StartLocal,
-                    EndLocal = best.EndLocal,
-                    PlanName = best.PlanName,
-                    AmountCny = best.AmountCny
-                };
-            })
-            .OrderBy(item => item.StartLocal)
-            .ToList();
     }
 
     private static void EnsureInitialized()

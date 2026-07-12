@@ -125,44 +125,7 @@ internal sealed class SubscriptionPlanForm : Form
     {
         try
         {
-            var records = new List<SubscriptionPlanRecord>();
-            foreach (DataGridViewRow row in plansGrid.Rows)
-            {
-                if (row.IsNewRow)
-                {
-                    continue;
-                }
-
-                var startText = Convert.ToString(row.Cells[0].Value, CultureInfo.InvariantCulture);
-                var endText = Convert.ToString(row.Cells[1].Value, CultureInfo.InvariantCulture);
-                var planName = Convert.ToString(row.Cells[2].Value, CultureInfo.InvariantCulture);
-                var amountText = Convert.ToString(row.Cells[3].Value, CultureInfo.InvariantCulture);
-                if (string.IsNullOrWhiteSpace(startText) &&
-                    string.IsNullOrWhiteSpace(endText) &&
-                    string.IsNullOrWhiteSpace(planName) &&
-                    string.IsNullOrWhiteSpace(amountText))
-                {
-                    continue;
-                }
-
-                var start = ParseLocal(startText);
-                var end = ParseLocal(endText);
-                if (end <= start)
-                {
-                    throw new InvalidOperationException("套餐结束时间必须晚于开始时间。");
-                }
-
-                records.Add(new SubscriptionPlanRecord
-                {
-                    Id = Guid.NewGuid().ToString("N"),
-                    StartLocal = start,
-                    EndLocal = end,
-                    PlanName = string.IsNullOrWhiteSpace(planName) ? "未命名套餐" : planName.Trim(),
-                    AmountCny = decimal.Parse(amountText ?? "0", CultureInfo.InvariantCulture)
-                });
-            }
-
-            SubscriptionPlanStore.Save(records);
+            SubscriptionPlanStore.Save(ReadRows());
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -174,9 +137,75 @@ internal sealed class SubscriptionPlanForm : Form
 
     private void ImportFromCodex()
     {
-        var import = SubscriptionPlanStore.ImportFromCodex();
-        LoadRows(SubscriptionPlanStore.Load());
-        MessageBox.Show(this, import.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        try
+        {
+            var import = SubscriptionPlanImporter.TryImportFromCodex();
+            LoadRows(MergeRows(ReadRows(), import.Records));
+            MessageBox.Show(
+                this,
+                $"{import.Message}\n\n导入结果仅在当前窗口预览，点击“保存”后才会生效。",
+                Text,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private List<SubscriptionPlanRecord> ReadRows()
+    {
+        var records = new List<SubscriptionPlanRecord>();
+        foreach (DataGridViewRow row in plansGrid.Rows)
+        {
+            if (row.IsNewRow)
+            {
+                continue;
+            }
+
+            var startText = Convert.ToString(row.Cells[0].Value, CultureInfo.InvariantCulture);
+            var endText = Convert.ToString(row.Cells[1].Value, CultureInfo.InvariantCulture);
+            var planName = Convert.ToString(row.Cells[2].Value, CultureInfo.InvariantCulture);
+            var amountText = Convert.ToString(row.Cells[3].Value, CultureInfo.InvariantCulture);
+            if (string.IsNullOrWhiteSpace(startText) &&
+                string.IsNullOrWhiteSpace(endText) &&
+                string.IsNullOrWhiteSpace(planName) &&
+                string.IsNullOrWhiteSpace(amountText))
+            {
+                continue;
+            }
+
+            var start = ParseLocal(startText);
+            var end = ParseLocal(endText);
+            if (end <= start)
+            {
+                throw new InvalidOperationException("套餐结束时间必须晚于开始时间。");
+            }
+
+            records.Add(new SubscriptionPlanRecord
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                StartLocal = start,
+                EndLocal = end,
+                PlanName = string.IsNullOrWhiteSpace(planName) ? "未命名套餐" : planName.Trim(),
+                AmountCny = decimal.Parse(amountText ?? "0", CultureInfo.InvariantCulture)
+            });
+        }
+
+        return records;
+    }
+
+    private static IReadOnlyList<SubscriptionPlanRecord> MergeRows(
+        IEnumerable<SubscriptionPlanRecord> current,
+        IEnumerable<SubscriptionPlanRecord> imported)
+    {
+        return current
+            .Concat(imported)
+            .GroupBy(item => $"{item.StartLocal:O}|{item.EndLocal:O}|{item.PlanName}", StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(item => item.AmountCny).First())
+            .OrderBy(item => item.StartLocal)
+            .ToList();
     }
 
     private static DateTimeOffset ParseLocal(string? text)

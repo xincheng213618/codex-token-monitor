@@ -541,19 +541,7 @@ internal static class ZCodeUsageReader
 
     private static void AddBucketValues(TokenUsageBucket target, TokenUsageBucket source)
     {
-        target.Events += source.Events;
-        target.InputTokens += source.InputTokens;
-        target.CachedInputTokens += source.CachedInputTokens;
-        target.UncachedInputTokens += source.UncachedInputTokens;
-        target.OutputTokens += source.OutputTokens;
-        target.ReasoningOutputTokens += source.ReasoningOutputTokens;
-        target.TotalTokens += source.TotalTokens;
-
-        if (target.LastTokenEventLocal is null ||
-            (source.LastTokenEventLocal is not null && source.LastTokenEventLocal > target.LastTokenEventLocal))
-        {
-            target.LastTokenEventLocal = source.LastTokenEventLocal;
-        }
+        target.MergeFrom(source);
     }
 
     private static DateTimeOffset StartOfDay(DateTimeOffset value)

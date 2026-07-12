@@ -1,0 +1,49 @@
+<Window x:Class="CodexTokenMonitor.QuotaCostCurveWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="7d 额度与费用曲线"
+        Width="1240"
+        Height="700"
+        MinWidth="920"
+        MinHeight="640"
+        WindowStartupLocation="CenterOwner"
+        Background="#F6F8FB"
+        FontFamily="Microsoft YaHei UI">
+    <Window.Resources>
+        <Style x:Key="PrimaryButton" TargetType="Button">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="MinWidth" Value="84" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="Background" Value="#15806A" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock DockPanel.Dock="Left" Text="7d 额度与累计费用" FontSize="18" FontWeight="Bold" Foreground="#1F2937" />
+            <TextBlock x:Name="StatusText" DockPanel.Dock="Right" Text="正在读取数据库..." Foreground="#576374" VerticalAlignment="Center" />
+            <ComboBox x:Name="PlanComboBox" DockPanel.Dock="Right" Width="150" Height="32" Margin="0,0,14,0"
+                      VerticalContentAlignment="Center" SelectionChanged="PlanComboBox_SelectionChanged" />
+            <TextBlock DockPanel.Dock="Right" Text="套餐" Foreground="#576374" VerticalAlignment="Center" Margin="0,0,8,0" />
+        </DockPanel>
+
+        <Border Grid.Row="1" Background="White" BorderBrush="#E1E8F0" BorderThickness="1" CornerRadius="4" Padding="8">
+            <ContentControl x:Name="CurveHost" />
+        </Border>
+
+        <DockPanel Grid.Row="2" Margin="0,12,0,0" LastChildFill="False">
+            <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="关闭" Click="CloseButton_Click" />
+            <TextBlock DockPanel.Dock="Left" Foreground="#576374" VerticalAlignment="Center"
+                       Text="每条颜色代表一个周期，绿色粗线为当前周期；曲线越陡，表示同样 1% 额度对应的等价费用越少。" />
+        </DockPanel>
+    </Grid>
+</Window>

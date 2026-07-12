@@ -14,8 +14,8 @@ namespace CodexTokenMonitor;
 
 public partial class MainWindow : Window
 {
-    private const double CostCardWidth = 218;
-    private const double CostCardRightMargin = 14;
+    private const double CostCardWidth = 190;
+    private const double CostCardRightMargin = 12;
     private static readonly TimeSpan DayTimelineInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan MultiDayBreakdownInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MonthTimelineInterval = TimeSpan.FromHours(1);
@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     private readonly BackgroundCacheWarmer backgroundCacheWarmer;
     private readonly ResetOpportunitySynchronizer resetOpportunitySynchronizer = new();
     private readonly BreakdownGridAdapter breakdownGridAdapter;
+    private readonly object usageRefreshSync = new();
     private UsageSource activeSource = UsageSource.Codex;
     private bool initializing = true;
     private bool suppressRangeRefresh;
@@ -36,12 +37,17 @@ public partial class MainWindow : Window
     private bool isRefreshing;
     private bool isQuotaRefreshing;
     private bool isClosed;
+    private bool usageRefreshLoopRunning;
+    private bool usageRefreshPending;
+    private bool pendingCacheOnly;
+    private long usageRefreshVersion;
+    private Task usageRefreshLoopTask = Task.CompletedTask;
     private int lastVisibleCostColumnCount = -1;
 
     public MainWindow()
     {
         InitializeComponent();
-        backgroundCacheWarmer = new BackgroundCacheWarmer(CurrentSource, () => isRefreshing, SetBackgroundStatus);
+        backgroundCacheWarmer = new BackgroundCacheWarmer(CurrentSource, () => isRefreshing, usageQueryGate, SetBackgroundStatus);
         breakdownGridAdapter = new BreakdownGridAdapter(BreakdownGrid);
         ConfigureBreakdownGrid();
         SyncRangeModeItems(CurrentModule());
@@ -52,8 +58,15 @@ public partial class MainWindow : Window
         {
             if (AutoRefreshBox.IsChecked == true)
             {
-                _ = RefreshQuotaSummaryAsync();
-                await RefreshUsageAsync();
+                var range = GetSelectedRange();
+                if (ShouldIncludeLiveToday(range))
+                {
+                    await RefreshUsageAsync();
+                }
+                else if (CurrentModule().Reader.SupportsQuota)
+                {
+                    await RefreshQuotaSummaryAsync();
+                }
             }
         };
         refreshTimer.Start();
@@ -67,8 +80,7 @@ public partial class MainWindow : Window
                 await RefreshUsageAsync(cacheOnly: true);
             }
 
-            _ = RefreshQuotaSummaryAsync();
-            _ = RefreshUsageAsync();
+            await RefreshUsageAsync();
             _ = SyncResetOpportunitiesFromCodexAsync(showError: false);
             backgroundCacheWarmer.Start();
         };
@@ -77,6 +89,7 @@ public partial class MainWindow : Window
             isClosed = true;
             refreshTimer.Stop();
             backgroundCacheWarmer.Dispose();
+            LastDisplayStore.Flush();
         };
     }
 
@@ -282,7 +295,8 @@ public partial class MainWindow : Window
         using var form = new SubscriptionPlanForm();
         if (form.ShowDialog() == Forms.DialogResult.OK)
         {
-            _ = RefreshUsageAsync();
+            ApplyCurrentPlanSummary();
+            SetStatus("套餐设置已保存");
         }
     }
 
@@ -295,6 +309,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        codexModule.QuotaCycles = CodexQuotaCycleReader.ReadWeeklyCycles(quota, now);
         var window = new QuotaEstimateWindow(quota, codexModule.QuotaCycles)
         {
             Owner = this
@@ -458,13 +474,49 @@ public partial class MainWindow : Window
         _ = backgroundCacheWarmer.WarmNowAsync();
     }
 
-    private async Task RefreshUsageAsync(bool cacheOnly = false)
+    private Task RefreshUsageAsync(bool cacheOnly = false)
     {
-        if (isRefreshing)
+        lock (usageRefreshSync)
         {
-            return;
-        }
+            pendingCacheOnly = cacheOnly;
+            usageRefreshPending = true;
+            usageRefreshVersion++;
+            if (!usageRefreshLoopRunning)
+            {
+                usageRefreshLoopRunning = true;
+                usageRefreshLoopTask = RunUsageRefreshLoopAsync();
+            }
 
+            return usageRefreshLoopTask;
+        }
+    }
+
+    private async Task RunUsageRefreshLoopAsync()
+    {
+        while (true)
+        {
+            bool cacheOnly;
+            long requestVersion;
+            lock (usageRefreshSync)
+            {
+                if (!usageRefreshPending)
+                {
+                    usageRefreshLoopRunning = false;
+                    return;
+                }
+
+                cacheOnly = pendingCacheOnly;
+                requestVersion = usageRefreshVersion;
+                usageRefreshPending = false;
+            }
+
+            await RefreshUsageOnceAsync(cacheOnly, requestVersion);
+        }
+    }
+
+    private async Task RefreshUsageOnceAsync(bool cacheOnly, long requestVersion)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         isRefreshing = true;
         SetBusy(true);
         SetStatus(cacheOnly ? "正在读取缓存..." : "正在刷新...");
@@ -476,11 +528,6 @@ public partial class MainWindow : Window
             var range = GetSelectedRange();
             var includeLiveToday = !cacheOnly && ShouldIncludeLiveToday(range);
             var cachedQuota = module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null;
-            if (!cacheOnly && module.Reader.SupportsQuota)
-            {
-                _ = RefreshQuotaSummaryAsync();
-            }
-
             if (backgroundCacheWarmer.IsRunning)
             {
                 backgroundCacheWarmer.CancelCurrent();
@@ -499,14 +546,17 @@ public partial class MainWindow : Window
                         var transientSummary = CreateSummaryFromRows(range, transientRows);
                         var transientQuota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
                         var transientQuotaSnapshots = module.Reader.SupportsQuota
-                            ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, transientQuota)
+                            ? ReadQuotaSnapshotsForRefresh(range, transientRows, includeLiveToday, transientQuota)
                             : Array.Empty<CodexQuotaSnapshot>();
                         return new UsageQueryResult(
                             transientSummary,
                             transientRows,
-                            EstimateCodingTime(transientRows),
+                            UsageBreakdownBuilder.EstimateCodingTime(transientRows),
                             transientQuota,
-                            transientQuotaSnapshots);
+                            transientQuotaSnapshots)
+                        {
+                            DetailRows = transientRows
+                        };
                     }
 
                     if (range.Mode == RangeMode.Day)
@@ -514,26 +564,39 @@ public partial class MainWindow : Window
                         var dayUsage = module.Reader.ReadDay(range.Start, range.End, includeLiveToday);
                         var dayQuota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
                         var dayQuotaSnapshots = module.Reader.SupportsQuota
-                            ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, dayQuota)
+                            ? ReadQuotaSnapshotsForRefresh(range, dayUsage.Rows, includeLiveToday, dayQuota)
                             : Array.Empty<CodexQuotaSnapshot>();
                         return new UsageQueryResult(
                             dayUsage.Summary,
                             dayUsage.Rows,
-                            EstimateCodingTime(dayUsage.Rows),
+                            UsageBreakdownBuilder.EstimateCodingTime(dayUsage.Rows),
                             dayQuota,
-                            dayQuotaSnapshots);
+                            dayQuotaSnapshots)
+                        {
+                            DetailRows = dayUsage.Rows
+                        };
                     }
 
                     var summary = includeLiveToday
                         ? module.Reader.ReadRange(range.Start, range.End, includeLiveToday)
                         : module.Reader.ReadCachedRange(range.Start, range.End);
-                    var rows = BuildBreakdownRows(module.Reader, range, summary);
-                    var codingTime = EstimateCodingTimeForRange(module.Reader, range, rows, includeLiveToday, !includeLiveToday);
+                    var detailRows = module.Reader.ReadCachedDetailRows(range.Start, range.End);
+                    var rows = UsageBreakdownBuilder.Build(range, summary, detailRows, MultiDayBreakdownInterval);
+                    var codingTime = UsageBreakdownBuilder.EstimateCodingTimeForRange(
+                        module.Reader,
+                        range,
+                        rows,
+                        detailRows,
+                        includeLiveToday,
+                        !includeLiveToday);
                     var quota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
                     var quotaSnapshots = module.Reader.SupportsQuota
-                        ? ReadQuotaSnapshotsForRefresh(range, includeLiveToday, quota)
+                        ? ReadQuotaSnapshotsForRefresh(range, rows, includeLiveToday, quota)
                         : Array.Empty<CodexQuotaSnapshot>();
-                    return new UsageQueryResult(summary, rows, codingTime, quota, quotaSnapshots);
+                    return new UsageQueryResult(summary, rows, codingTime, quota, quotaSnapshots)
+                    {
+                        DetailRows = detailRows
+                    };
                 });
             }
             finally
@@ -541,17 +604,31 @@ public partial class MainWindow : Window
                 usageQueryGate.Release();
             }
 
+            if (requestVersion != Volatile.Read(ref usageRefreshVersion) || isClosed)
+            {
+                return;
+            }
+
             module.StoreDisplay(range, result);
             if (CurrentSource() == source)
             {
                 ApplySummary(range, result, module);
-                SetStatus(includeLiveToday ? $"已刷新 {DateTime.Now:HH:mm:ss}" : $"缓存命中 {DateTime.Now:HH:mm:ss}");
+                SetStatus(includeLiveToday
+                    ? $"已刷新 {DateTime.Now:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms"
+                    : $"缓存命中 {DateTime.Now:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms");
+                if (!cacheOnly && module.Reader.SupportsQuota)
+                {
+                    _ = RefreshQuotaSummaryAsync();
+                }
             }
         }
         catch (Exception ex)
         {
-            SetStatus("读取失败");
-            System.Windows.MessageBox.Show(this, ex.Message, "Codex Token 额度监控器", MessageBoxButton.OK, MessageBoxImage.Error);
+            if (requestVersion == Volatile.Read(ref usageRefreshVersion) && !isClosed)
+            {
+                SetStatus("读取失败");
+                System.Windows.MessageBox.Show(this, ex.Message, "Codex Token 额度监控器", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
         finally
         {
@@ -638,7 +715,7 @@ public partial class MainWindow : Window
         if (showTimeline)
         {
             SetTimelineVisible(true);
-            Timeline.SetData(range.Start, range.End, GetTimelineRows(module.Reader, range, result.BreakdownRows), GetTimelineInterval(range.Mode));
+            Timeline.SetData(range.Start, range.End, GetTimelineRows(module.Reader, range, result), GetTimelineInterval(range.Mode));
         }
         else
         {
@@ -698,6 +775,7 @@ public partial class MainWindow : Window
         {
             UsageSource.ClaudeCode => 1,
             UsageSource.ZCode => 2,
+            UsageSource.WorkBuddy => 3,
             _ => 0
         };
     }
@@ -774,7 +852,7 @@ public partial class MainWindow : Window
             Text = string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
             Foreground = new SolidColorBrush(MediaColor.FromRgb(92, 105, 122)),
             FontWeight = FontWeights.SemiBold,
-            FontSize = 12,
+            FontSize = 11.5,
             TextTrimming = TextTrimming.CharacterEllipsis
         };
         Grid.SetRow(title, 0);
@@ -785,8 +863,8 @@ public partial class MainWindow : Window
             Text = preset.Model,
             Foreground = new SolidColorBrush(MediaColor.FromRgb(101, 114, 130)),
             TextTrimming = TextTrimming.CharacterEllipsis,
-            FontSize = 12,
-            Margin = new Thickness(0, 2, 0, 4)
+            FontSize = 11.5,
+            Margin = new Thickness(0, 1, 0, 2)
         };
         Grid.SetRow(subtitle, 1);
         card.Children.Add(subtitle);
@@ -795,7 +873,7 @@ public partial class MainWindow : Window
         {
             Text = FormatCost(summary.EstimateCost(profile), profile),
             Foreground = new SolidColorBrush(MediaColor.FromRgb(31, 41, 55)),
-            FontSize = 24,
+            FontSize = 22,
             FontWeight = FontWeights.Bold,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
@@ -806,8 +884,8 @@ public partial class MainWindow : Window
         return new Border
         {
             Width = CostCardWidth,
-            Height = 110,
-            Padding = new Thickness(14, 6, 10, 4),
+            Height = 96,
+            Padding = new Thickness(10, 5, 8, 3),
             Margin = new Thickness(0, 0, CostCardRightMargin, 0),
             Background = System.Windows.Media.Brushes.Transparent,
             Child = card
@@ -920,25 +998,32 @@ public partial class MainWindow : Window
             return;
         }
 
-        var report = QuotaPaceAnalyzer.Analyze(week);
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        var report = QuotaPaceAnalyzer.Analyze(week, ResetOpportunityStore.Summarize(now));
         ResetPaceValue.Text = report.Rating;
-        ResetPaceDetail.Text = $"已{report.UsedPercent:N0}% / 应{report.ExpectedUsedPercent:N0}%";
+        ResetPaceDetail.Text =
+            $"已{report.UsedPercent:N0}% / 应{report.ExpectedUsedPercent:N0}% · " +
+            $"{QuotaPaceAnalyzer.FormatPaceDelta(report.DeltaPercent)} · {report.DetailText}";
     }
 
     private static void ApplyQuotaWindow(TextBlock valueBlock, TextBlock detailBlock, CodexQuotaWindowEstimate? window, QuotaWindowDisplayMode mode)
     {
         if (window is null)
         {
-            valueBlock.Text = mode == QuotaWindowDisplayMode.FiveHour ? "5h" : "周";
-            detailBlock.Text = "";
+            valueBlock.Text = mode == QuotaWindowDisplayMode.FiveHour ? "暂不限" : "周";
+            detailBlock.Text = mode == QuotaWindowDisplayMode.FiveHour
+                ? "当前未返回 5h 限制"
+                : "当前未返回周额度";
             return;
         }
 
         var remainingPercent = Math.Max(0m, 100m - window.UsedPercent);
         var resetAt = window.ResetAtLocal ?? window.WindowEndLocal;
+        var profile = PriceProfiles.PrimaryCodex;
+        var usedCost = window.Usage.EstimateCost(profile);
         valueBlock.Text = $"{remainingPercent:N0}%";
         detailBlock.Text = mode == QuotaWindowDisplayMode.FiveHour
-            ? $"5h {resetAt:HH:mm} · ≈ {FormatMoney(window.UsedGptCost, PriceProfiles.Gpt55StandardLong)}"
+            ? $"5h {resetAt:HH:mm} · ≈ {FormatMoney(usedCost, profile)}"
             : $"周 {resetAt:MM-dd HH:mm} · {FormatQuotaLimit(window)}";
     }
 
@@ -1190,8 +1275,24 @@ public partial class MainWindow : Window
 
     private void SetTimelineVisible(bool visible)
     {
+        var wasVisible = TimelineHost.Visibility == Visibility.Visible;
         TimelineHost.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        TimelineRow.Height = visible ? new GridLength(170) : new GridLength(0);
+        TimelineSplitter.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        TimelineSplitterRow.Height = visible ? new GridLength(10) : new GridLength(0);
+        if (visible)
+        {
+            if (!wasVisible || TimelineRow.Height.Value <= 0)
+            {
+                TimelineRow.Height = new GridLength(2, GridUnitType.Star);
+                BreakdownRow.Height = new GridLength(1, GridUnitType.Star);
+            }
+        }
+        else
+        {
+            TimelineRow.Height = new GridLength(0);
+            BreakdownRow.Height = new GridLength(1, GridUnitType.Star);
+        }
+
         if (!visible)
         {
             Timeline.ClearData();
@@ -1215,6 +1316,7 @@ public partial class MainWindow : Window
         {
             1 => UsageSource.ClaudeCode,
             2 => UsageSource.ZCode,
+            3 => UsageSource.WorkBuddy,
             _ => UsageSource.Codex
         };
     }
@@ -1344,12 +1446,106 @@ public partial class MainWindow : Window
         return freshFirst.SnapshotLocal >= freshSecond.SnapshotLocal ? freshFirst : freshSecond;
     }
 
-    private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsForRefresh(SelectedRange range, bool includeLiveToday, CodexQuotaEstimate? quota)
+    private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsForRefresh(
+        SelectedRange range,
+        IReadOnlyList<TokenUsageBucket> rows,
+        bool includeLiveToday,
+        CodexQuotaEstimate? quota)
     {
-        var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(range.Start, range.End)
-            .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot)
+        var anchors = rows
+            .Select(bucket =>
+            {
+                if (IsEventBucket(range, bucket))
+                {
+                    return bucket.StartLocal;
+                }
+
+                var bucketEnd = bucket.StartLocal.AddDays(1);
+                return (bucketEnd < range.End ? bucketEnd : range.End).AddTicks(-1);
+            })
+            .Where(anchor => anchor >= range.Start && anchor < range.End)
+            .Distinct()
             .ToList();
-        return includeLiveToday ? MergeQuotaSnapshot(snapshots, range, quota) : snapshots;
+        var supplemental = quota is null
+            ? Array.Empty<CodexQuotaSnapshot>()
+            : new[]
+            {
+                new CodexQuotaSnapshot(
+                    quota.SnapshotLocal,
+                    quota.LimitId,
+                    quota.LimitName,
+                    quota.FiveHour?.UsedPercent,
+                    quota.FiveHour?.ResetAtLocal,
+                    quota.Week?.UsedPercent,
+                    quota.Week?.ResetAtLocal)
+            };
+
+        return CodexUsageReader.ReadMaterializedQuotaTimeline(
+            anchors,
+            supplemental,
+            refreshExisting: false);
+    }
+
+    private static IReadOnlyList<CodexQuotaSnapshot> FilterQuotaSnapshotsForQuota(
+        IEnumerable<CodexQuotaSnapshot> snapshots,
+        CodexQuotaEstimate? quota)
+    {
+        var filtered = snapshots
+            .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot)
+            .OrderBy(item => item.SnapshotLocal)
+            .ToList();
+
+        return CodexQuotaCycleReader.MarkTransientResetOutliers(
+            RemoveShadowedZeroQuotaSnapshots(filtered));
+    }
+
+    private static IReadOnlyList<CodexQuotaSnapshot> RemoveShadowedZeroQuotaSnapshots(IReadOnlyList<CodexQuotaSnapshot> snapshots)
+    {
+        if (snapshots.Count == 0)
+        {
+            return snapshots;
+        }
+
+        var usefulSnapshots = snapshots.Where(HasNonZeroQuotaUsage).ToList();
+        if (usefulSnapshots.Count == 0)
+        {
+            return snapshots;
+        }
+
+        return snapshots
+            .Where(snapshot =>
+                !IsZeroQuotaSnapshot(snapshot) ||
+                !usefulSnapshots.Any(useful =>
+                    Math.Abs((useful.SnapshotLocal - snapshot.SnapshotLocal).TotalMinutes) <= 10 &&
+                    QuotaWindowsOverlap(snapshot, useful)))
+            .ToList();
+    }
+
+    private static bool IsZeroQuotaSnapshot(CodexQuotaSnapshot snapshot)
+    {
+        return snapshot.FiveHourUsedPercent == 0m && snapshot.WeekUsedPercent == 0m;
+    }
+
+    private static bool HasNonZeroQuotaUsage(CodexQuotaSnapshot snapshot)
+    {
+        return (snapshot.FiveHourUsedPercent ?? 0m) > 0m ||
+               (snapshot.WeekUsedPercent ?? 0m) > 0m;
+    }
+
+    private static bool QuotaWindowsOverlap(CodexQuotaSnapshot first, CodexQuotaSnapshot second)
+    {
+        return SameQuotaReset(first.FiveHourResetAtLocal, second.FiveHourResetAtLocal) ||
+               SameQuotaReset(first.WeekResetAtLocal, second.WeekResetAtLocal);
+    }
+
+    private static bool SameQuotaReset(DateTimeOffset? first, DateTimeOffset? second)
+    {
+        if (first is null || second is null)
+        {
+            return false;
+        }
+
+        return Math.Abs((first.Value - second.Value).TotalMinutes) <= 10;
     }
 
     private static IReadOnlyList<CodexQuotaSnapshot> MergeQuotaSnapshot(
@@ -1357,12 +1553,13 @@ public partial class MainWindow : Window
         SelectedRange range,
         CodexQuotaEstimate? quota)
     {
+        var filtered = FilterQuotaSnapshotsForQuota(snapshots, quota);
         if (quota is null || quota.SnapshotLocal < range.Start || quota.SnapshotLocal >= range.End)
         {
-            return snapshots;
+            return filtered;
         }
 
-        return snapshots
+        var merged = filtered
             .Append(new CodexQuotaSnapshot(
                 quota.SnapshotLocal,
                 quota.LimitId,
@@ -1370,8 +1567,10 @@ public partial class MainWindow : Window
                 quota.FiveHour?.UsedPercent,
                 quota.FiveHour?.ResetAtLocal,
                 quota.Week?.UsedPercent,
-                quota.Week?.ResetAtLocal))
-            .GroupBy(item => item.SnapshotLocal)
+                quota.Week?.ResetAtLocal));
+
+        return FilterQuotaSnapshotsForQuota(merged, quota)
+            .GroupBy(item => $"{item.SnapshotLocal:O}|{item.LimitId ?? ""}", StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(item => item.WeekUsedPercent ?? -1m).First())
             .OrderBy(item => item.SnapshotLocal)
             .ToList();
@@ -1404,109 +1603,17 @@ public partial class MainWindow : Window
         };
     }
 
-    private static IReadOnlyList<TokenUsageBucket> GetTimelineRows(IUsageSourceReader reader, SelectedRange range, IReadOnlyList<TokenUsageBucket> breakdownRows)
+    private static IReadOnlyList<TokenUsageBucket> GetTimelineRows(IUsageSourceReader reader, SelectedRange range, UsageQueryResult result)
     {
         if (range.Mode != RangeMode.Month)
         {
-            return breakdownRows;
+            return result.BreakdownRows;
         }
 
-        var detailRows = reader.ReadCachedDetailRows(range.Start, range.End);
-        return detailRows.Count > 0 ? detailRows : breakdownRows;
-    }
-
-    private static IReadOnlyList<TokenUsageBucket> BuildBreakdownRows(IUsageSourceReader reader, SelectedRange range, TokenUsageSummary summary)
-    {
-        if (range.Mode == RangeMode.Day)
-        {
-            return reader.ReadCachedDetailRows(range.Start, range.End);
-        }
-
-        if (range.Mode is RangeMode.Week or RangeMode.Cycle)
-        {
-            return BuildIntervalBreakdownRows(reader, range, summary, MultiDayBreakdownInterval);
-        }
-
-        return summary.DailyBuckets;
-    }
-
-    private static IReadOnlyList<TokenUsageBucket> BuildIntervalBreakdownRows(IUsageSourceReader reader, SelectedRange range, TokenUsageSummary summary, TimeSpan interval)
-    {
-        var detailRows = reader.ReadCachedDetailRows(range.Start, range.End);
-        if (detailRows.Count == 0)
-        {
-            return summary.DailyBuckets;
-        }
-
-        var buckets = new Dictionary<DateTimeOffset, TokenUsageBucket>();
-        var detailDates = new HashSet<DateOnly>();
-        foreach (var row in detailRows)
-        {
-            var hour = StartOfInterval(row.StartLocal, interval);
-            detailDates.Add(DateOnly.FromDateTime(row.StartLocal.DateTime));
-            if (!buckets.TryGetValue(hour, out var bucket))
-            {
-                bucket = new TokenUsageBucket { StartLocal = hour };
-                buckets[hour] = bucket;
-            }
-
-            AddBucketValues(bucket, row);
-        }
-
-        var rows = buckets.Values.Where(bucket => bucket.Events > 0).ToList();
-        foreach (var dailyBucket in summary.DailyBuckets)
-        {
-            var date = DateOnly.FromDateTime(dailyBucket.StartLocal.DateTime);
-            if (!detailDates.Contains(date))
-            {
-                rows.Add(dailyBucket);
-            }
-        }
-
-        return rows.OrderBy(bucket => bucket.StartLocal).ToList();
-    }
-
-    private static DateTimeOffset StartOfInterval(DateTimeOffset value, TimeSpan interval)
-    {
-        var dayStart = StartOfDay(value);
-        var ticks = (value - dayStart).Ticks / interval.Ticks * interval.Ticks;
-        return dayStart.AddTicks(ticks);
-    }
-
-    private static DateTimeOffset StartOfDay(DateTimeOffset value)
-    {
-        return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, value.Offset);
-    }
-
-    private static TimeSpan EstimateCodingTimeForRange(IUsageSourceReader reader, SelectedRange range, IReadOnlyList<TokenUsageBucket> breakdownRows, bool includeLiveToday, bool cacheOnly)
-    {
-        if (range.Mode == RangeMode.Day || range.IsCustomStart)
-        {
-            return EstimateCodingTime(breakdownRows);
-        }
-
-        var cachedRows = reader.ReadCachedDetailRows(range.Start, range.End);
-        if (cachedRows.Count > 0)
-        {
-            return EstimateCodingTime(cachedRows);
-        }
-
-        if (cacheOnly)
-        {
-            return TimeSpan.Zero;
-        }
-
-        var total = TimeSpan.Zero;
-        for (var segmentStart = range.Start; segmentStart < range.End;)
-        {
-            var nextDay = StartOfDay(segmentStart).AddDays(1);
-            var segmentEnd = nextDay < range.End ? nextDay : range.End;
-            var dayRows = reader.ReadDetailRows(segmentStart, segmentEnd, includeLiveToday);
-            total += EstimateCodingTime(dayRows);
-            segmentStart = segmentEnd;
-        }
-
-        return total;
+        var detailRows = result.DetailRows.Count > 0
+            ? result.DetailRows
+            : reader.ReadCachedDetailRows(range.Start, range.End);
+        return detailRows.Count > 0 ? detailRows : result.BreakdownRows;
     }
 
     private static bool UsesEventBreakdown(SelectedRange range, IReadOnlyList<TokenUsageBucket> rows)
@@ -1531,18 +1638,7 @@ public partial class MainWindow : Window
 
     private static void AddBucketValues(TokenUsageBucket target, TokenUsageBucket source)
     {
-        target.Events += source.Events;
-        target.InputTokens += source.InputTokens;
-        target.CachedInputTokens += source.CachedInputTokens;
-        target.UncachedInputTokens += source.UncachedInputTokens;
-        target.OutputTokens += source.OutputTokens;
-        target.ReasoningOutputTokens += source.ReasoningOutputTokens;
-        target.TotalTokens += source.TotalTokens;
-        if (source.LastTokenEventLocal is not null &&
-            (target.LastTokenEventLocal is null || source.LastTokenEventLocal > target.LastTokenEventLocal))
-        {
-            target.LastTokenEventLocal = source.LastTokenEventLocal;
-        }
+        target.MergeFrom(source);
     }
 
     private static string FormatBucketLabel(SelectedRange range, DateTimeOffset start, bool eventBreakdown)
@@ -1562,28 +1658,161 @@ public partial class MainWindow : Window
 
     private static string FormatQuotaSnapshotForBucket(SelectedRange range, TokenUsageBucket bucket, IReadOnlyList<CodexQuotaSnapshot> snapshots, bool eventBreakdown)
     {
+        var snapshot = SelectQuotaSnapshotForBucket(range, bucket, snapshots, eventBreakdown);
+        return snapshot is null ||
+               snapshot.FiveHourUsedPercent is null && snapshot.WeekUsedPercent is null
+            ? "-"
+            : snapshot.IsAnomaly
+                ? "异常"
+            : $"{FormatQuotaRemaining(snapshot.FiveHourUsedPercent)} / {FormatQuotaRemaining(snapshot.WeekUsedPercent)}";
+    }
+
+    private static CodexQuotaSnapshot? SelectQuotaSnapshotForBucket(SelectedRange range, TokenUsageBucket bucket, IReadOnlyList<CodexQuotaSnapshot> snapshots, bool eventBreakdown)
+    {
         if (snapshots.Count == 0)
         {
-            return "-";
+            return null;
         }
 
-        var bucketEnd = eventBreakdown
-            ? (range.Mode == RangeMode.Day || range.IsCustomStart
-                ? bucket.StartLocal.AddSeconds(2)
-                : bucket.StartLocal.Add(MultiDayBreakdownInterval))
-            : bucket.StartLocal.AddDays(1);
-        var snapshot = snapshots
-            .Where(item => item.SnapshotLocal >= bucket.StartLocal && item.SnapshotLocal < bucketEnd)
+        var ordered = snapshots.OrderBy(item => item.SnapshotLocal).ToList();
+        if (eventBreakdown)
+        {
+            var eventTolerance = range.Mode == RangeMode.Day || range.IsCustomStart
+                ? TimeSpan.FromMinutes(2)
+                : TimeSpan.FromMinutes(10);
+
+            return InterpolateQuotaSnapshotForAnchor(ordered, bucket.StartLocal, eventTolerance);
+        }
+
+        var bucketEnd = bucket.StartLocal.AddDays(1);
+
+        if (!eventBreakdown)
+        {
+            var inBucket = ordered
+                .Where(item => item.SnapshotLocal >= bucket.StartLocal && item.SnapshotLocal < bucketEnd)
+                .LastOrDefault();
+            if (inBucket is not null)
+            {
+                return inBucket;
+            }
+        }
+
+        var anchor = eventBreakdown ? bucket.StartLocal : bucketEnd;
+        var snapshot = ordered
+            .Where(item => item.SnapshotLocal <= anchor)
             .LastOrDefault();
-        snapshot ??= snapshots
-            .Where(item => item.SnapshotLocal <= bucket.StartLocal)
-            .LastOrDefault();
-        snapshot ??= snapshots
-            .Where(item => item.SnapshotLocal > bucket.StartLocal && item.SnapshotLocal <= bucket.StartLocal.AddMinutes(2))
+        if (snapshot is not null)
+        {
+            return snapshot;
+        }
+
+        var fallbackTolerance = TimeSpan.FromMinutes(2);
+        return ordered
+            .Where(item => item.SnapshotLocal > anchor && item.SnapshotLocal <= anchor.Add(fallbackTolerance))
             .FirstOrDefault();
-        return snapshot is null
-            ? "-"
-            : $"{FormatQuotaRemaining(snapshot.FiveHourUsedPercent)} / {FormatQuotaRemaining(snapshot.WeekUsedPercent)}";
+    }
+
+    private static CodexQuotaSnapshot? InterpolateQuotaSnapshotForAnchor(
+        IReadOnlyList<CodexQuotaSnapshot> ordered,
+        DateTimeOffset anchor,
+        TimeSpan nearestTolerance)
+    {
+        var nearest = ordered
+            .Where(item => Math.Abs((item.SnapshotLocal - anchor).TotalSeconds) <= nearestTolerance.TotalSeconds)
+            .OrderBy(item => Math.Abs((item.SnapshotLocal - anchor).TotalSeconds))
+            .ThenByDescending(HasNonZeroQuotaUsage)
+            .ThenByDescending(item => item.SnapshotLocal <= anchor)
+            .FirstOrDefault();
+
+        if (nearest?.IsAnomaly == true &&
+            Math.Abs((nearest.SnapshotLocal - anchor).TotalSeconds) <= 2)
+        {
+            return nearest;
+        }
+
+        var trusted = ordered.Where(item => !item.IsAnomaly).ToList();
+
+        var before = trusted.LastOrDefault(item => item.SnapshotLocal <= anchor);
+        var after = trusted.FirstOrDefault(item => item.SnapshotLocal >= anchor);
+        if (before is not null && after is not null && before.SnapshotLocal != after.SnapshotLocal)
+        {
+            var fiveHourUsed = InterpolateUsedPercent(
+                before,
+                after,
+                anchor,
+                item => item.FiveHourUsedPercent,
+                item => item.FiveHourResetAtLocal);
+            var weekUsed = InterpolateUsedPercent(
+                before,
+                after,
+                anchor,
+                item => item.WeekUsedPercent,
+                item => item.WeekResetAtLocal);
+
+            if (fiveHourUsed is not null || weekUsed is not null)
+            {
+                return new CodexQuotaSnapshot(
+                    anchor,
+                    !string.IsNullOrWhiteSpace(before.LimitId) ? before.LimitId : after.LimitId,
+                    !string.IsNullOrWhiteSpace(before.LimitName) ? before.LimitName : after.LimitName,
+                    fiveHourUsed,
+                    SelectInterpolatedReset(before.FiveHourResetAtLocal, after.FiveHourResetAtLocal),
+                    weekUsed,
+                    SelectInterpolatedReset(before.WeekResetAtLocal, after.WeekResetAtLocal));
+            }
+        }
+
+        if (nearest is not null && !nearest.IsAnomaly)
+        {
+            return nearest;
+        }
+
+        return trusted
+            .OrderBy(item => Math.Abs((item.SnapshotLocal - anchor).TotalSeconds))
+            .FirstOrDefault(item => Math.Abs((item.SnapshotLocal - anchor).TotalSeconds) <= nearestTolerance.TotalSeconds);
+    }
+
+    private static decimal? InterpolateUsedPercent(
+        CodexQuotaSnapshot before,
+        CodexQuotaSnapshot after,
+        DateTimeOffset anchor,
+        Func<CodexQuotaSnapshot, decimal?> usedSelector,
+        Func<CodexQuotaSnapshot, DateTimeOffset?> resetSelector)
+    {
+        var beforeUsed = usedSelector(before);
+        var afterUsed = usedSelector(after);
+        if (beforeUsed is null || afterUsed is null)
+        {
+            return beforeUsed ?? afterUsed;
+        }
+
+        if (!SameQuotaReset(resetSelector(before), resetSelector(after)))
+        {
+            return null;
+        }
+
+        if (after.SnapshotLocal <= before.SnapshotLocal)
+        {
+            return ClampPercent(beforeUsed.Value);
+        }
+
+        if (afterUsed.Value + 1m < beforeUsed.Value)
+        {
+            return null;
+        }
+
+        var ratio = (decimal)((anchor - before.SnapshotLocal).TotalSeconds / (after.SnapshotLocal - before.SnapshotLocal).TotalSeconds);
+        return ClampPercent(beforeUsed.Value + ((afterUsed.Value - beforeUsed.Value) * ratio));
+    }
+
+    private static DateTimeOffset? SelectInterpolatedReset(DateTimeOffset? before, DateTimeOffset? after)
+    {
+        return SameQuotaReset(before, after) ? after ?? before : null;
+    }
+
+    private static decimal ClampPercent(decimal value)
+    {
+        return Math.Max(0m, Math.Min(100m, value));
     }
 
     private static string FormatQuotaRemaining(decimal? usedPercent)
@@ -1593,7 +1822,14 @@ public partial class MainWindow : Window
 
     private static string FormatQuotaLimit(CodexQuotaWindowEstimate? window)
     {
-        return window?.EstimatedGptLimit is null ? "-" : $"≈{FormatMoney(window.EstimatedGptLimit.Value, PriceProfiles.Gpt55StandardLong)}";
+        if (window is null || window.UsedPercent <= 0m)
+        {
+            return "-";
+        }
+
+        var profile = PriceProfiles.PrimaryCodex;
+        var usedCost = window.Usage.EstimateCost(profile);
+        return $"≈{FormatMoney(usedCost / (window.UsedPercent / 100m), profile)}";
     }
 
     private static string FormatPresetColumnTitle(PricePreset? preset, string fallback)
@@ -1696,38 +1932,6 @@ public partial class MainWindow : Window
             >= 1 => $"¥{value:N2}",
             _ => $"¥{value:N4}"
         };
-    }
-
-    private static TimeSpan EstimateCodingTime(IReadOnlyList<TokenUsageBucket> rows)
-    {
-        var ordered = rows
-            .Where(row => row.Events > 0)
-            .Select(row => row.StartLocal)
-            .OrderBy(value => value)
-            .ToList();
-        if (ordered.Count == 0)
-        {
-            return TimeSpan.Zero;
-        }
-
-        var active = TimeSpan.Zero;
-        var sessionStart = ordered[0];
-        var previous = ordered[0];
-        var maxIdle = TimeSpan.FromMinutes(10);
-        for (var i = 1; i < ordered.Count; i++)
-        {
-            var current = ordered[i];
-            if (current - previous > maxIdle)
-            {
-                active += previous - sessionStart;
-                sessionStart = current;
-            }
-
-            previous = current;
-        }
-
-        active += previous - sessionStart;
-        return active;
     }
 
     private static string FormatDuration(TimeSpan value)

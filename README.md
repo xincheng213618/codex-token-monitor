@@ -32,7 +32,7 @@
 - Windows 10/11
 - .NET SDK 8.0+
 
-项目主界面使用 WPF，目标框架是 `net8.0-windows`。少量设置窗口仍复用 WinForms 对话框。
+项目主界面使用 WPF，目标框架是 `net8.0-windows10.0.19041.0`。少量设置窗口仍复用 WinForms 对话框。
 
 ## 构建
 
@@ -110,11 +110,23 @@ cost = uncached_input_millions * input_price
 
 ## 开发说明
 
-主项目：
+项目分层：
 
 ```text
-src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj
+src/CodexTokenMonitor.Core/CodexTokenMonitor.Core.csproj   日志、缓存、统计与额度计算
+src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj    WPF 界面与本地对话框
+tests/CodexTokenMonitor.Core.Tests/                        核心回归测试
 ```
+
+运行测试：
+
+```powershell
+dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.csproj -c Release
+```
+
+实时日志采用“首次完整读取、后续按文件尾部增量读取”的方式。活动 JSONL
+被截断、替换、清理缓存或查询需要更早覆盖范围时，读取游标会自动失效并安全回退；
+历史完整日仍以 SQLite 数据为准。后台缓存与前台刷新共用 I/O 闸门，避免同时扫描。
 
 关键文件：
 
@@ -131,3 +143,11 @@ src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj
 ## 隐私
 
 这个工具的目标是本地观测，不会主动联网上传日志。公开仓库不包含个人日志、缓存数据库或发布产物。
+
+## 项目演进记录
+
+从最初的 token 统计脚本到当前桌面监控器的需求讨论和迭代记录，见：
+
+- [`docs/history/2026-06-22-codex-token-monitor-thread.md`](docs/history/2026-06-22-codex-token-monitor-thread.md)
+
+该档案只包含用户与 Codex 的文字消息，不包含截图二进制、工具原始输出、系统指令或访问凭证。Codex 原始任务仍由桌面应用保存在用户目录中。

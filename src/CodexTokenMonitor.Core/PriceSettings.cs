@@ -8,8 +8,9 @@ internal static class PricePresetGroups
     public const string Codex = "Codex";
     public const string ClaudeCode = "Claude Code";
     public const string ZCode = "ZCode";
+    public const string WorkBuddy = "WorkBuddy";
 
-    public static readonly IReadOnlyList<string> All = new[] { Codex, ClaudeCode, ZCode };
+    public static readonly IReadOnlyList<string> All = new[] { Codex, ClaudeCode, ZCode, WorkBuddy };
 
     public static string ForSource(UsageSource source)
     {
@@ -17,6 +18,7 @@ internal static class PricePresetGroups
         {
             UsageSource.ClaudeCode => ClaudeCode,
             UsageSource.ZCode => ZCode,
+            UsageSource.WorkBuddy => WorkBuddy,
             _ => Codex
         };
     }
@@ -27,6 +29,7 @@ internal static class PricePresetGroups
         {
             "claude" or "claude code" or "claudecode" => ClaudeCode,
             "zcode" or "glm" or "z.ai" or "zai" or "智谱" => ZCode,
+            "workbuddy" or "work buddy" or "buddy" => WorkBuddy,
             _ => Codex
         };
     }
@@ -34,8 +37,8 @@ internal static class PricePresetGroups
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 8;
-    public string GptName { get; set; } = "GPT-5.5 Standard Short";
+    public int DisplayOrderVersion { get; set; } = 13;
+    public string GptName { get; set; } = "GPT-5.6 Sol";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
     public decimal GptOutputPerMillion { get; set; } = 30.00m;
@@ -51,11 +54,12 @@ internal sealed class PriceSettings
     public List<PricePreset> CodexPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Codex).ToList();
     public List<PricePreset> ClaudeCodePresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.ClaudeCode).ToList();
     public List<PricePreset> ZCodePresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.ZCode).ToList();
+    public List<PricePreset> WorkBuddyPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.WorkBuddy).ToList();
 
     public PriceProfile ToGptProfile()
     {
         return new PriceProfile(
-            string.IsNullOrWhiteSpace(GptName) ? "GPT-5.5 Standard Short" : GptName.Trim(),
+            string.IsNullOrWhiteSpace(GptName) ? "GPT-5.6 Sol" : GptName.Trim(),
             "$",
             GptUncachedInputPerMillion,
             GptCachedInputPerMillion,
@@ -103,7 +107,8 @@ internal sealed class PriceSettings
             Presets = Presets.Select(item => item.Clone()).ToList(),
             CodexPresets = CodexPresets.Select(item => item.Clone()).ToList(),
             ClaudeCodePresets = ClaudeCodePresets.Select(item => item.Clone()).ToList(),
-            ZCodePresets = ZCodePresets.Select(item => item.Clone()).ToList()
+            ZCodePresets = ZCodePresets.Select(item => item.Clone()).ToList(),
+            WorkBuddyPresets = WorkBuddyPresets.Select(item => item.Clone()).ToList()
         };
     }
 
@@ -113,6 +118,7 @@ internal sealed class PriceSettings
         {
             PricePresetGroups.ClaudeCode => ClaudeCodePresets,
             PricePresetGroups.ZCode => ZCodePresets,
+            PricePresetGroups.WorkBuddy => WorkBuddyPresets,
             _ => CodexPresets
         };
     }
@@ -126,6 +132,9 @@ internal sealed class PriceSettings
                 break;
             case PricePresetGroups.ZCode:
                 ZCodePresets = presets;
+                break;
+            case PricePresetGroups.WorkBuddy:
+                WorkBuddyPresets = presets;
                 break;
             default:
                 CodexPresets = presets;
@@ -184,6 +193,9 @@ internal sealed class PricePreset
             Preset("OpenAI", "GPT-5.5 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI API Pricing"),
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档"),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
+            Preset("OpenAI", "GPT-5.6 Sol", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI Help Center GPT-5.6 preview"),
+            Preset("OpenAI", "GPT-5.6 Terra", "$", "USD / 1M tokens", 1_000_000m, 2.50m, 0.25m, 15.00m, "OpenAI Help Center GPT-5.6 preview"),
+            Preset("OpenAI", "GPT-5.6 Luna", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 6.00m, "OpenAI Help Center GPT-5.6 preview"),
             Preset("OpenAI", "GPT-5.5 Standard Long", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 45.00m, "历史长上下文对比档"),
             Preset("OpenAI", "GPT-5.5 Priority Short", "$", "USD / 1M tokens", 1_000_000m, 12.50m, 1.25m, 75.00m, "OpenAI priority short context"),
             Preset("OpenAI", "GPT-5.4 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI API Pricing"),
@@ -266,7 +278,8 @@ internal sealed class PricePreset
         {
             PricePresetGroups.ClaudeCode => ("Claude", "Opus 4.8 API"),
             PricePresetGroups.ZCode => ("智谱/Z.AI", "GLM-5.2 1M"),
-            _ => ("OpenAI", "GPT-5.5 Standard Short")
+            PricePresetGroups.WorkBuddy => ("Kimi（月之暗面）", "K2.7 Code"),
+            _ => ("OpenAI", "GPT-5.6 Sol")
         };
         var ordered = new List<PricePreset>();
         var first = presets.FirstOrDefault(item =>
@@ -335,7 +348,7 @@ internal static class PriceSettingsStore
     {
         var settings = new PriceSettings
         {
-            DisplayOrderVersion = 8,
+            DisplayOrderVersion = 13,
             Presets = new(),
             CodexPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Codex), PricePresetGroups.Codex),
@@ -345,7 +358,10 @@ internal static class PriceSettingsStore
                 PricePresetGroups.ClaudeCode),
             ZCodePresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.ZCode), PricePresetGroups.ZCode),
-                PricePresetGroups.ZCode)
+                PricePresetGroups.ZCode),
+            WorkBuddyPresets = ApplyDefaultDisplayOrder(
+                NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.WorkBuddy), PricePresetGroups.WorkBuddy),
+                PricePresetGroups.WorkBuddy)
         };
         return settings;
     }
@@ -412,10 +428,18 @@ internal static class PriceSettingsStore
             var path = GetPath();
             if (File.Exists(path))
             {
-                var settings = JsonSerializer.Deserialize<PriceSettings>(File.ReadAllText(path));
+                var json = File.ReadAllText(path);
+                var settings = JsonSerializer.Deserialize<PriceSettings>(json);
                 if (settings is not null)
                 {
-                    return Normalize(settings);
+                    var normalized = Normalize(settings);
+                    var normalizedJson = JsonSerializer.Serialize(normalized, JsonOptions);
+                    if (!string.Equals(json.Trim(), normalizedJson.Trim(), StringComparison.Ordinal))
+                    {
+                        File.WriteAllText(path, normalizedJson);
+                    }
+
+                    return normalized;
                 }
             }
         }
@@ -433,17 +457,29 @@ internal static class PriceSettingsStore
         var codexPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Codex), PricePresetGroups.Codex);
         var claudePresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.ClaudeCode), PricePresetGroups.ClaudeCode);
         var zCodePresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.ZCode), PricePresetGroups.ZCode);
-        if (settings.DisplayOrderVersion < defaults.DisplayOrderVersion)
+        var workBuddyPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.WorkBuddy), PricePresetGroups.WorkBuddy);
+        var shouldRefreshDefaults = settings.DisplayOrderVersion < defaults.DisplayOrderVersion;
+        if (shouldRefreshDefaults)
         {
             codexPresets = ApplyDefaultDisplayOrder(codexPresets, PricePresetGroups.Codex);
             claudePresets = ApplyDefaultDisplayOrder(claudePresets, PricePresetGroups.ClaudeCode);
             zCodePresets = ApplyDefaultDisplayOrder(zCodePresets, PricePresetGroups.ZCode);
+            workBuddyPresets = ApplyDefaultDisplayOrder(workBuddyPresets, PricePresetGroups.WorkBuddy);
+        }
+
+        var gptName = string.IsNullOrWhiteSpace(settings.GptName)
+            ? defaults.GptName
+            : settings.GptName.Trim();
+        if (string.Equals(gptName, "GPT-5.5 Standard Short", StringComparison.OrdinalIgnoreCase) ||
+            IsRetiredTieredPresetName(gptName))
+        {
+            gptName = defaults.GptName;
         }
 
         return new PriceSettings
         {
             DisplayOrderVersion = defaults.DisplayOrderVersion,
-            GptName = string.IsNullOrWhiteSpace(settings.GptName) ? defaults.GptName : settings.GptName.Trim(),
+            GptName = gptName,
             GptUncachedInputPerMillion = PositiveOrDefault(settings.GptUncachedInputPerMillion, defaults.GptUncachedInputPerMillion),
             GptCachedInputPerMillion = PositiveOrDefault(settings.GptCachedInputPerMillion, defaults.GptCachedInputPerMillion),
             GptOutputPerMillion = PositiveOrDefault(settings.GptOutputPerMillion, defaults.GptOutputPerMillion),
@@ -456,7 +492,8 @@ internal static class PriceSettingsStore
             Presets = new(),
             CodexPresets = codexPresets,
             ClaudeCodePresets = claudePresets,
-            ZCodePresets = zCodePresets
+            ZCodePresets = zCodePresets,
+            WorkBuddyPresets = workBuddyPresets
         };
     }
 
@@ -502,7 +539,7 @@ internal static class PriceSettingsStore
     {
         var preferred = new (string Group, string Provider, string Model)[]
         {
-            ("Codex", "OpenAI", "GPT-5.5 Standard Short"),
+            ("Codex", "OpenAI", "GPT-5.6 Sol"),
             ("Codex", "DeepSeek", "V4 Pro"),
             ("Codex", "Xiaomi", "MiMo V2.5 Pro"),
             ("Claude Code", "Claude", "Opus 4.8 API"),
@@ -510,7 +547,10 @@ internal static class PriceSettingsStore
             ("Claude Code", "Xiaomi", "MiMo V2.5 Pro"),
             ("ZCode", "智谱/Z.AI", "GLM-5.2 1M"),
             ("ZCode", "DeepSeek", "V4 Pro"),
-            ("ZCode", "Xiaomi", "MiMo V2.5 Pro")
+            ("ZCode", "Xiaomi", "MiMo V2.5 Pro"),
+            ("WorkBuddy", "Kimi（月之暗面）", "K2.7 Code"),
+            ("WorkBuddy", "DeepSeek", "V4 Pro"),
+            ("WorkBuddy", "智谱/Z.AI", "GLM-5.2 1M")
         };
 
         var ordered = new List<PricePreset>();
@@ -542,6 +582,7 @@ internal static class PriceSettingsStore
         var source = (input is { Count: > 0 } ? input : PricePreset.DefaultsForGroup(normalizedGroup))
             .Concat(PricePreset.DefaultsForGroup(normalizedGroup))
             .Where(item => !string.IsNullOrWhiteSpace(item.Model))
+            .Where(item => !IsRetiredTieredPresetName(item.Model))
             .Select(item => NormalizePreset(item, normalizedGroup))
             .ToList();
 
@@ -574,6 +615,12 @@ internal static class PriceSettingsStore
         };
     }
 
+    private static bool IsRetiredTieredPresetName(string? model)
+    {
+        return string.Equals(model?.Trim(), "GPT-5.6 API", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(model?.Trim(), "GPT-5.6 Sol Auto Context", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string InferGroup(PricePreset preset)
     {
         if (ContainsIgnoreCase(preset.Provider, "Claude") ||
@@ -590,6 +637,13 @@ internal static class PriceSettingsStore
             ContainsIgnoreCase(preset.Model, "GLM"))
         {
             return PricePresetGroups.ZCode;
+        }
+
+        if (ContainsIgnoreCase(preset.Provider, "WorkBuddy") ||
+            ContainsIgnoreCase(preset.Model, "WorkBuddy") ||
+            ContainsIgnoreCase(preset.Model, "Buddy"))
+        {
+            return PricePresetGroups.WorkBuddy;
         }
 
         return PricePresetGroups.Codex;

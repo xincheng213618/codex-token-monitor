@@ -3,20 +3,20 @@ using System.Text.Json;
 
 namespace CodexTokenMonitor;
 
-internal sealed record ClaudeUsageEntry(
+internal sealed record WorkBuddyUsageEntry(
     string Key,
     DateTimeOffset Timestamp,
     long Input,
     long Cached,
-    long Output)
+    long Output,
+    long Total)
 {
-    public long Total => Input + Output;
-    public long CompletenessScore => Input + Cached + Output;
+    public long CompletenessScore => Input + Cached + Output + Total;
 }
 
-internal static class ClaudeUsageReader
+internal static class WorkBuddyUsageReader
 {
-    private const string CacheFolder = "ClaudeCodeTokenMonitor";
+    private const string CacheFolder = "WorkBuddyTokenMonitor";
 
     public static bool ClearCache()
     {
@@ -292,7 +292,7 @@ internal static class ClaudeUsageReader
 
     private static List<TokenUsageEvent> ReadEventsUncached(DateTimeOffset startLocal, DateTimeOffset endLocal)
     {
-        var entries = new Dictionary<string, ClaudeUsageEntry>(StringComparer.Ordinal);
+        var entries = new Dictionary<string, WorkBuddyUsageEntry>(StringComparer.Ordinal);
 
         foreach (var root in GetLogRoots())
         {
@@ -304,14 +304,14 @@ internal static class ClaudeUsageReader
 
         return entries.Values
             .OrderBy(item => item.Timestamp)
-            .Select(item => new TokenUsageEvent(item.Timestamp, item.Input, item.Cached, item.Output, 0, item.Total, $"claude:{item.Key}"))
+            .Select(item => new TokenUsageEvent(item.Timestamp, item.Input, item.Cached, item.Output, 0, item.Total, $"workbuddy:{item.Key}"))
             .ToList();
     }
 
     private static IEnumerable<string> GetLogRoots()
     {
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var projects = Path.Combine(profile, ".claude", "projects");
+        var projects = Path.Combine(profile, ".workbuddy", "projects");
         if (Directory.Exists(projects))
         {
             yield return projects;
@@ -350,7 +350,7 @@ internal static class ClaudeUsageReader
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        Dictionary<string, ClaudeUsageEntry> entries)
+        Dictionary<string, WorkBuddyUsageEntry> entries)
     {
         try
         {
@@ -358,7 +358,8 @@ internal static class ClaudeUsageReader
             using var reader = new StreamReader(stream);
             while (reader.ReadLine() is { } line)
             {
-                if (!line.Contains("\"usage\"", StringComparison.Ordinal))
+                if (!line.Contains("\"usage\"", StringComparison.Ordinal) ||
+                    !line.Contains("\"input_tokens\"", StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -382,7 +383,7 @@ internal static class ClaudeUsageReader
         }
     }
 
-    private static ClaudeUsageEntry? TryReadLine(
+    private static WorkBuddyUsageEntry? TryReadLine(
         string line,
         string file,
         DateTimeOffset startLocal,
@@ -393,49 +394,113 @@ internal static class ClaudeUsageReader
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
 
-            if (!StringEquals(root, "type", "assistant") ||
-                !root.TryGetProperty("timestamp", out var timestampElement) ||
-                !root.TryGetProperty("message", out var message) ||
+            if (!root.TryGetProperty("message", out var message) ||
                 !message.TryGetProperty("usage", out var usage))
             {
                 return null;
             }
 
-            var timestampText = timestampElement.GetString();
-            if (string.IsNullOrWhiteSpace(timestampText))
+            if (!TryGetTimestamp(root, message, out var timestamp))
             {
                 return null;
             }
 
-            var timestamp = DateTimeOffset.Parse(
-                timestampText,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal).ToOffset(CodexUsageReader.BeijingOffset);
-
+            timestamp = timestamp.ToOffset(CodexUsageReader.BeijingOffset);
             if (timestamp < startLocal || timestamp >= endLocal)
             {
                 return null;
             }
 
-            var messageId = message.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
-            var uuid = root.TryGetProperty("uuid", out var uuidElement) ? uuidElement.GetString() : null;
-            var key = !string.IsNullOrWhiteSpace(messageId)
-                ? messageId
-                : $"{file}|{uuid}";
-
-            var nonCachedInput = GetInt64(usage, "input_tokens");
-            var cacheCreation = GetInt64(usage, "cache_creation_input_tokens");
-            var cacheRead = GetInt64(usage, "cache_read_input_tokens");
+            var input = GetInt64(usage, "input_tokens");
+            var cached = GetInt64(usage, "cache_read_input_tokens");
             var output = GetInt64(usage, "output_tokens");
-            var input = nonCachedInput + cacheCreation + cacheRead;
-            var cached = cacheRead;
+            var total = GetInt64(usage, "total_tokens");
+            if (total <= 0)
+            {
+                total = input + output;
+            }
 
-            return new ClaudeUsageEntry(key, timestamp, input, cached, output);
+            cached = Math.Min(Math.Max(0, cached), Math.Max(0, input));
+            if (input <= 0 && output <= 0 && total <= 0)
+            {
+                return null;
+            }
+
+            var id = message.TryGetProperty("id", out var idElement) ? GetStringValue(idElement) : null;
+            var rootId = root.TryGetProperty("id", out var rootIdElement) ? GetStringValue(rootIdElement) : null;
+            var uuid = root.TryGetProperty("uuid", out var uuidElement) ? GetStringValue(uuidElement) : null;
+            var key = !string.IsNullOrWhiteSpace(id)
+                ? id
+                : !string.IsNullOrWhiteSpace(rootId)
+                    ? rootId
+                    : !string.IsNullOrWhiteSpace(uuid)
+                        ? uuid
+                        : $"{file}|{timestamp.UtcTicks}|{input}|{cached}|{output}|{total}";
+
+            return new WorkBuddyUsageEntry(key, timestamp, input, cached, output, total);
         }
         catch
         {
             return null;
         }
+    }
+
+    private static bool TryGetTimestamp(JsonElement root, JsonElement message, out DateTimeOffset timestamp)
+    {
+        if (root.TryGetProperty("timestamp", out var rootTimestamp) &&
+            TryParseTimestamp(rootTimestamp, out timestamp))
+        {
+            return true;
+        }
+
+        if (message.TryGetProperty("timestamp", out var messageTimestamp) &&
+            TryParseTimestamp(messageTimestamp, out timestamp))
+        {
+            return true;
+        }
+
+        timestamp = default;
+        return false;
+    }
+
+    private static bool TryParseTimestamp(JsonElement element, out DateTimeOffset timestamp)
+    {
+        if (element.ValueKind == JsonValueKind.Number)
+        {
+            if (element.TryGetInt64(out var numeric))
+            {
+                timestamp = numeric > 10_000_000_000
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(numeric)
+                    : DateTimeOffset.FromUnixTimeSeconds(numeric);
+                return true;
+            }
+
+            if (element.TryGetDouble(out var floating))
+            {
+                var value = (long)Math.Round(floating);
+                timestamp = value > 10_000_000_000
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(value)
+                    : DateTimeOffset.FromUnixTimeSeconds(value);
+                return true;
+            }
+        }
+
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            var text = element.GetString();
+            if (!string.IsNullOrWhiteSpace(text) &&
+                DateTimeOffset.TryParse(
+                    text,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out timestamp))
+            {
+                return true;
+            }
+        }
+
+        timestamp = default;
+        return false;
     }
 
     private static IReadOnlyList<TokenUsageBucket> ToDetailBuckets(IEnumerable<TokenUsageEvent> events)
@@ -541,13 +606,6 @@ internal static class ClaudeUsageReader
         return first <= second ? first : second;
     }
 
-    private static bool StringEquals(JsonElement element, string propertyName, string expected)
-    {
-        return element.TryGetProperty(propertyName, out var value) &&
-               value.ValueKind is JsonValueKind.String &&
-               string.Equals(value.GetString(), expected, StringComparison.Ordinal);
-    }
-
     private static long GetInt64(JsonElement element, string propertyName)
     {
         if (!element.TryGetProperty(propertyName, out var value))
@@ -558,5 +616,15 @@ internal static class ClaudeUsageReader
         return value.ValueKind is JsonValueKind.Number && value.TryGetInt64(out var result)
             ? result
             : 0;
+    }
+
+    private static string? GetStringValue(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Number => element.GetRawText(),
+            _ => null
+        };
     }
 }

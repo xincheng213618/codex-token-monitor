@@ -34,12 +34,17 @@ internal static class CodexQuotaCycleReader
         CodexUsageReader.BeijingOffset);
 
     private static readonly TimeSpan ResetClusterTolerance = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan TransientResetMatchTolerance = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan WeeklyQuotaWindow = TimeSpan.FromDays(7);
+    private static readonly TimeSpan TransientResetRunMaxDuration = TimeSpan.FromMinutes(3);
+    private const int TransientResetRunMaxSnapshots = 5;
+    private const decimal TransientResetMaxUsedPercent = 5m;
 
     public static IReadOnlyList<CodexQuotaCycle> ReadWeeklyCycles(
         CodexQuotaEstimate? currentQuota,
         DateTimeOffset now)
     {
-        var snapshots = CodexUsageReader.ReadCachedQuotaSnapshots(DefaultStart, now.AddMinutes(1))
+        var snapshots = CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(DefaultStart, now.AddMinutes(1))
             .Where(item =>
                 CodexUsageReader.IsGeneralCodexQuotaSnapshot(item) &&
                 item.WeekResetAtLocal is not null &&
@@ -50,6 +55,7 @@ internal static class CodexQuotaCycleReader
             .Select(group => group.OrderByDescending(item => item.WeekUsedPercent ?? -1m).First())
             .OrderBy(item => item.SnapshotLocal)
             .ToList();
+        snapshots = RemoveTransientResetOutliers(snapshots);
         var periods = BuildActualWeeklyPeriods(snapshots, now);
 
         var currentWeek = currentQuota?.Week;
@@ -105,7 +111,7 @@ internal static class CodexQuotaCycleReader
             var snapshot = snapshots[index];
             if (StartsNewQuotaCycle(previous, snapshot))
             {
-                AddWeeklyPeriod(periods, current, snapshot.SnapshotLocal, isCurrent: false);
+                AddWeeklyPeriod(periods, current, snapshot.SnapshotLocal, isCurrent: false, nextCycleFirstSnapshot: snapshot);
                 current = new List<CodexQuotaSnapshot> { snapshot };
             }
             else
@@ -118,18 +124,141 @@ internal static class CodexQuotaCycleReader
         return periods;
     }
 
+    internal static IReadOnlyList<CodexQuotaSnapshot> MarkTransientResetOutliers(
+        IEnumerable<CodexQuotaSnapshot> source)
+    {
+        var snapshots = source
+            .OrderBy(item => item.SnapshotLocal)
+            .ToList();
+        if (snapshots.Count < 3)
+        {
+            return snapshots;
+        }
+
+        var current = snapshots;
+        var anomalies = new HashSet<CodexQuotaSnapshot>();
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            var runs = BuildResetRuns(current);
+            if (runs.Count < 3)
+            {
+                break;
+            }
+
+            var removeIndexes = new HashSet<int>();
+            for (var index = 1; index < runs.Count - 1; index++)
+            {
+                var previous = runs[index - 1];
+                var run = runs[index];
+                var next = runs[index + 1];
+                if (!IsTransientResetOutlier(previous, run, next))
+                {
+                    continue;
+                }
+
+                for (var snapshotIndex = run.StartIndex; snapshotIndex <= run.EndIndex; snapshotIndex++)
+                {
+                    removeIndexes.Add(snapshotIndex);
+                    anomalies.Add(current[snapshotIndex]);
+                }
+            }
+
+            if (removeIndexes.Count == 0)
+            {
+                break;
+            }
+
+            current = current
+                .Where((_, index) => !removeIndexes.Contains(index))
+                .ToList();
+            changed = true;
+        }
+
+        return snapshots
+            .Select(item => anomalies.Contains(item) ? item with { IsAnomaly = true } : item)
+            .ToList();
+    }
+
+    internal static List<CodexQuotaSnapshot> RemoveTransientResetOutliers(
+        IEnumerable<CodexQuotaSnapshot> snapshots)
+    {
+        return MarkTransientResetOutliers(snapshots)
+            .Where(item => !item.IsAnomaly)
+            .ToList();
+    }
+
+    private static List<ResetRun> BuildResetRuns(IReadOnlyList<CodexQuotaSnapshot> snapshots)
+    {
+        var runs = new List<ResetRun>();
+        if (snapshots.Count == 0)
+        {
+            return runs;
+        }
+
+        var start = 0;
+        for (var index = 1; index < snapshots.Count; index++)
+        {
+            if (IsSameTransientReset(
+                    snapshots[index - 1].WeekResetAtLocal,
+                    snapshots[index].WeekResetAtLocal))
+            {
+                continue;
+            }
+
+            runs.Add(new ResetRun(start, index - 1, snapshots));
+            start = index;
+        }
+
+        runs.Add(new ResetRun(start, snapshots.Count - 1, snapshots));
+        return runs;
+    }
+
+    private static bool IsTransientResetOutlier(ResetRun previous, ResetRun run, ResetRun next)
+    {
+        if (!IsSameTransientReset(previous.ResetAt, next.ResetAt) ||
+            IsSameTransientReset(previous.ResetAt, run.ResetAt))
+        {
+            return false;
+        }
+
+        var duration = run.Last.SnapshotLocal - run.First.SnapshotLocal;
+        var isTinyRun =
+            run.Count <= TransientResetRunMaxSnapshots ||
+            duration.Duration() <= TransientResetRunMaxDuration;
+        if (!isTinyRun)
+        {
+            return false;
+        }
+
+        return run.MaxWeekUsedPercent <= TransientResetMaxUsedPercent;
+    }
+
+    private static bool IsSameTransientReset(DateTimeOffset? first, DateTimeOffset? second)
+    {
+        if (first is null || second is null)
+        {
+            return first is null && second is null;
+        }
+
+        return (first.Value - second.Value).Duration() <= TransientResetMatchTolerance;
+    }
+
     private static void AddWeeklyPeriod(
         List<CodexQuotaCycle> periods,
         IReadOnlyList<CodexQuotaSnapshot> snapshots,
         DateTimeOffset periodEnd,
-        bool isCurrent)
+        bool isCurrent,
+        CodexQuotaSnapshot? nextCycleFirstSnapshot = null)
     {
         if (snapshots.Count == 0)
         {
             return;
         }
 
-        var periodStart = snapshots[0].SnapshotLocal;
+        var observedStart = snapshots[0].SnapshotLocal;
+        var periodStart = observedStart;
         var nominalReset = snapshots
             .Select(item => item.WeekResetAtLocal)
             .Where(item => item is not null)
@@ -138,10 +267,34 @@ internal static class CodexQuotaCycleReader
             .LastOrDefault();
         if (!isCurrent &&
             nominalReset != default &&
-            nominalReset > periodStart &&
+            nominalReset > observedStart &&
             nominalReset < periodEnd)
         {
             periodEnd = nominalReset;
+        }
+
+        if (!isCurrent &&
+            nextCycleFirstSnapshot?.WeekResetAtLocal is { } nextReset)
+        {
+            var nextAnchoredStart = nextReset - WeeklyQuotaWindow;
+            if (nextAnchoredStart > observedStart && nextAnchoredStart < periodEnd)
+            {
+                periodEnd = nextAnchoredStart;
+            }
+        }
+
+        if (nominalReset != default)
+        {
+            var anchoredStart = nominalReset - WeeklyQuotaWindow;
+            if (anchoredStart < periodEnd)
+            {
+                periodStart = anchoredStart;
+            }
+        }
+
+        if (periods.Count > 0 && periodStart < periods[^1].PeriodEnd)
+        {
+            periodStart = periods[^1].PeriodEnd;
         }
 
         if (periodEnd <= periodStart)
@@ -152,9 +305,7 @@ internal static class CodexQuotaCycleReader
         periods.Add(new CodexQuotaCycle(
             periodStart,
             periodEnd,
-            isCurrent
-                ? snapshots[^1].WeekResetAtLocal ?? periodEnd
-                : periodEnd,
+            nominalReset != default ? nominalReset : periodEnd,
             snapshots,
             isCurrent));
     }
@@ -176,8 +327,8 @@ internal static class CodexQuotaCycleReader
         var usedDropped = currentUsed + 2m < previousUsed;
 
         return usedDroppedHard ||
-               resetMovedForward && (usedDropped || currentUsed <= 5m) ||
-               resetChanged && usedDroppedHard;
+               resetMovedForward ||
+               resetChanged && usedDropped;
     }
 
     private static IEnumerable<CodexQuotaSnapshot> CurrentWeekSnapshot(CodexQuotaEstimate? quota)
@@ -195,5 +346,40 @@ internal static class CodexQuotaCycleReader
             null,
             quota.Week.UsedPercent,
             quota.Week.ResetAtLocal);
+    }
+
+    private sealed class ResetRun
+    {
+        public ResetRun(int startIndex, int endIndex, IReadOnlyList<CodexQuotaSnapshot> source)
+        {
+            StartIndex = startIndex;
+            EndIndex = endIndex;
+            Snapshots = source.Skip(startIndex).Take(endIndex - startIndex + 1).ToList();
+            First = Snapshots[0];
+            Last = Snapshots[^1];
+            ResetAt = First.WeekResetAtLocal;
+            MaxWeekUsedPercent = Snapshots
+                .Select(item => item.WeekUsedPercent)
+                .Where(item => item is not null)
+                .Select(item => item!.Value)
+                .DefaultIfEmpty(100m)
+                .Max();
+        }
+
+        public int StartIndex { get; }
+
+        public int EndIndex { get; }
+
+        public IReadOnlyList<CodexQuotaSnapshot> Snapshots { get; }
+
+        public CodexQuotaSnapshot First { get; }
+
+        public CodexQuotaSnapshot Last { get; }
+
+        public DateTimeOffset? ResetAt { get; }
+
+        public int Count => EndIndex - StartIndex + 1;
+
+        public decimal MaxWeekUsedPercent { get; }
     }
 }

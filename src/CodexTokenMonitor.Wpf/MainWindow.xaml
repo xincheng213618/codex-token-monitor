@@ -16,12 +16,12 @@
             <Setter Property="Background" Value="White" />
             <Setter Property="BorderBrush" Value="#E1E8F0" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="4" />
-            <Setter Property="Padding" Value="12" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="10" />
         </Style>
         <Style x:Key="ToolButton" TargetType="Button">
-            <Setter Property="MinHeight" Value="32" />
-            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="MinHeight" Value="34" />
+            <Setter Property="Padding" Value="13,0" />
             <Setter Property="Margin" Value="0,0,8,0" />
             <Setter Property="Background" Value="#E5EAF2" />
             <Setter Property="Foreground" Value="#374151" />
@@ -32,7 +32,7 @@
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Root"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="5"
+                                CornerRadius="7"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
@@ -58,7 +58,7 @@
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Root"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="5"
+                                CornerRadius="7"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
@@ -138,11 +138,34 @@
             <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         </Style>
+        <Style x:Key="QuotaCaption" TargetType="TextBlock" BasedOn="{StaticResource MetricCaption}">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Margin" Value="0,0,0,1" />
+        </Style>
+        <Style x:Key="QuotaValue" TargetType="TextBlock" BasedOn="{StaticResource MetricValue}">
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="LineHeight" Value="22" />
+        </Style>
+        <Style x:Key="QuotaDetail" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#657282" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
         <Style TargetType="ComboBox">
-            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="MinHeight" Value="34" />
+            <Setter Property="Padding" Value="10,3" />
+            <Setter Property="Background" Value="#F8FAFC" />
+            <Setter Property="BorderBrush" Value="#D6E0EA" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
         <Style TargetType="DatePicker">
-            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="MinHeight" Value="34" />
+            <Setter Property="Padding" Value="10,3" />
+            <Setter Property="Background" Value="#F8FAFC" />
+            <Setter Property="BorderBrush" Value="#D6E0EA" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="MinHeight" Value="32" />
@@ -157,8 +180,8 @@
             <Setter Property="CanUserResizeRows" Value="False" />
             <Setter Property="AutoGenerateColumns" Value="False" />
             <Setter Property="IsReadOnly" Value="True" />
-            <Setter Property="RowHeight" Value="28" />
-            <Setter Property="ColumnHeaderHeight" Value="32" />
+            <Setter Property="RowHeight" Value="24" />
+            <Setter Property="ColumnHeaderHeight" Value="28" />
             <Setter Property="Background" Value="White" />
             <Setter Property="RowBackground" Value="White" />
             <Setter Property="AlternatingRowBackground" Value="#FAFCFE" />
@@ -172,7 +195,7 @@
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="BorderBrush" Value="#E1E8F0" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
-            <Setter Property="Padding" Value="8,0" />
+            <Setter Property="Padding" Value="6,0" />
         </Style>
     </Window.Resources>
 
@@ -195,7 +218,7 @@
             </Grid.ColumnDefinitions>
             <TabControl x:Name="SourceTabs"
                         Grid.Column="0"
-                        Width="304"
+                        Width="416"
                         Height="34"
                         HorizontalAlignment="Left"
                         Style="{StaticResource SourceTabsStyle}"
@@ -203,6 +226,7 @@
                 <TabItem Header="Codex" />
                 <TabItem Header="Claude Code" />
                 <TabItem Header="ZCode" />
+                <TabItem Header="WorkBuddy" />
             </TabControl>
             <TextBlock x:Name="QueryStatusText"
                        Grid.Column="1"
@@ -218,71 +242,72 @@
             </StackPanel>
         </Grid>
 
-        <Border x:Name="QuotaPanel" Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,8" Visibility="Collapsed">
+        <Border x:Name="QuotaPanel" Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="12,7" Margin="0,0,0,6" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="0.85*" />
+                    <ColumnDefinition Width="0.95*" />
+                    <ColumnDefinition Width="0.85*" />
+                    <ColumnDefinition Width="1.1*" />
+                    <ColumnDefinition Width="1.15*" />
+                    <ColumnDefinition Width="76" />
                 </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                    <TextBlock Style="{StaticResource MetricCaption}" Text="5h 额度" />
-                    <TextBlock x:Name="Quota5hValue" Style="{StaticResource MetricValue}" Text="5h" />
-                    <TextBlock x:Name="Quota5hDetail" Foreground="#657282" TextTrimming="CharacterEllipsis" />
+                <StackPanel Grid.Column="0" Margin="0,0,10,0">
+                    <TextBlock Style="{StaticResource QuotaCaption}" Text="5h 额度" />
+                    <TextBlock x:Name="Quota5hValue" Style="{StaticResource QuotaValue}" Text="5h" />
+                    <TextBlock x:Name="Quota5hDetail" Style="{StaticResource QuotaDetail}" />
                 </StackPanel>
-                <StackPanel Grid.Column="1" Margin="0,0,12,0">
-                    <TextBlock Style="{StaticResource MetricCaption}" Text="7d 额度" />
-                    <TextBlock x:Name="QuotaWeekValue" Style="{StaticResource MetricValue}" Text="周" />
-                    <TextBlock x:Name="QuotaWeekDetail" Foreground="#657282" TextTrimming="CharacterEllipsis" />
+                <StackPanel Grid.Column="1" Margin="0,0,10,0">
+                    <TextBlock Style="{StaticResource QuotaCaption}" Text="7d 额度" />
+                    <TextBlock x:Name="QuotaWeekValue" Style="{StaticResource QuotaValue}" Text="周" />
+                    <TextBlock x:Name="QuotaWeekDetail" Style="{StaticResource QuotaDetail}" />
                 </StackPanel>
-                <StackPanel Grid.Column="2" Margin="0,0,12,0">
-                    <TextBlock Style="{StaticResource MetricCaption}" Text="当前套餐" />
-                    <TextBlock x:Name="PlanSpendValue" Style="{StaticResource MetricValue}" Text="-" />
-                    <TextBlock x:Name="PlanSpendDetail" Foreground="#657282" TextTrimming="CharacterEllipsis" />
+                <StackPanel Grid.Column="2" Margin="0,0,10,0">
+                    <TextBlock Style="{StaticResource QuotaCaption}" Text="当前套餐" />
+                    <TextBlock x:Name="PlanSpendValue" Style="{StaticResource QuotaValue}" Text="-" />
+                    <TextBlock x:Name="PlanSpendDetail" Style="{StaticResource QuotaDetail}" />
                 </StackPanel>
-                <StackPanel Grid.Column="3" Margin="0,0,12,0">
-                    <TextBlock Style="{StaticResource MetricCaption}" Text="重置过期" />
-                    <TextBlock x:Name="ResetOpportunityValue" Style="{StaticResource MetricValue}" Text="-" />
-                    <TextBlock x:Name="ResetOpportunityDetail" Foreground="#657282" TextTrimming="CharacterEllipsis" />
+                <StackPanel Grid.Column="3" Margin="0,0,10,0">
+                    <TextBlock Style="{StaticResource QuotaCaption}" Text="重置过期" />
+                    <TextBlock x:Name="ResetOpportunityValue" Style="{StaticResource QuotaValue}" Text="-" />
+                    <TextBlock x:Name="ResetOpportunityDetail" Style="{StaticResource QuotaDetail}" />
                 </StackPanel>
-                <StackPanel Grid.Column="4" Margin="0,0,12,0">
-                    <TextBlock Style="{StaticResource MetricCaption}" Text="重置评估" />
-                    <TextBlock x:Name="ResetPaceValue" Style="{StaticResource MetricValue}" Text="-" />
-                    <TextBlock x:Name="ResetPaceDetail" Foreground="#657282" TextTrimming="CharacterEllipsis" />
+                <StackPanel Grid.Column="4" Margin="0,0,10,0">
+                    <TextBlock Style="{StaticResource QuotaCaption}" Text="重置评估" />
+                    <TextBlock x:Name="ResetPaceValue" Style="{StaticResource QuotaValue}" Text="-" />
+                    <TextBlock x:Name="ResetPaceDetail" Style="{StaticResource QuotaDetail}" />
                 </StackPanel>
                 <Button x:Name="QuotaEstimateButton"
                         Grid.Column="5"
                         Style="{StaticResource PrimaryButton}"
                         Content="估算"
+                        Width="74"
                         VerticalAlignment="Center"
                         Margin="0"
                         Click="QuotaEstimateButton_Click" />
             </Grid>
         </Border>
 
-        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="12,8" Margin="0,0,0,8">
+        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="10,6" Margin="0,0,0,6">
             <StackPanel Orientation="Horizontal">
-                <ComboBox x:Name="RangeModeBox" Width="110" Margin="0,0,12,0" SelectionChanged="RangeModeBox_SelectionChanged" />
-                <Button x:Name="PreviousButton" Style="{StaticResource ToolButton}" Width="42" Content="&lt;" Click="PreviousButton_Click" />
-                <DatePicker x:Name="DatePicker" Width="150" Margin="0,0,8,0" SelectedDateChanged="DatePicker_SelectedDateChanged" />
+                <ComboBox x:Name="RangeModeBox" Width="104" Margin="0,0,10,0" SelectionChanged="RangeModeBox_SelectionChanged" />
+                <Button x:Name="PreviousButton" Style="{StaticResource ToolButton}" Width="40" Content="&lt;" Click="PreviousButton_Click" />
+                <DatePicker x:Name="DatePicker" Width="140" Margin="0,0,8,0" SelectedDateChanged="DatePicker_SelectedDateChanged" />
                 <xctk:DateTimePicker x:Name="WeekEndPicker"
-                                     Width="196"
+                                     Width="188"
                                      Format="Custom"
                                      FormatString="yyyy-MM-dd HH:mm"
                                      Margin="0,0,8,0"
                                      Visibility="Collapsed"
                                      ValueChanged="WeekEndPicker_ValueChanged" />
-                <ComboBox x:Name="CycleBox" Width="330" Margin="0,0,8,0" Visibility="Collapsed" SelectionChanged="CycleBox_SelectionChanged" />
-                <Button x:Name="WeekPickerButton" Style="{StaticResource ToolButton}" Width="78" Content="选7天" Visibility="Collapsed" Click="WeekPickerButton_Click" />
-                <Button x:Name="NextButton" Style="{StaticResource ToolButton}" Width="42" Content="&gt;" Click="NextButton_Click" />
-                <Button x:Name="CurrentButton" Style="{StaticResource ToolButton}" Width="92" Content="今天" Click="CurrentButton_Click" />
-                <Button x:Name="StartNowButton" Style="{StaticResource ToolButton}" Width="118" Content="从当前算" Click="StartNowButton_Click" />
-                <Button x:Name="RefreshDayButton" Style="{StaticResource ToolButton}" Width="72" Content="刷新日" Click="RefreshDayButton_Click" />
+                <ComboBox x:Name="CycleBox" Width="310" Margin="0,0,8,0" Visibility="Collapsed" SelectionChanged="CycleBox_SelectionChanged" />
+                <Button x:Name="WeekPickerButton" Style="{StaticResource ToolButton}" Width="74" Content="选7天" Visibility="Collapsed" Click="WeekPickerButton_Click" />
+                <Button x:Name="NextButton" Style="{StaticResource ToolButton}" Width="40" Content="&gt;" Click="NextButton_Click" />
+                <Button x:Name="CurrentButton" Style="{StaticResource ToolButton}" Width="86" Content="今天" Click="CurrentButton_Click" />
+                <Button x:Name="StartNowButton" Style="{StaticResource ToolButton}" Width="110" Content="从当前算" Click="StartNowButton_Click" />
+                <Button x:Name="RefreshDayButton" Style="{StaticResource ToolButton}" Width="68" Content="刷新日" Click="RefreshDayButton_Click" />
                 <xctk:DateTimePicker x:Name="CustomStartPicker"
-                                     Width="226"
+                                     Width="214"
                                      Format="Custom"
                                      FormatString="yyyy-MM-dd HH:mm:ss"
                                      Visibility="Collapsed"
@@ -290,29 +315,30 @@
             </StackPanel>
         </Border>
 
-        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="22,8" Height="126" Margin="0,0,0,8">
+        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="18,7" Height="112" Margin="0,0,0,6">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="430" />
+                    <ColumnDefinition Width="360" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
-                    <TextBlock Foreground="#5A6777" FontWeight="SemiBold" Text="TOTAL TOKENS" />
-                    <TextBlock x:Name="TotalValue" FontSize="34" FontWeight="Bold" Foreground="#127261" Text="-" />
-                    <TextBlock x:Name="PeriodValue" Foreground="#657282" Text="-" TextWrapping="Wrap" />
+                    <TextBlock Foreground="#5A6777" FontWeight="SemiBold" FontSize="12" Text="TOTAL TOKENS" />
+                    <TextBlock x:Name="TotalValue" FontSize="32" FontWeight="Bold" Foreground="#127261" Text="-" />
+                    <TextBlock x:Name="PeriodValue" Foreground="#657282" FontSize="12" Text="-" TextWrapping="Wrap" />
                 </StackPanel>
                 <ScrollViewer x:Name="CostCardsViewport"
                               Grid.Column="1"
                               HorizontalScrollBarVisibility="Disabled"
                               VerticalScrollBarVisibility="Disabled"
                               ClipToBounds="True"
+                              Focusable="False"
                               SizeChanged="CostCardsViewport_SizeChanged">
                     <StackPanel x:Name="CostCardsPanel" Orientation="Horizontal" />
                 </ScrollViewer>
             </Grid>
         </Border>
 
-        <UniformGrid Grid.Row="4" Columns="4" Rows="2" Height="132" Margin="0,0,0,8">
+        <UniformGrid Grid.Row="4" Columns="4" Rows="2" Height="118" Margin="0,0,0,6">
             <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Input" /><TextBlock x:Name="InputValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
@@ -339,16 +365,34 @@
             </Border>
         </UniformGrid>
 
-        <Border Grid.Row="5" Style="{StaticResource PanelBorder}" Padding="12">
+        <Border Grid.Row="5" Style="{StaticResource PanelBorder}" Padding="10">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition x:Name="TimelineRow" Height="0" />
-                    <RowDefinition Height="*" />
+                    <RowDefinition x:Name="TimelineSplitterRow" Height="0" />
+                    <RowDefinition x:Name="BreakdownRow" Height="*" MinHeight="96" />
                 </Grid.RowDefinitions>
-                <Grid x:Name="TimelineHost" Grid.Row="0" Margin="0,0,0,12" Visibility="Collapsed">
+                <Grid x:Name="TimelineHost" Grid.Row="0" Visibility="Collapsed">
                     <local:WpfTokenTimelineControl x:Name="Timeline" />
                 </Grid>
-                <DataGrid x:Name="BreakdownGrid" Grid.Row="1" />
+                <GridSplitter x:Name="TimelineSplitter"
+                              Grid.Row="1"
+                              Height="4"
+                              Margin="0,3"
+                              HorizontalAlignment="Stretch"
+                              VerticalAlignment="Center"
+                              Background="#D6E0EA"
+                              ResizeDirection="Rows"
+                              ResizeBehavior="PreviousAndNext"
+                              ShowsPreview="True"
+                              Visibility="Collapsed" />
+                <DataGrid x:Name="BreakdownGrid"
+                          Grid.Row="2"
+                          FrozenColumnCount="1"
+                          EnableRowVirtualization="True"
+                          EnableColumnVirtualization="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          ScrollViewer.CanContentScroll="True" />
             </Grid>
         </Border>
 

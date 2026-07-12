@@ -96,11 +96,11 @@ internal sealed class BreakdownGridAdapter
         var columns = new List<BreakdownColumnDefinition>
         {
             new(eventBreakdown ? "时间" : "日期", nameof(BreakdownRow.Label), FirstColumnWidth(range, eventBreakdown), false),
-            new("Total", nameof(BreakdownRow.Total), 96, true),
-            new("Input", nameof(BreakdownRow.Input), 96, true),
-            new("Cached", nameof(BreakdownRow.Cached), 96, true),
-            new("Uncached", nameof(BreakdownRow.Uncached), 104, true),
-            new("Output", nameof(BreakdownRow.Output), 88, true)
+            new("Total", nameof(BreakdownRow.Total), 78, true),
+            new("Input", nameof(BreakdownRow.Input), 78, true),
+            new("Cached", nameof(BreakdownRow.Cached), 82, true),
+            new("Uncached", nameof(BreakdownRow.Uncached), 88, true),
+            new("Output", nameof(BreakdownRow.Output), 72, true)
         };
 
         for (var i = 0; i < tablePresets.Count; i++)
@@ -111,12 +111,12 @@ internal sealed class BreakdownGridAdapter
                 1 => nameof(BreakdownRow.Price2),
                 _ => nameof(BreakdownRow.Price3)
             };
-            columns.Add(new BreakdownColumnDefinition(FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}"), bindingPath, 108, true));
+            columns.Add(new BreakdownColumnDefinition(FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}"), bindingPath, 92, true));
         }
 
         if (includeQuota)
         {
-            columns.Add(new BreakdownColumnDefinition("额度(5h/7d)", nameof(BreakdownRow.Quota), 126, true));
+            columns.Add(new BreakdownColumnDefinition("额度(5h/7d)", nameof(BreakdownRow.Quota), 108, true));
         }
 
         return columns;
@@ -211,15 +211,15 @@ internal sealed class BreakdownGridAdapter
     {
         if (eventBreakdown && range.Mode != RangeMode.Day && !range.IsCustomStart)
         {
-            return 134;
+            return 116;
         }
 
         if (range.IsCustomStart)
         {
-            return 150;
+            return 132;
         }
 
-        return range.Mode == RangeMode.Day ? 86 : 104;
+        return range.Mode == RangeMode.Day ? 76 : 88;
     }
 
     private static Style RightAlignedTextStyle()
@@ -236,7 +236,7 @@ internal sealed class BreakdownGridAdapter
 
     private static string FormatPresetColumnTitle(PricePreset preset, string fallback)
     {
-        var text = string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : $"{preset.Provider} {preset.Model}";
+        var text = string.IsNullOrWhiteSpace(preset.Model) ? preset.Provider : preset.Model;
         return string.IsNullOrWhiteSpace(text) ? fallback : ShortenColumnTitle(text);
     }
 

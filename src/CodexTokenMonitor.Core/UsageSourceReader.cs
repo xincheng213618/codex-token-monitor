@@ -4,7 +4,8 @@ internal enum UsageSource
 {
     Codex,
     ClaudeCode,
-    ZCode
+    ZCode,
+    WorkBuddy
 }
 
 internal sealed record DailyUsageSnapshot(
@@ -34,12 +35,14 @@ internal static class UsageSourceReaders
     private static readonly IUsageSourceReader Codex = new CodexUsageSourceReader();
     private static readonly IUsageSourceReader ClaudeCode = new ClaudeCodeUsageSourceReader();
     private static readonly IUsageSourceReader ZCode = new ZCodeUsageSourceReader();
+    private static readonly IUsageSourceReader WorkBuddy = new WorkBuddyUsageSourceReader();
 
     public static IReadOnlyList<IUsageSourceReader> All { get; } = new[]
     {
         Codex,
         ClaudeCode,
-        ZCode
+        ZCode,
+        WorkBuddy
     };
 
     public static IUsageSourceReader For(UsageSource source)
@@ -48,6 +51,7 @@ internal static class UsageSourceReaders
         {
             UsageSource.ClaudeCode => ClaudeCode,
             UsageSource.ZCode => ZCode,
+            UsageSource.WorkBuddy => WorkBuddy,
             _ => Codex
         };
     }
@@ -69,6 +73,7 @@ internal static class UsageSourceReaders
             var dayStart = StartOfDay(date);
             _ = CodexUsageReader.ReadDetailRows(dayStart, EndForRefresh(dayStart), includeLiveToday: true);
             CodexUsageReader.WarmQuotaSnapshotDay(dayStart);
+            CodexUsageReader.WarmQuotaTimelineDay(dayStart);
             return deleted;
         }
 
@@ -126,6 +131,7 @@ internal static class UsageSourceReaders
             var dayEnd = dayStart.AddDays(1);
             _ = CodexUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
             _ = CodexUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
+            CodexUsageReader.WarmQuotaTimelineDay(dayStart);
         }
     }
 
@@ -278,6 +284,82 @@ internal static class UsageSourceReaders
             var dayEnd = dayStart.AddDays(1);
             _ = ZCodeUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
             _ = ZCodeUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
+        }
+    }
+
+    private sealed class WorkBuddyUsageSourceReader : IUsageSourceReader
+    {
+        public UsageSource Source => UsageSource.WorkBuddy;
+        public string Title => "WorkBuddy";
+        public bool SupportsQuota => false;
+
+        public bool ClearCache()
+        {
+            return WorkBuddyUsageReader.ClearCache();
+        }
+
+        public bool RefreshCachedDay(DateOnly date)
+        {
+            var deleted = WorkBuddyUsageReader.ClearCachedDay(date);
+            var dayStart = StartOfDay(date);
+            _ = WorkBuddyUsageReader.ReadDetailRows(dayStart, EndForRefresh(dayStart), includeLiveToday: true);
+            return deleted;
+        }
+
+        public IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
+            DateTimeOffset startInclusive,
+            DateTimeOffset endInclusive)
+        {
+            return WorkBuddyUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive);
+        }
+
+        public TokenUsageSummary ReadRange(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday)
+        {
+            return WorkBuddyUsageReader.ReadRange(startLocal, endLocal, includeLiveToday);
+        }
+
+        public TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        {
+            return WorkBuddyUsageReader.ReadCachedRange(startLocal, endLocal);
+        }
+
+        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        {
+            return WorkBuddyUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+        }
+
+        public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday)
+        {
+            return WorkBuddyUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday);
+        }
+
+        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        {
+            return WorkBuddyUsageReader.ReadTransientDetailRows(startLocal, endLocal);
+        }
+
+        public DailyUsageSnapshot ReadDay(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday)
+        {
+            var rows = includeLiveToday
+                ? WorkBuddyUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday)
+                : WorkBuddyUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+            var summary = includeLiveToday
+                ? CreateSummaryFromRows(startLocal, endLocal, rows)
+                : WorkBuddyUsageReader.ReadCachedRange(startLocal, endLocal);
+            return new DailyUsageSnapshot(summary, rows);
+        }
+
+        public void WarmHistoricalDay(DateTimeOffset dayStart)
+        {
+            var dayEnd = dayStart.AddDays(1);
+            _ = WorkBuddyUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
+            _ = WorkBuddyUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
         }
     }
 
