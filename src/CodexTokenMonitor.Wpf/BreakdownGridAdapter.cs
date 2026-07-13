@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -52,7 +51,7 @@ internal sealed class BreakdownGridAdapter
     {
         var anchor = CaptureAnchor();
         ApplyColumns(range, eventBreakdown, tablePresets, includeQuota);
-        grid.ItemsSource = new ObservableCollection<BreakdownRow>(rows);
+        grid.ItemsSource = rows;
         RestoreAnchor(anchor);
     }
 

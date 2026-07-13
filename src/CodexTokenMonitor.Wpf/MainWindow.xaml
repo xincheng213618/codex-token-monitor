@@ -399,9 +399,7 @@
         <DockPanel Grid.Row="6" Margin="0,16,0,0" LastChildFill="False">
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
                 <CheckBox x:Name="AutoRefreshBox" Content="自动刷新" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" />
-                <TextBlock x:Name="StatusText" Text="准备就绪" Foreground="#576374" VerticalAlignment="Center" Margin="0,0,24,0" />
-                <Button x:Name="ClearCacheButton" Style="{StaticResource ToolButton}" Content="清缓存" Click="ClearCacheButton_Click" />
-                <Button x:Name="RefreshButton" Style="{StaticResource PrimaryButton}" Content="刷新" Margin="0" Click="RefreshButton_Click" />
+                <TextBlock x:Name="StatusText" Text="准备就绪" Foreground="#576374" VerticalAlignment="Center" />
             </StackPanel>
         </DockPanel>
     </Grid>

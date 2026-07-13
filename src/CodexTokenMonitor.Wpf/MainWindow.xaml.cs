@@ -56,17 +56,15 @@ public partial class MainWindow : Window
         refreshTimer.Interval = TimeSpan.FromSeconds(30);
         refreshTimer.Tick += async (_, _) =>
         {
-            if (AutoRefreshBox.IsChecked == true)
+            if (isRefreshing || usageRefreshLoopRunning || isQuotaRefreshing || AutoRefreshBox.IsChecked != true)
             {
-                var range = GetSelectedRange();
-                if (ShouldIncludeLiveToday(range))
-                {
-                    await RefreshUsageAsync();
-                }
-                else if (CurrentModule().Reader.SupportsQuota)
-                {
-                    await RefreshQuotaSummaryAsync();
-                }
+                return;
+            }
+
+            var range = GetSelectedRange();
+            if (ShouldIncludeLiveToday(range))
+            {
+                await RefreshUsageAsync();
             }
         };
         refreshTimer.Start();
@@ -91,16 +89,6 @@ public partial class MainWindow : Window
             backgroundCacheWarmer.Dispose();
             LastDisplayStore.Flush();
         };
-    }
-
-    private async void RefreshButton_Click(object sender, RoutedEventArgs e)
-    {
-        await RefreshUsageAsync();
-    }
-
-    private async void ClearCacheButton_Click(object sender, RoutedEventArgs e)
-    {
-        await ClearCacheAsync();
     }
 
     private async void WeekPickerButton_Click(object sender, RoutedEventArgs e)
@@ -444,32 +432,6 @@ public partial class MainWindow : Window
 
         module.ClearDisplay();
         SetStatus(deleted ? $"已清除 {selectedDay:yyyy-MM-dd}，正在重新解析..." : $"{selectedDay:yyyy-MM-dd} 无缓存，正在解析...");
-        await RefreshUsageAsync();
-        _ = backgroundCacheWarmer.WarmNowAsync();
-    }
-
-    private async Task ClearCacheAsync()
-    {
-        if (isRefreshing)
-        {
-            return;
-        }
-
-        backgroundCacheWarmer.CancelCurrent();
-        var module = CurrentModule();
-        await usageQueryGate.WaitAsync();
-        bool deleted;
-        try
-        {
-            deleted = module.Reader.ClearCache();
-        }
-        finally
-        {
-            usageQueryGate.Release();
-        }
-
-        module.ClearDisplay();
-        SetStatus(deleted ? "缓存已清理，正在重新统计..." : "没有缓存，正在统计...");
         await RefreshUsageAsync();
         _ = backgroundCacheWarmer.WarmNowAsync();
     }
@@ -900,15 +862,16 @@ public partial class MainWindow : Window
         IReadOnlyList<PricePreset> displayPresets)
     {
         var tablePresets = displayPresets.Take(GetVisibleCostColumnCount(displayPresets.Count)).ToList();
+        var tableProfiles = tablePresets.Select(preset => preset.ToProfile()).ToArray();
+        var quotaLookup = source == UsageSource.Codex
+            ? new QuotaSnapshotLookup(quotaSnapshots)
+            : null;
         lastVisibleCostColumnCount = tablePresets.Count;
         var eventBreakdown = UsesEventBreakdown(range, buckets);
-        var rows = new List<BreakdownRow>();
+        var rows = new List<BreakdownRow>(buckets.Count);
         foreach (var bucket in buckets)
         {
             var rowIsEvent = IsEventBucket(range, bucket);
-            var priceValues = tablePresets
-                .Select(preset => FormatCost(bucket.EstimateCost(preset.ToProfile()), preset.ToProfile()))
-                .ToList();
             rows.Add(new BreakdownRow
             {
                 Label = FormatBucketLabel(range, bucket.StartLocal, rowIsEvent),
@@ -917,10 +880,10 @@ public partial class MainWindow : Window
                 Cached = FormatBreakdownToken(bucket.CachedInputTokens, rowIsEvent),
                 Uncached = FormatBreakdownToken(bucket.UncachedInputTokens, rowIsEvent),
                 Output = FormatTokenAdaptive(bucket.OutputTokens),
-                Price1 = priceValues.ElementAtOrDefault(0) ?? "-",
-                Price2 = priceValues.ElementAtOrDefault(1) ?? "-",
-                Price3 = priceValues.ElementAtOrDefault(2) ?? "-",
-                Quota = source == UsageSource.Codex ? FormatQuotaSnapshotForBucket(range, bucket, quotaSnapshots, rowIsEvent) : "-"
+                Price1 = tableProfiles.Length > 0 ? FormatCost(bucket.EstimateCost(tableProfiles[0]), tableProfiles[0]) : "-",
+                Price2 = tableProfiles.Length > 1 ? FormatCost(bucket.EstimateCost(tableProfiles[1]), tableProfiles[1]) : "-",
+                Price3 = tableProfiles.Length > 2 ? FormatCost(bucket.EstimateCost(tableProfiles[2]), tableProfiles[2]) : "-",
+                Quota = quotaLookup is not null ? FormatQuotaSnapshotForBucket(range, bucket, quotaLookup, rowIsEvent) : "-"
             });
         }
 
@@ -1159,6 +1122,7 @@ public partial class MainWindow : Window
         UpdateStartNowButtonState();
         UpdateWeekPickerState();
         UpdateRefreshDayButtonState();
+        UpdateAutoRefreshState();
     }
 
     private void UpdateCycleOptions(bool keepSelection)
@@ -1266,11 +1230,31 @@ public partial class MainWindow : Window
     private void SetBusy(bool busy)
     {
         isRefreshing = busy;
-        RefreshButton.IsEnabled = !busy;
-        ClearCacheButton.IsEnabled = !busy;
-        UpdateStartNowButtonState();
-        UpdateWeekPickerState();
-        UpdateRefreshDayButtonState();
+        RangeModeBox.IsEnabled = !busy;
+        DatePicker.IsEnabled = !busy;
+        WeekEndPicker.IsEnabled = !busy;
+        CycleBox.IsEnabled = !busy;
+        PreviousButton.IsEnabled = !busy;
+        NextButton.IsEnabled = !busy;
+        CurrentButton.IsEnabled = !busy;
+        SourceTabs.IsEnabled = !busy;
+        if (busy)
+        {
+            StartNowButton.IsEnabled = false;
+            WeekPickerButton.IsEnabled = false;
+            RefreshDayButton.IsEnabled = false;
+        }
+        else
+        {
+            UpdateRangeControls();
+        }
+
+        UpdateAutoRefreshState();
+    }
+
+    private void UpdateAutoRefreshState()
+    {
+        AutoRefreshBox.IsEnabled = ShouldIncludeLiveToday(GetSelectedRange()) && !isRefreshing;
     }
 
     private void SetTimelineVisible(bool visible)
@@ -1656,9 +1640,9 @@ public partial class MainWindow : Window
         return eventBreakdown ? start.ToString("MM-dd HH:mm") : start.ToString("yyyy-MM-dd");
     }
 
-    private static string FormatQuotaSnapshotForBucket(SelectedRange range, TokenUsageBucket bucket, IReadOnlyList<CodexQuotaSnapshot> snapshots, bool eventBreakdown)
+    private static string FormatQuotaSnapshotForBucket(SelectedRange range, TokenUsageBucket bucket, QuotaSnapshotLookup lookup, bool eventBreakdown)
     {
-        var snapshot = SelectQuotaSnapshotForBucket(range, bucket, snapshots, eventBreakdown);
+        var snapshot = lookup.Select(range, bucket, eventBreakdown);
         return snapshot is null ||
                snapshot.FiveHourUsedPercent is null && snapshot.WeekUsedPercent is null
             ? "-"

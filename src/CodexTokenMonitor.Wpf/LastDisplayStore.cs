@@ -9,7 +9,7 @@ internal static class LastDisplayStore
     private static readonly JsonSerializerOptions JsonOptions = new();
     private static readonly object SyncRoot = new();
     private static readonly SemaphoreSlim WriteGate = new(1, 1);
-    private static LastDisplayState? pendingState;
+    private static LastDisplaySnapshot? pendingSnapshot;
     private static CancellationTokenSource? pendingSave;
     private static long saveVersion;
 
@@ -34,36 +34,36 @@ internal static class LastDisplayStore
 
     public static void Save(UsageSource source, SelectedRange range, UsageQueryResult result)
     {
-        var state = FromSnapshot(new LastDisplaySnapshot(source, range, result));
+        var snapshot = new LastDisplaySnapshot(source, range, result);
         CancellationTokenSource cts;
         long version;
         lock (SyncRoot)
         {
-            pendingState = state;
+            pendingSnapshot = snapshot;
             pendingSave?.Cancel();
             pendingSave?.Dispose();
             pendingSave = cts = new CancellationTokenSource();
             version = ++saveVersion;
         }
 
-        _ = SaveLaterAsync(state, version, cts.Token);
+        _ = SaveLaterAsync(snapshot, version, cts.Token);
     }
 
     public static void Flush()
     {
-        LastDisplayState? state;
+        LastDisplaySnapshot? snapshot;
         lock (SyncRoot)
         {
             pendingSave?.Cancel();
-            state = pendingState;
+            snapshot = pendingSnapshot;
         }
 
-        if (state is not null)
+        if (snapshot is not null)
         {
             WriteGate.Wait();
             try
             {
-                WriteState(state);
+                WriteSnapshot(snapshot);
             }
             finally
             {
@@ -72,7 +72,7 @@ internal static class LastDisplayStore
         }
     }
 
-    private static async Task SaveLaterAsync(LastDisplayState state, long version, CancellationToken token)
+    private static async Task SaveLaterAsync(LastDisplaySnapshot snapshot, long version, CancellationToken token)
     {
         try
         {
@@ -85,7 +85,7 @@ internal static class LastDisplayStore
                     return;
                 }
 
-                await Task.Run(() => WriteState(state), token);
+                await Task.Run(() => WriteSnapshot(snapshot), token);
             }
             finally
             {
@@ -99,6 +99,11 @@ internal static class LastDisplayStore
         {
             // Last display restore is a startup convenience; it should never block usage refresh.
         }
+    }
+
+    private static void WriteSnapshot(LastDisplaySnapshot snapshot)
+    {
+        WriteState(FromSnapshot(snapshot));
     }
 
     private static void WriteState(LastDisplayState state)
