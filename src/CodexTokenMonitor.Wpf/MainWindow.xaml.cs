@@ -265,10 +265,10 @@ public partial class MainWindow : Window
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
             Title = "导出 Codex 统计数据",
-            Filter = "Codex 监控器数据包 (*.codex-data.json)|*.codex-data.json|JSON 文件 (*.json)|*.json",
-            DefaultExt = ".codex-data.json",
+            Filter = "Codex 监控器数据包 (*.codex.json)|*.codex.json|旧版数据包 (*.codex-data.json)|*.codex-data.json|JSON 文件 (*.json)|*.json",
+            DefaultExt = ".codex.json",
             AddExtension = true,
-            FileName = $"codex-data-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.codex-data.json"
+            FileName = $"codex-data-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.codex.json"
         };
         if (dialog.ShowDialog(this) != true)
         {
@@ -318,8 +318,8 @@ public partial class MainWindow : Window
         var dialog = new Microsoft.Win32.OpenFileDialog
         {
             Title = "导入其他电脑的 Codex 统计数据",
-            Filter = "Codex 监控器数据包 (*.codex-data.json)|*.codex-data.json|JSON 文件 (*.json)|*.json",
-            DefaultExt = ".codex-data.json",
+            Filter = "Codex 监控器数据包 (*.codex.json)|*.codex.json|旧版数据包 (*.codex-data.json)|*.codex-data.json|JSON 文件 (*.json)|*.json",
+            DefaultExt = ".codex.json",
             Multiselect = true,
             CheckFileExists = true
         };

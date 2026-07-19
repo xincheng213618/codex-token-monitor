@@ -94,7 +94,7 @@ outputs/CodexTokenMonitor-lite/CodexTokenMonitor.exe
 
 ## 跨电脑合并 Codex 数据
 
-1. 在每台电脑打开“数据管理”并点击“导出本机数据”，生成 `*.codex-data.json` 数据包。
+1. 在每台电脑打开“数据管理”并点击“导出本机数据”，生成 `*.codex.json` 数据包（旧版 `*.codex-data.json` 仍可导入）。
 2. 将这些文件复制到作为主统计端的电脑。
 3. 在“数据管理”中点击“导入其他电脑数据”，可以一次选择多个数据包。
 

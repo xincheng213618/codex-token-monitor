@@ -133,4 +133,109 @@ public sealed class CodexDataTransferServiceTests
             }
         }
     }
+
+    [Fact]
+    public void Import_MergesMultipleDevicesAndDeduplicatesOverlappingPackages()
+    {
+        var sourceFolderA = $"CodexTransferSourceA-{Guid.NewGuid():N}";
+        var sourceFolderB = $"CodexTransferSourceB-{Guid.NewGuid():N}";
+        var targetFolder = $"CodexTransferTarget-{Guid.NewGuid():N}";
+        var packageA = Path.Combine(Path.GetTempPath(), $"codex-device-a-{Guid.NewGuid():N}.codex.json");
+        var packageB = Path.Combine(Path.GetTempPath(), $"codex-device-b-{Guid.NewGuid():N}.codex.json");
+        var dayStart = new DateTimeOffset(2026, 7, 19, 0, 0, 0, Beijing);
+        var shared = new TokenUsageEvent(dayStart.AddHours(9), 100, 60, 10, 2, 110, "codex:shared-turn");
+        var deviceA = new TokenUsageEvent(dayStart.AddHours(10), 200, 120, 20, 4, 220, "codex:device-a-turn");
+        var deviceB = new TokenUsageEvent(dayStart.AddHours(11), 300, 180, 30, 6, 330, "codex:device-b-turn");
+        var sharedQuota = CreateQuota(dayStart.AddHours(9).AddMinutes(30), 20m);
+        var deviceAQuota = CreateQuota(dayStart.AddHours(10).AddMinutes(30), 21m);
+        var deviceBQuota = CreateQuota(dayStart.AddHours(11).AddMinutes(30), 22m);
+
+        try
+        {
+            PutEvents(sourceFolderA, dayStart, shared, deviceA);
+            PutEvents(sourceFolderB, dayStart, shared, deviceB);
+            PutQuotaSnapshots(sourceFolderA, dayStart, sharedQuota, deviceAQuota);
+            PutQuotaSnapshots(sourceFolderB, dayStart, sharedQuota, deviceBQuota);
+            CodexDataTransferService.Export(packageA, sourceFolderA, "device-a", "Laptop A", dayStart.AddHours(12));
+            CodexDataTransferService.Export(packageB, sourceFolderB, "device-b", "Desktop B", dayStart.AddHours(12));
+
+            var firstImport = CodexDataTransferService.Import(new[] { packageA, packageB }, targetFolder);
+            var secondImport = CodexDataTransferService.Import(new[] { packageB, packageA, packageA }, targetFolder);
+
+            Assert.Equal(2, firstImport.FileCount);
+            Assert.Equal(2, firstImport.DeviceCount);
+            Assert.Equal(3, firstImport.AddedUsageEventCount);
+            Assert.Equal(0, firstImport.ExistingUsageEventCount);
+            Assert.Equal(3, firstImport.AddedQuotaSnapshotCount);
+            Assert.Equal(0, firstImport.ExistingQuotaSnapshotCount);
+            Assert.Equal(3, UsageCacheStore.Load(targetFolder).GetAllDetailEvents().Count);
+            Assert.Equal(3, QuotaSnapshotCacheStore.Load(targetFolder).GetAllSnapshots().Count);
+
+            Assert.Equal(3, secondImport.FileCount);
+            Assert.Equal(2, secondImport.DeviceCount);
+            Assert.Equal(0, secondImport.AddedUsageEventCount);
+            Assert.Equal(3, secondImport.ExistingUsageEventCount);
+            Assert.Equal(0, secondImport.AddedQuotaSnapshotCount);
+            Assert.Equal(3, secondImport.ExistingQuotaSnapshotCount);
+            Assert.Equal(3, UsageCacheStore.Load(targetFolder).GetAllDetailEvents().Count);
+            Assert.Equal(3, QuotaSnapshotCacheStore.Load(targetFolder).GetAllSnapshots().Count);
+        }
+        finally
+        {
+            UsageCacheStore.Delete(sourceFolderA);
+            UsageCacheStore.Delete(sourceFolderB);
+            UsageCacheStore.Delete(targetFolder);
+            foreach (var path in new[] { packageA, packageB })
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+        }
+    }
+
+    private static void PutEvents(
+        string cacheFolder,
+        DateTimeOffset dayStart,
+        params TokenUsageEvent[] events)
+    {
+        var bucket = new TokenUsageBucket { StartLocal = dayStart };
+        foreach (var item in events)
+        {
+            bucket.Add(
+                item.Timestamp,
+                item.InputTokens,
+                item.CachedInputTokens,
+                item.OutputTokens,
+                item.ReasoningOutputTokens,
+                item.TotalTokens);
+        }
+
+        UsageCacheStore.Load(cacheFolder).Put(bucket, isComplete: true, detailEvents: events);
+    }
+
+    private static CodexQuotaSnapshot CreateQuota(DateTimeOffset timestamp, decimal weekUsedPercent)
+    {
+        return new CodexQuotaSnapshot(
+            timestamp,
+            "codex",
+            null,
+            null,
+            null,
+            weekUsedPercent,
+            timestamp.AddDays(7));
+    }
+
+    private static void PutQuotaSnapshots(
+        string cacheFolder,
+        DateTimeOffset dayStart,
+        params CodexQuotaSnapshot[] snapshots)
+    {
+        QuotaSnapshotCacheStore.Load(cacheFolder).Put(
+            DateOnly.FromDateTime(dayStart.DateTime),
+            snapshots,
+            isComplete: true,
+            scannedThroughLocal: dayStart.AddDays(1).AddTicks(-1));
+    }
 }
