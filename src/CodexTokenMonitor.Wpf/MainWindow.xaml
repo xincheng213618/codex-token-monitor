@@ -76,6 +76,32 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="StatusLinkButton" TargetType="Button">
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#4D5C70" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="HorizontalContentAlignment" Value="Right" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="5"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#E8EEF5" />
+                                <Setter Property="Foreground" Value="#102033" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="SourceTabsStyle" TargetType="TabControl">
             <Setter Property="Background" Value="#E8EEF5" />
             <Setter Property="BorderThickness" Value="0" />
@@ -228,13 +254,12 @@
                 <TabItem Header="ZCode" />
                 <TabItem Header="WorkBuddy" />
             </TabControl>
-            <TextBlock x:Name="QueryStatusText"
-                       Grid.Column="1"
-                       VerticalAlignment="Center"
-                       HorizontalAlignment="Right"
-                       Foreground="#576374"
-                       Text="准备就绪"
-                       TextTrimming="CharacterEllipsis" />
+            <Button x:Name="CacheStatusButton"
+                    Grid.Column="1"
+                    Style="{StaticResource StatusLinkButton}"
+                    Content="缓存详情"
+                    ToolTip="查看后台缓存进度与运行信息"
+                    Click="CacheStatusButton_Click" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button x:Name="ResetSettingsButton" Style="{StaticResource ToolButton}" Content="重置设置" Click="ResetSettingsButton_Click" />
                 <Button x:Name="PlanSettingsButton" Style="{StaticResource ToolButton}" Content="套餐设置" Click="PlanSettingsButton_Click" />
@@ -242,7 +267,13 @@
             </StackPanel>
         </Grid>
 
-        <Border x:Name="QuotaPanel" Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="12,7" Margin="0,0,0,6" Visibility="Collapsed">
+        <Border x:Name="QuotaPanel"
+                Grid.Row="1"
+                Style="{StaticResource PanelBorder}"
+                Padding="12,7"
+                Margin="0,0,0,6"
+                Visibility="Collapsed"
+                ToolTip="优先通过 Codex 本地 app-server 实时读取；不可用时回退到本机会话日志">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="0.85*" />
@@ -315,7 +346,7 @@
             </StackPanel>
         </Border>
 
-        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="18,7" Height="112" Margin="0,0,0,6">
+        <Border x:Name="UsageSummaryPanel" Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="18,7" Height="112" Margin="0,0,0,6">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="360" />
@@ -338,7 +369,7 @@
             </Grid>
         </Border>
 
-        <UniformGrid Grid.Row="4" Columns="4" Rows="2" Height="118" Margin="0,0,0,6">
+        <UniformGrid x:Name="UsageMetricsPanel" Grid.Row="4" Columns="4" Rows="2" Height="118" Margin="0,0,0,6">
             <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Input" /><TextBlock x:Name="InputValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
@@ -365,7 +396,7 @@
             </Border>
         </UniformGrid>
 
-        <Border Grid.Row="5" Style="{StaticResource PanelBorder}" Padding="10">
+        <Border x:Name="UsageDetailsPanel" Grid.Row="5" Style="{StaticResource PanelBorder}" Padding="10">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition x:Name="TimelineRow" Height="0" />
@@ -394,6 +425,47 @@
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           ScrollViewer.CanContentScroll="True" />
             </Grid>
+        </Border>
+
+        <Border x:Name="EmptyUsagePanel"
+                Grid.Row="3"
+                Grid.RowSpan="3"
+                Style="{StaticResource PanelBorder}"
+                Padding="28"
+                Visibility="Collapsed">
+            <StackPanel MaxWidth="560"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        TextBlock.TextAlignment="Center">
+                <Border Width="56"
+                        Height="56"
+                        Margin="0,0,0,14"
+                        HorizontalAlignment="Center"
+                        Background="#E8F4F1"
+                        CornerRadius="28">
+                    <TextBlock HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="#127261"
+                               FontSize="22"
+                               FontWeight="Bold"
+                               Text="0" />
+                </Border>
+                <TextBlock x:Name="EmptyUsageTitle"
+                           Foreground="#1D2837"
+                           FontSize="22"
+                           FontWeight="SemiBold"
+                           Text="当前时段暂无用量" />
+                <TextBlock x:Name="EmptyUsagePeriod"
+                           Margin="0,8,0,0"
+                           Foreground="#657282"
+                           FontSize="12.5"
+                           TextWrapping="Wrap" />
+                <TextBlock x:Name="EmptyUsageHint"
+                           Margin="0,14,0,0"
+                           Foreground="#4D5C70"
+                           FontSize="13"
+                           TextWrapping="Wrap" />
+            </StackPanel>
         </Border>
 
         <DockPanel Grid.Row="6" Margin="0,16,0,0" LastChildFill="False">

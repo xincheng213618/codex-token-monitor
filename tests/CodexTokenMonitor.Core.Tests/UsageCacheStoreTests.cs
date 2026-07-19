@@ -5,6 +5,26 @@ namespace CodexTokenMonitor.Tests;
 public sealed class UsageCacheStoreTests
 {
     [Fact]
+    public void GetIncompleteDays_IncludesDaysMissingFromFreshCache()
+    {
+        var folder = $"CodexTokenMonitorTests-{Guid.NewGuid():N}";
+        var start = new DateTimeOffset(2026, 7, 10, 0, 0, 0, TimeSpan.FromHours(8));
+        try
+        {
+            var cache = UsageCacheStore.Load(folder);
+            cache.Put(new TokenUsageBucket { StartLocal = start.AddDays(1) }, isComplete: true);
+
+            var incomplete = UsageCacheStore.GetIncompleteDays(folder, start, start.AddDays(2));
+
+            Assert.Equal(new[] { start.AddDays(2), start }, incomplete);
+        }
+        finally
+        {
+            UsageCacheStore.Delete(folder);
+        }
+    }
+
+    [Fact]
     public void Load_ReusesInitializedStoreAndRangeQueryFiltersEvents()
     {
         var folder = $"CodexTokenMonitorTests-{Guid.NewGuid():N}";

@@ -102,6 +102,7 @@ internal static class QuotaEstimateCalculator
         var pace = QuotaPaceAnalyzer.FormatWeeklyCycle(period, maxUsed, usedCost, estimatedLimit, FormatMoney);
 
         return new QuotaWeeklyCycleRow(
+            period.PeriodStart,
             $"{period.PeriodStart:MM-dd HH:mm} - {period.PeriodEnd:MM-dd HH:mm}",
             FormatCycleDuration(period, now),
             period.ResetAt.ToString("MM-dd HH:mm"),
@@ -418,6 +419,7 @@ internal sealed record QuotaEstimateLoadResult(
     int PeriodCount);
 
 internal sealed record QuotaWeeklyCycleRow(
+    DateTimeOffset PeriodStart,
     string Period,
     string Duration,
     string ResetAt,

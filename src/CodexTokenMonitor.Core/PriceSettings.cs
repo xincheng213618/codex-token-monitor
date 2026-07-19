@@ -37,7 +37,7 @@ internal static class PricePresetGroups
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 13;
+    public int DisplayOrderVersion { get; set; } = 14;
     public string GptName { get; set; } = "GPT-5.6 Sol";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
@@ -204,6 +204,7 @@ internal sealed class PricePreset
             Preset("DeepSeek", "V4 Pro API", "$", "USD / 1M tokens", 1_000_000m, 0.435m, 0.0036m, 0.87m, "DeepSeek/OpenRouter reference"),
             Preset("Xiaomi", "MiMo V2.5 Pro API", "$", "USD / 1M tokens", 1_000_000m, 0.435m, 0.0036m, 0.87m, "MiMo pay-as-you-go"),
             Preset("Xiaomi", "Token Plan ¥99 / 110亿", "¥", "CNY / 1M tokens", 1_000_000m, 0.0090m, 0.0090m, 0.0090m, "99元=110亿 token 折算"),
+            Preset("Kimi（月之暗面）", "K3", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Kimi API 官方价格"),
             Preset("Kimi（月之暗面）", "K2.7 Code", "¥", "CNY / 1M tokens", 1_000_000m, 6.50m, 1.30m, 27.00m, "Kimi API 官方人民币价格"),
             Preset("Kimi（月之暗面）", "K2.7 Code HighSpeed", "¥", "CNY / 1M tokens", 1_000_000m, 13.00m, 2.60m, 54.00m, "Kimi K2.7 Code 官方价格"),
             Preset("Kimi（月之暗面）", "K2.6", "¥", "CNY / 1M tokens", 1_000_000m, 6.50m, 1.10m, 27.00m, "Kimi API 官方人民币价格"),
@@ -222,7 +223,8 @@ internal sealed class PricePreset
             Preset("智谱/Z.AI", "GLM-4.7-FlashX 200K", "¥", "CNY / 1M tokens", 1_000_000m, 0.50m, 0.10m, 3.00m, "bigmodel.cn/pricing"),
             Preset("Doubao", "Seed 2.1 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 6.00m, 1.20m, 30.00m, "Volcano Engine reference"),
             Preset("Doubao", "Seed 2.0 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.20m, 0.80m, 16.00m, "火山方舟模型价格"),
-            Preset("MiniMax", "M3 <=512k", "$", "USD / 1M tokens", 1_000_000m, 0.30m, 0.06m, 1.20m, "MiniMax Pay-as-you-go"),
+            Preset("MiniMax", "M3 <=512K", "$", "USD / 1M tokens", 1_000_000m, 0.30m, 0.06m, 1.20m, "MiniMax 官方 API 价格"),
+            Preset("MiniMax", "M3 512K-1M", "$", "USD / 1M tokens", 1_000_000m, 0.60m, 0.12m, 2.40m, "MiniMax 官方 API 价格"),
             Preset("MiniMax", "M2.7", "$", "USD / 1M tokens", 1_000_000m, 0.30m, 0.06m, 1.20m, "MiniMax / Tencent pricing"),
             Preset("通义千问", "Qwen3 Coder Plus <=32K", "¥", "CNY / 1M tokens", 1_000_000m, 4.00m, 0.40m, 16.00m, "阿里云百炼模型价格"),
             Preset("通义千问", "Qwen3 Coder Plus 32K-128K", "¥", "CNY / 1M tokens", 1_000_000m, 6.00m, 0.60m, 24.00m, "阿里云百炼模型价格"),
@@ -233,6 +235,8 @@ internal sealed class PricePreset
             Preset("通义千问", "Qwen Plus <=128K", "¥", "CNY / 1M tokens", 1_000_000m, 0.80m, 0.08m, 2.00m, "阿里云百炼模型价格"),
             Preset("腾讯混元", "Hunyuan Turbo S", "¥", "CNY / 1M tokens", 1_000_000m, 0.80m, 0.08m, 2.00m, "腾讯混元官方参考"),
             Preset("腾讯混元", "Hunyuan Turbo", "¥", "CNY / 1M tokens", 1_000_000m, 0.70m, 0.07m, 1.40m, "腾讯混元官方参考"),
+            Preset("腾讯混元", "Hy3", "¥", "CNY / 1M tokens", 1_000_000m, 1.00m, 0.25m, 4.00m, "腾讯云 TokenHub 官方价格"),
+            Preset("Claude", "Fable 5 API", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 50.00m, "Anthropic pricing/cache read"),
             Preset("Claude", "Opus 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read"),
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档", "Claude Code"),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan", "Claude Code"),
@@ -276,9 +280,9 @@ internal sealed class PricePreset
     {
         var preferred = PricePresetGroups.Normalize(group) switch
         {
-            PricePresetGroups.ClaudeCode => ("Claude", "Opus 4.8 API"),
+            PricePresetGroups.ClaudeCode => ("Claude", "Fable 5 API"),
             PricePresetGroups.ZCode => ("智谱/Z.AI", "GLM-5.2 1M"),
-            PricePresetGroups.WorkBuddy => ("Kimi（月之暗面）", "K2.7 Code"),
+            PricePresetGroups.WorkBuddy => ("Kimi（月之暗面）", "K3"),
             _ => ("OpenAI", "GPT-5.6 Sol")
         };
         var ordered = new List<PricePreset>();
@@ -348,7 +352,7 @@ internal static class PriceSettingsStore
     {
         var settings = new PriceSettings
         {
-            DisplayOrderVersion = 13,
+            DisplayOrderVersion = 14,
             Presets = new(),
             CodexPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Codex), PricePresetGroups.Codex),
@@ -542,13 +546,13 @@ internal static class PriceSettingsStore
             ("Codex", "OpenAI", "GPT-5.6 Sol"),
             ("Codex", "DeepSeek", "V4 Pro"),
             ("Codex", "Xiaomi", "MiMo V2.5 Pro"),
-            ("Claude Code", "Claude", "Opus 4.8 API"),
+            ("Claude Code", "Claude", "Fable 5 API"),
             ("Claude Code", "DeepSeek", "V4 Pro"),
             ("Claude Code", "Xiaomi", "MiMo V2.5 Pro"),
             ("ZCode", "智谱/Z.AI", "GLM-5.2 1M"),
             ("ZCode", "DeepSeek", "V4 Pro"),
             ("ZCode", "Xiaomi", "MiMo V2.5 Pro"),
-            ("WorkBuddy", "Kimi（月之暗面）", "K2.7 Code"),
+            ("WorkBuddy", "Kimi（月之暗面）", "K3"),
             ("WorkBuddy", "DeepSeek", "V4 Pro"),
             ("WorkBuddy", "智谱/Z.AI", "GLM-5.2 1M")
         };

@@ -60,6 +60,10 @@ public partial class QuotaEstimateWindow : Window
 
             ApplyCurrentRows(result.CurrentRows);
             WeeklyGrid.ItemsSource = result.WeeklyRows;
+            if (result.WeeklyRows.Count > 0)
+            {
+                WeeklyGrid.SelectedIndex = 0;
+            }
             StatusText.Text = "历史周期已加载，正在统计额度曲线...";
 
             var curveResult = await curveTask;
@@ -98,6 +102,24 @@ public partial class QuotaEstimateWindow : Window
         ApplyEmbeddedCurvePlan();
     }
 
+    private void WeeklyGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (loadedCurveResult is null || WeeklyGrid.SelectedItem is not QuotaWeeklyCycleRow selectedRow)
+        {
+            return;
+        }
+
+        var selectedCurve = loadedCurveResult.Curves.FirstOrDefault(item => item.PeriodStart == selectedRow.PeriodStart);
+        if (selectedCurve is not null &&
+            !string.Equals(CurvePlanComboBox.SelectedItem as string, selectedCurve.PlanName, StringComparison.OrdinalIgnoreCase))
+        {
+            CurvePlanComboBox.SelectedItem = selectedCurve.PlanName;
+            return;
+        }
+
+        ApplyEmbeddedCurvePlan();
+    }
+
     private void ApplyEmbeddedCurvePlan()
     {
         if (loadedCurveResult is null || CurvePlanComboBox.SelectedItem is not string selectedPlan)
@@ -108,7 +130,8 @@ public partial class QuotaEstimateWindow : Window
         var curves = loadedCurveResult.Curves
             .Where(item => string.Equals(item.PlanName, selectedPlan, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        embeddedCurveControl.SetData(curves);
+        var selectedPeriodStart = (WeeklyGrid.SelectedItem as QuotaWeeklyCycleRow)?.PeriodStart;
+        embeddedCurveControl.SetData(curves, selectedPeriodStart);
     }
 
     private void ApplyCurrentRows(IReadOnlyList<QuotaCurrentWindowRow> rows)

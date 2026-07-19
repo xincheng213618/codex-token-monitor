@@ -25,6 +25,9 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
     ];
 
     private readonly WpfPlot wpfPlot = new();
+    private static readonly PlotColor CurrentColor = PlotColor.FromSDColor(DrawingColor.FromArgb(0, 112, 82));
+    private static readonly PlotColor SelectedColor = PlotColor.FromSDColor(DrawingColor.FromArgb(217, 119, 6));
+    private static readonly PlotColor SelectedHaloColor = PlotColor.FromSDColor(DrawingColor.White);
 
     public QuotaCostCurveControl()
     {
@@ -34,7 +37,7 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
         Content = wpfPlot;
     }
 
-    public void SetData(IReadOnlyList<QuotaCostCurveSeries> curves)
+    public void SetData(IReadOnlyList<QuotaCostCurveSeries> curves, DateTimeOffset? selectedPeriodStart = null)
     {
         var plot = wpfPlot.Plot;
         plot.Clear();
@@ -43,13 +46,28 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
         var historical = curves.Where(item => !item.IsCurrent).ToList();
         for (var index = 0; index < historical.Count; index++)
         {
-            AddCurve(plot, historical[index], HistoricalColors[index % HistoricalColors.Length], 1.7f, false);
+            var curve = historical[index];
+            if (curve.PeriodStart == selectedPeriodStart)
+            {
+                continue;
+            }
+
+            AddCurve(plot, curve, HistoricalColors[index % HistoricalColors.Length], 1.45f, null);
         }
 
         var current = curves.FirstOrDefault(item => item.IsCurrent);
-        if (current is not null)
+        if (current is not null && current.PeriodStart != selectedPeriodStart)
         {
-            AddCurve(plot, current, PlotColor.FromSDColor(DrawingColor.FromArgb(0, 112, 82)), 4.5f, true);
+            AddCurve(plot, current, CurrentColor, 4.2f, current.Label);
+        }
+
+        var selected = selectedPeriodStart is null
+            ? null
+            : curves.FirstOrDefault(item => item.PeriodStart == selectedPeriodStart);
+        if (selected is not null)
+        {
+            AddCurve(plot, selected, SelectedHaloColor, 8.5f, null);
+            AddCurve(plot, selected, SelectedColor, 5.2f, $"已选 {selected.PeriodStart:MM-dd HH:mm}");
         }
 
         if (curves.Count > 0)
@@ -71,7 +89,7 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
         QuotaCostCurveSeries curve,
         PlotColor color,
         float lineWidth,
-        bool showInLegend)
+        string? legendText)
     {
         var points = BuildSmoothPoints(curve.Points);
         if (points.Xs.Length < 2)
@@ -85,9 +103,9 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
             color);
         line.LineWidth = lineWidth;
         line.MarkerSize = 0;
-        if (showInLegend)
+        if (!string.IsNullOrWhiteSpace(legendText))
         {
-            line.LegendText = curve.Label;
+            line.LegendText = legendText;
         }
     }
 

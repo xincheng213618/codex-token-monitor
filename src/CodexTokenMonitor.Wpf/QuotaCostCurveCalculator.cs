@@ -75,6 +75,7 @@ internal static class QuotaCostCurveCalculator
                 .ToList();
 
             curves.Add(new QuotaCostCurveSeries(
+                period.PeriodStart,
                 period.IsCurrent ? $"Current {period.PeriodStart:MM-dd HH:mm}" : $"{period.PeriodStart:MM-dd HH:mm}",
                 ResolvePlanName(period.PeriodStart, end),
                 period.IsCurrent,
@@ -266,6 +267,7 @@ internal sealed record QuotaCostCurveResult(
     string SelectedPlan);
 
 internal sealed record QuotaCostCurveSeries(
+    DateTimeOffset PeriodStart,
     string Label,
     string PlanName,
     bool IsCurrent,

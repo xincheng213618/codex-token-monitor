@@ -38,7 +38,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CodexTokenMonitor.Core\CodexTokenMonitor.Core.csproj" />
-    <Compile Include="..\CodexTokenMonitor.LegacyDialogs\PriceSettingsForm.cs" Link="LegacyDialogs\PriceSettingsForm.cs" />
     <Compile Include="..\CodexTokenMonitor.LegacyDialogs\ResetOpportunityForm.cs" Link="LegacyDialogs\ResetOpportunityForm.cs" />
     <Compile Include="..\CodexTokenMonitor.LegacyDialogs\SubscriptionPlanForm.cs" Link="LegacyDialogs\SubscriptionPlanForm.cs" />
   </ItemGroup>

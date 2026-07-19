@@ -2,7 +2,16 @@ namespace CodexTokenMonitor;
 
 internal sealed class UsageCacheStore
 {
-    private const string CacheFileName = "token-cache-v2.sqlite3";
+    private const string CacheFileName = "token-cache-v3.sqlite3";
+    private static readonly string[] LegacyDerivedFileNames =
+    {
+        "token-cache-v2.sqlite3",
+        "token-cache-v2.sqlite3-wal",
+        "token-cache-v2.sqlite3-shm",
+        "usage-cache-v1.json",
+        "quota-snapshot-cache-v1.json",
+        "quota-history.jsonl"
+    };
     private static readonly ConcurrentDictionary<string, Lazy<UsageCacheStore>> Stores =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -13,6 +22,10 @@ internal sealed class UsageCacheStore
     {
         cachePath = GetCachePath(folderName);
         available = InitializeDatabase();
+        if (available)
+        {
+            DeleteLegacyDerivedFiles(folderName);
+        }
     }
 
     public static string GetCachePath(string folderName)
@@ -28,14 +41,9 @@ internal sealed class UsageCacheStore
         SqliteConnection.ClearAllPools();
         var cachePath = GetCachePath(folderName);
         var deleted = false;
-        foreach (var path in new[]
-                 {
-                     cachePath,
-                     cachePath + "-wal",
-                     cachePath + "-shm",
-                     Path.Combine(Path.GetDirectoryName(cachePath) ?? "", "usage-cache-v1.json"),
-                     Path.Combine(Path.GetDirectoryName(cachePath) ?? "", "quota-snapshot-cache-v1.json")
-                 })
+        var directory = Path.GetDirectoryName(cachePath) ?? "";
+        foreach (var path in new[] { cachePath, cachePath + "-wal", cachePath + "-shm" }
+                     .Concat(LegacyDerivedFileNames.Select(name => Path.Combine(directory, name))))
         {
             try
             {
@@ -54,6 +62,26 @@ internal sealed class UsageCacheStore
         return deleted;
     }
 
+    private static void DeleteLegacyDerivedFiles(string folderName)
+    {
+        var directory = Path.GetDirectoryName(GetCachePath(folderName)) ?? "";
+        foreach (var fileName in LegacyDerivedFileNames)
+        {
+            try
+            {
+                var path = Path.Combine(directory, fileName);
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+                // Derived data is rebuilt lazily. A locked legacy file can be retried next launch.
+            }
+        }
+    }
+
     public static bool DeleteDay(string folderName, DateOnly date)
     {
         return Load(folderName).DeleteDay(date);
@@ -69,7 +97,7 @@ internal sealed class UsageCacheStore
         var start = StartOfDay(startInclusive);
         var end = StartOfDay(endInclusive);
 
-        foreach (var day in cache.GetUsageDays(start, end).OrderByDescending(item => item))
+        for (var day = end; day >= start; day = day.AddDays(-1))
         {
             var date = DateOnly.FromDateTime(day.DateTime);
             if (!cache.TryGetRecord(date, out var record) ||
@@ -81,42 +109,6 @@ internal sealed class UsageCacheStore
         }
 
         return result;
-    }
-
-    private IReadOnlyList<DateTimeOffset> GetUsageDays(DateTimeOffset start, DateTimeOffset end)
-    {
-        if (!available)
-        {
-            return Array.Empty<DateTimeOffset>();
-        }
-
-        try
-        {
-            var result = new List<DateTimeOffset>();
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT date
-                FROM usage_days
-                WHERE date >= $start AND date <= $end
-                  AND events > 0
-                ORDER BY date DESC
-                """;
-            command.Parameters.AddWithValue("$start", DateKey(DateOnly.FromDateTime(start.DateTime)));
-            command.Parameters.AddWithValue("$end", DateKey(DateOnly.FromDateTime(end.DateTime)));
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
-            {
-                var date = DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture);
-                result.Add(new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset));
-            }
-
-            return result;
-        }
-        catch
-        {
-            return Array.Empty<DateTimeOffset>();
-        }
     }
 
     private static DateTimeOffset StartOfDay(DateTimeOffset value)
@@ -1587,16 +1579,123 @@ internal sealed class QuotaSnapshotCacheStore
 
 internal sealed record ScanRange(DateTimeOffset StartLocal, DateTimeOffset EndLocal, bool CacheHistoricalDays);
 
+/// <summary>
+/// Child rollout files begin with a timestamp-rewritten replay of the parent task.
+/// Only token_count records after the child task boundary belong to the child.
+/// </summary>
+internal sealed class SubagentReplayFilter
+{
+    private const string CollaborationBootstrap =
+        "You are an agent in a team of agents collaborating to complete a task.";
+
+    private bool metadataChecked;
+    private bool isSubagent;
+    private bool waitingForLiveTaskStart;
+    private bool liveTrafficStarted = true;
+    private DateTimeOffset? lastReplayTimestamp;
+
+    public bool ShouldReadTokenCount(string line)
+    {
+        var isTokenCount = line.Contains("\"type\":\"token_count\"", StringComparison.Ordinal);
+
+        if (!metadataChecked && line.Contains("\"type\":\"session_meta\"", StringComparison.Ordinal))
+        {
+            metadataChecked = true;
+            isSubagent = line.Contains("\"thread_source\":\"subagent\"", StringComparison.Ordinal) ||
+                         (line.Contains("\"forked_from_id\"", StringComparison.Ordinal) &&
+                          line.Contains("\"parent_thread_id\"", StringComparison.Ordinal));
+            liveTrafficStarted = !isSubagent;
+            lastReplayTimestamp = TryReadRecordTimestamp(line);
+            return false;
+        }
+
+        if (!isSubagent || liveTrafficStarted)
+        {
+            return isTokenCount;
+        }
+
+        if (line.Contains(CollaborationBootstrap, StringComparison.Ordinal))
+        {
+            waitingForLiveTaskStart = true;
+            return false;
+        }
+
+        if (waitingForLiveTaskStart &&
+            line.Contains("\"type\":\"task_started\"", StringComparison.Ordinal))
+        {
+            liveTrafficStarted = true;
+            return false;
+        }
+
+        if (line.Contains("\"type\":\"inter_agent_communication_metadata\"", StringComparison.Ordinal))
+        {
+            liveTrafficStarted = true;
+            return false;
+        }
+
+        if (!isTokenCount)
+        {
+            return false;
+        }
+
+        var timestamp = TryReadRecordTimestamp(line);
+        var previousTimestamp = lastReplayTimestamp;
+        if (timestamp is not null)
+        {
+            lastReplayTimestamp = timestamp;
+        }
+
+        if (timestamp is not null && previousTimestamp is not null &&
+            timestamp.Value - previousTimestamp.Value >= TimeSpan.FromSeconds(1))
+        {
+            liveTrafficStarted = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static DateTimeOffset? TryReadRecordTimestamp(string line)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            if (document.RootElement.TryGetProperty("timestamp", out var timestampElement) &&
+                timestampElement.ValueKind == JsonValueKind.String &&
+                DateTimeOffset.TryParse(
+                    timestampElement.GetString(),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal,
+                    out var timestamp))
+            {
+                return timestamp;
+            }
+        }
+        catch
+        {
+            // A malformed record is ignored by the normal JSONL parser as well.
+        }
+
+        return null;
+    }
+}
+
 internal static class CodexUsageReader
 {
     private const string CacheFolder = "CodexTokenMonitor";
-    private const string QuotaHistoryFileName = "quota-history.jsonl";
+    private const string QuotaHistoryFileName = "quota-history-v2.jsonl";
+    private const int FiveHourWindowMinutes = 5 * 60;
+    private const int WeeklyWindowMinutes = 7 * 24 * 60;
     private const long SparkContextWindowUpperBound = 128_000;
     private const string SparkLimitId = "codex_bengalfox";
     private const string SparkLimitName = "GPT-5.3-Codex-Spark";
     public static readonly TimeSpan BeijingOffset = TimeSpan.FromHours(8);
     private static readonly LiveFileTailReader UsageTailReader = new();
     private static readonly LiveFileTailReader QuotaTailReader = new();
+    private static readonly ConcurrentDictionary<string, SubagentReplayFilter> UsageReplayFilters =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, SubagentReplayFilter> QuotaReplayFilters =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record RateLimitWindowSnapshot(decimal UsedPercent, int WindowMinutes, DateTimeOffset? ResetAtLocal);
 
@@ -1651,6 +1750,19 @@ internal static class CodexUsageReader
     public static CodexQuotaEstimate? ReadQuotaEstimate()
     {
         var now = DateTimeOffset.UtcNow.ToOffset(BeijingOffset);
+        var directSnapshot = CodexAppServerQuotaReader.ReadCurrent();
+        if (directSnapshot is not null)
+        {
+            directSnapshot = NormalizeQuotaSnapshotWindows(directSnapshot);
+            if (IsGeneralCodexQuotaSnapshot(directSnapshot))
+            {
+                AppendQuotaHistoryIfNew(ToRateLimitSnapshot(directSnapshot));
+                return BuildQuotaEstimate(directSnapshot, now);
+            }
+        }
+
+        // Older CLI builds do not expose account/rateLimits/read. Keep the
+        // session-log path as a compatibility fallback in that case.
         var liveEnd = now.AddMinutes(5);
         var recentStart = now.AddMinutes(-30);
         var snapshot = ReadQuotaSnapshotsUncached(recentStart, liveEnd)
@@ -2237,7 +2349,7 @@ internal static class CodexUsageReader
             .OrderBy(item => item.SnapshotLocal);
     }
 
-    private static CodexQuotaSnapshot NormalizeQuotaSnapshotWindows(CodexQuotaSnapshot snapshot)
+    internal static CodexQuotaSnapshot NormalizeQuotaSnapshotWindows(CodexQuotaSnapshot snapshot)
     {
         // During the temporary removal of the 5h limit, Codex emits the 7d
         // window as `primary` and omits `secondary`. Older builds persisted
@@ -2245,15 +2357,37 @@ internal static class CodexUsageReader
         // one day after its snapshot, so repair those cached rows on read.
         if (snapshot.FiveHourUsedPercent is not null &&
             snapshot.WeekUsedPercent is null &&
-            snapshot.FiveHourResetAtLocal is { } resetAt &&
-            resetAt - snapshot.SnapshotLocal > TimeSpan.FromDays(1))
+            snapshot.FiveHourResetAtLocal is { } resetAt)
         {
-            return snapshot with
+            var resetDistance = resetAt - snapshot.SnapshotLocal;
+            if (resetDistance > TimeSpan.FromDays(1) && resetDistance <= TimeSpan.FromDays(8))
             {
-                FiveHourUsedPercent = null,
-                FiveHourResetAtLocal = null,
-                WeekUsedPercent = snapshot.FiveHourUsedPercent,
-                WeekResetAtLocal = resetAt
+                snapshot = snapshot with
+                {
+                    FiveHourUsedPercent = null,
+                    FiveHourResetAtLocal = null,
+                    WeekUsedPercent = snapshot.FiveHourUsedPercent,
+                    WeekResetAtLocal = resetAt
+                };
+            }
+            else if (resetDistance > TimeSpan.FromDays(8))
+            {
+                snapshot = snapshot with
+                {
+                    FiveHourUsedPercent = null,
+                    FiveHourResetAtLocal = null
+                };
+            }
+        }
+
+        if (snapshot.WeekResetAtLocal is { } weekReset &&
+            (weekReset < snapshot.SnapshotLocal.AddMinutes(-10) ||
+             weekReset - snapshot.SnapshotLocal > TimeSpan.FromDays(8)))
+        {
+            snapshot = snapshot with
+            {
+                WeekUsedPercent = null,
+                WeekResetAtLocal = null
             };
         }
 
@@ -2913,7 +3047,7 @@ internal static class CodexUsageReader
             var replayFilter = new SubagentReplayFilter();
             while (reader.ReadLine() is { } line)
             {
-                if (!replayFilter.ShouldReadTokenUsage(line))
+                if (!replayFilter.ShouldReadTokenCount(line))
                 {
                     continue;
                 }
@@ -2924,6 +3058,8 @@ internal static class CodexUsageReader
                     events.Add(usageEvent);
                 }
             }
+
+            UsageReplayFilters[file] = replayFilter;
         }
         catch
         {
@@ -2937,10 +3073,10 @@ internal static class CodexUsageReader
         DateTimeOffset endLocal,
         List<TokenUsageEvent> events)
     {
-        var replayFilter = new SubagentReplayFilter();
+        var replayFilter = UsageReplayFilters.GetOrAdd(file, static _ => new SubagentReplayFilter());
         UsageTailReader.ReadNewLines(file, startLocal, line =>
         {
-            if (!replayFilter.ShouldReadTokenUsage(line))
+            if (!replayFilter.ShouldReadTokenCount(line))
             {
                 return;
             }
@@ -2951,113 +3087,6 @@ internal static class CodexUsageReader
                 events.Add(usageEvent);
             }
         });
-    }
-
-    /// <summary>
-    /// Subagent rollouts start with a replay of the parent thread. Those replayed
-    /// events are stamped as if they happened when the child file was created, so
-    /// counting them again produces very large token spikes. The child's own turn
-    /// starts after the collaboration bootstrap marker.
-    /// </summary>
-    private sealed class SubagentReplayFilter
-    {
-        private const string CollaborationBootstrap =
-            "You are an agent in a team of agents collaborating to complete a task.";
-
-        private bool _metadataChecked;
-        private bool _isSubagent;
-        private bool _waitingForLiveTaskStart;
-        private bool _liveTrafficStarted = true;
-        private DateTimeOffset? _lastReplayTimestamp;
-
-        public bool ShouldReadTokenUsage(string line)
-        {
-            var isTokenUsage = line.Contains("\"type\":\"token_count\"", StringComparison.Ordinal);
-
-            if (!_metadataChecked && line.Contains("\"type\":\"session_meta\"", StringComparison.Ordinal))
-            {
-                _metadataChecked = true;
-                _isSubagent = line.Contains("\"thread_source\":\"subagent\"", StringComparison.Ordinal) ||
-                              (line.Contains("\"forked_from_id\"", StringComparison.Ordinal) &&
-                               line.Contains("\"parent_thread_id\"", StringComparison.Ordinal));
-                _liveTrafficStarted = !_isSubagent;
-                _lastReplayTimestamp = TryReadRecordTimestamp(line);
-                return false;
-            }
-
-            if (!_isSubagent || _liveTrafficStarted)
-            {
-                return isTokenUsage;
-            }
-
-            if (line.Contains(CollaborationBootstrap, StringComparison.Ordinal))
-            {
-                _waitingForLiveTaskStart = true;
-                return false;
-            }
-
-            if (_waitingForLiveTaskStart &&
-                line.Contains("\"type\":\"task_started\"", StringComparison.Ordinal))
-            {
-                _liveTrafficStarted = true;
-                return false;
-            }
-
-            // Newer clients emit this immediately after the live child turn starts.
-            // It is also a useful fallback if the developer bootstrap wording changes.
-            if (line.Contains("\"type\":\"inter_agent_communication_metadata\"", StringComparison.Ordinal))
-            {
-                _liveTrafficStarted = true;
-                return false;
-            }
-
-            if (!isTokenUsage)
-            {
-                return false;
-            }
-
-            var timestamp = TryReadRecordTimestamp(line);
-            var previousTimestamp = _lastReplayTimestamp;
-            if (timestamp is not null)
-            {
-                _lastReplayTimestamp = timestamp;
-            }
-
-            // Older formats may omit both markers. Replayed history is written as a
-            // tight timestamp burst; a clear gap before a token event marks live work.
-            if (timestamp is not null && previousTimestamp is not null &&
-                timestamp.Value - previousTimestamp.Value >= TimeSpan.FromSeconds(1))
-            {
-                _liveTrafficStarted = true;
-                return true;
-            }
-
-            return false;
-        }
-
-        private static DateTimeOffset? TryReadRecordTimestamp(string line)
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(line);
-                if (document.RootElement.TryGetProperty("timestamp", out var timestampElement) &&
-                    timestampElement.ValueKind == JsonValueKind.String &&
-                    DateTimeOffset.TryParse(
-                        timestampElement.GetString(),
-                        CultureInfo.InvariantCulture,
-                        DateTimeStyles.AssumeUniversal,
-                        out var timestamp))
-                {
-                    return timestamp;
-                }
-            }
-            catch
-            {
-                // A malformed line is handled by the normal JSONL reader path.
-            }
-
-            return null;
-        }
     }
 
     private static IReadOnlyList<TokenUsageBucket> ToDetailBuckets(IEnumerable<TokenUsageEvent> events)
@@ -3240,9 +3269,10 @@ internal static class CodexUsageReader
                 {
                     using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                     using var reader = new StreamReader(stream);
+                    var replayFilter = new SubagentReplayFilter();
                     while (reader.ReadLine() is { } line)
                     {
-                        if (!line.Contains("\"type\":\"token_count\"", StringComparison.Ordinal) ||
+                        if (!replayFilter.ShouldReadTokenCount(line) ||
                             !line.Contains("\"rate_limits\"", StringComparison.Ordinal))
                         {
                             continue;
@@ -3256,6 +3286,8 @@ internal static class CodexUsageReader
 
                         snapshots.Add(snapshot);
                     }
+
+                    QuotaReplayFilters[file] = replayFilter;
                 }
                 catch
                 {
@@ -3273,9 +3305,10 @@ internal static class CodexUsageReader
         DateTimeOffset endLocal,
         List<RateLimitSnapshot> snapshots)
     {
+        var replayFilter = QuotaReplayFilters.GetOrAdd(file, static _ => new SubagentReplayFilter());
         QuotaTailReader.ReadNewLines(file, startLocal, line =>
         {
-            if (!line.Contains("\"type\":\"token_count\"", StringComparison.Ordinal) ||
+            if (!replayFilter.ShouldReadTokenCount(line) ||
                 !line.Contains("\"rate_limits\"", StringComparison.Ordinal))
             {
                 return;
@@ -3299,6 +3332,8 @@ internal static class CodexUsageReader
     {
         UsageTailReader.Reset();
         QuotaTailReader.Reset();
+        UsageReplayFilters.Clear();
+        QuotaReplayFilters.Clear();
     }
 
     private static RateLimitSnapshot? SelectDisplayedQuotaSnapshot(IReadOnlyList<RateLimitSnapshot> snapshots)
@@ -3397,6 +3432,17 @@ internal static class CodexUsageReader
             snapshot.FiveHour?.ResetAtLocal,
             snapshot.Week?.UsedPercent,
             snapshot.Week?.ResetAtLocal);
+    }
+
+    private static RateLimitSnapshot ToRateLimitSnapshot(CodexQuotaSnapshot snapshot)
+    {
+        return new RateLimitSnapshot(
+            snapshot.SnapshotLocal,
+            snapshot.LimitId,
+            snapshot.LimitName,
+            ToRateLimitWindow(snapshot.FiveHourUsedPercent, FiveHourWindowMinutes, snapshot.FiveHourResetAtLocal),
+            ToRateLimitWindow(snapshot.WeekUsedPercent, WeeklyWindowMinutes, snapshot.WeekResetAtLocal),
+            0);
     }
 
     private static RateLimitSnapshot? TryReadRateLimitSnapshot(
@@ -3501,26 +3547,18 @@ internal static class CodexUsageReader
             .Select(window => window!)
             .GroupBy(window => window.WindowMinutes)
             .Select(group => group.First())
-            .OrderBy(window => window.WindowMinutes)
             .ToList();
 
-        if (windows.Count == 0)
-        {
-            return (null, null);
-        }
-
-        if (windows.Count == 1)
-        {
-            var only = windows[0];
-            return only.WindowMinutes >= 24 * 60
-                ? (null, only)
-                : (only, null);
-        }
-
-        // Codex historically returned 5h as primary and 7d as secondary, but
-        // field position is not a stable contract. Window duration is.
-        return (windows[0], windows[^1]);
+        // Field position is not stable, but window duration is. Other windows
+        // (notably the 30-day reset-card window) are not 5h/7d quota data.
+        return (
+            windows.FirstOrDefault(window => IsFiveHourWindow(window.WindowMinutes)),
+            windows.FirstOrDefault(window => IsWeeklyWindow(window.WindowMinutes)));
     }
+
+    internal static bool IsFiveHourWindow(int windowMinutes) => windowMinutes == FiveHourWindowMinutes;
+
+    internal static bool IsWeeklyWindow(int windowMinutes) => windowMinutes == WeeklyWindowMinutes;
 
     private static void ReadFile(
         string file,
@@ -3536,13 +3574,15 @@ internal static class CodexUsageReader
             var replayFilter = new SubagentReplayFilter();
             while (reader.ReadLine() is { } line)
             {
-                if (!replayFilter.ShouldReadTokenUsage(line))
+                if (!replayFilter.ShouldReadTokenCount(line))
                 {
                     continue;
                 }
 
                 ReadLine(line, startLocal, endLocal, summary, dailyBuckets);
             }
+
+            UsageReplayFilters[file] = replayFilter;
         }
         catch
         {

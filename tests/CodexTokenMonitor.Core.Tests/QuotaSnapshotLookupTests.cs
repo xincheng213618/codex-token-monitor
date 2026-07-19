@@ -74,6 +74,33 @@ public sealed class QuotaSnapshotLookupTests
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1), $"Lookup took {stopwatch.Elapsed}.");
     }
 
+    [Fact]
+    public void QuotaWindowClassification_RejectsThirtyDayResetCardWindow()
+    {
+        Assert.True(CodexUsageReader.IsFiveHourWindow(300));
+        Assert.True(CodexUsageReader.IsWeeklyWindow(10_080));
+        Assert.False(CodexUsageReader.IsWeeklyWindow(43_200));
+    }
+
+    [Fact]
+    public void NormalizeQuotaSnapshotWindows_DropsPersistedThirtyDayWindow()
+    {
+        var snapshotTime = new DateTimeOffset(2026, 7, 2, 14, 13, 0, Beijing);
+        var snapshot = new CodexQuotaSnapshot(
+            snapshotTime,
+            "codex",
+            null,
+            null,
+            null,
+            15m,
+            snapshotTime.AddDays(30));
+
+        var normalized = CodexUsageReader.NormalizeQuotaSnapshotWindows(snapshot);
+
+        Assert.Null(normalized.WeekUsedPercent);
+        Assert.Null(normalized.WeekResetAtLocal);
+    }
+
     private static SelectedRange DayRange(DateTimeOffset start)
     {
         return new SelectedRange(start, start.AddDays(1), "", "", RangeMode.Day);

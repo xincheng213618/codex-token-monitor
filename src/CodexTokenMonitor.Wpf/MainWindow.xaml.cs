@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim usageQueryGate = new(1, 1);
     private readonly DispatcherTimer refreshTimer = new();
     private readonly BackgroundCacheWarmer backgroundCacheWarmer;
+    private CacheDetailsWindow? cacheDetailsWindow;
     private readonly ResetOpportunitySynchronizer resetOpportunitySynchronizer = new();
     private readonly BreakdownGridAdapter breakdownGridAdapter;
     private readonly object usageRefreshSync = new();
@@ -47,7 +48,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        backgroundCacheWarmer = new BackgroundCacheWarmer(CurrentSource, () => isRefreshing, usageQueryGate, SetBackgroundStatus);
+        backgroundCacheWarmer = new BackgroundCacheWarmer(
+            CurrentSource,
+            () => isRefreshing || isQuotaRefreshing,
+            usageQueryGate,
+            SetBackgroundStatus);
         breakdownGridAdapter = new BreakdownGridAdapter(BreakdownGrid);
         ConfigureBreakdownGrid();
         SyncRangeModeItems(CurrentModule());
@@ -228,8 +233,11 @@ public partial class MainWindow : Window
 
     private void PriceSettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        using var form = new PriceSettingsForm();
-        if (form.ShowDialog() == Forms.DialogResult.OK)
+        var window = new PriceSettingsWindow(PricePresetGroups.ForSource(activeSource))
+        {
+            Owner = this
+        };
+        if (window.ShowDialog() == true)
         {
             CurrentCodexModule().CurrentQuotaEstimate = null;
             foreach (var module in usageModules.Values)
@@ -479,6 +487,7 @@ public partial class MainWindow : Window
     private async Task RefreshUsageOnceAsync(bool cacheOnly, long requestVersion)
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var resumeBackgroundCache = false;
         isRefreshing = true;
         SetBusy(true);
         SetStatus(cacheOnly ? "正在读取缓存..." : "正在刷新...");
@@ -492,6 +501,7 @@ public partial class MainWindow : Window
             var cachedQuota = module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null;
             if (backgroundCacheWarmer.IsRunning)
             {
+                resumeBackgroundCache = true;
                 backgroundCacheWarmer.CancelCurrent();
                 SetStatus("正在刷新...");
             }
@@ -596,6 +606,23 @@ public partial class MainWindow : Window
         {
             isRefreshing = false;
             SetBusy(false);
+            if (resumeBackgroundCache && !isClosed)
+            {
+                _ = ResumeBackgroundCacheAsync();
+            }
+        }
+    }
+
+    private async Task ResumeBackgroundCacheAsync()
+    {
+        for (var attempt = 0; attempt < 30 && backgroundCacheWarmer.IsRunning && !isClosed; attempt++)
+        {
+            await Task.Delay(100);
+        }
+
+        if (!isClosed)
+        {
+            await backgroundCacheWarmer.WarmNowAsync();
         }
     }
 
@@ -649,6 +676,8 @@ public partial class MainWindow : Window
     private void ApplySummary(SelectedRange range, UsageQueryResult result, UsageSourceModule module)
     {
         Title = $"{module.Title} Token 额度监控器 - {range.Title}";
+        var hasUsage = HasUsage(result);
+        ApplyUsageContentState(range, module, hasUsage);
         TotalValue.Text = FormatTokenMillions(result.Summary.TotalTokens);
         PeriodValue.Text = $"{result.Summary.StartLocal:yyyy-MM-dd HH:mm} - {result.Summary.EndLocal:yyyy-MM-dd HH:mm:ss}  GMT+8";
         InputValue.Text = FormatTokenMillions(result.Summary.InputTokens);
@@ -661,7 +690,14 @@ public partial class MainWindow : Window
         CodingTimeValue.Text = FormatDuration(result.CodingTime);
 
         var displayPresets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList();
-        ApplyCostCards(displayPresets, result.Summary);
+        if (hasUsage)
+        {
+            ApplyCostCards(displayPresets, result.Summary);
+        }
+        else
+        {
+            CostCardsPanel.Children.Clear();
+        }
         if (module is CodexUsageModule codexModule)
         {
             codexModule.CurrentQuotaSnapshots = result.QuotaSnapshots;
@@ -673,7 +709,7 @@ public partial class MainWindow : Window
             UpdateCycleOptions(keepSelection: true);
         }
 
-        var showTimeline = result.BreakdownRows.Count > 0;
+        var showTimeline = hasUsage && result.BreakdownRows.Count > 0;
         if (showTimeline)
         {
             SetTimelineVisible(true);
@@ -757,6 +793,13 @@ public partial class MainWindow : Window
     private void ApplyEmptyModuleState(UsageSourceModule module)
     {
         Title = $"{module.Title} Token 额度监控器";
+        UsageSummaryPanel.Visibility = Visibility.Collapsed;
+        UsageMetricsPanel.Visibility = Visibility.Collapsed;
+        UsageDetailsPanel.Visibility = Visibility.Collapsed;
+        EmptyUsagePanel.Visibility = Visibility.Visible;
+        EmptyUsageTitle.Text = $"正在读取 {module.Title} 用量";
+        EmptyUsagePeriod.Text = "";
+        EmptyUsageHint.Text = "完成后会自动显示当前时段的统计结果。";
         TotalValue.Text = "-";
         PeriodValue.Text = "-";
         InputValue.Text = "-";
@@ -790,6 +833,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!HasUsage(result))
+        {
+            return;
+        }
+
         var displayPresets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList();
         var visibleCostColumnCount = GetVisibleCostColumnCount(displayPresets.Count);
         if (visibleCostColumnCount == lastVisibleCostColumnCount)
@@ -799,6 +847,44 @@ public partial class MainWindow : Window
 
         ApplyCostCards(displayPresets, result.Summary);
         ApplyBreakdownRows(range, result.BreakdownRows, result.QuotaSnapshots, module.Source, displayPresets);
+    }
+
+    private void ApplyUsageContentState(SelectedRange range, UsageSourceModule module, bool hasUsage)
+    {
+        UsageSummaryPanel.Visibility = hasUsage ? Visibility.Visible : Visibility.Collapsed;
+        UsageMetricsPanel.Visibility = hasUsage ? Visibility.Visible : Visibility.Collapsed;
+        UsageDetailsPanel.Visibility = hasUsage ? Visibility.Visible : Visibility.Collapsed;
+        EmptyUsagePanel.Visibility = hasUsage ? Visibility.Collapsed : Visibility.Visible;
+        if (hasUsage)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        var isToday = range.Mode == RangeMode.Day && range.Start.Date == now.Date;
+        EmptyUsageTitle.Text = isToday
+            ? $"今天还没有 {module.Title} 用量"
+            : $"{range.Title}暂无 {module.Title} 用量";
+        EmptyUsagePeriod.Text =
+            $"{range.Start:yyyy-MM-dd HH:mm} — {range.End:yyyy-MM-dd HH:mm:ss}  GMT+8";
+        EmptyUsageHint.Text = module.Source == UsageSource.Codex
+            ? "额度会继续独立刷新；产生首条 Codex 用量后，这里会自动恢复统计卡和明细表。"
+            : $"产生首条 {module.Title} 用量后，这里会自动恢复统计卡和明细表。";
+    }
+
+    private static bool HasUsage(UsageQueryResult result)
+    {
+        return result.Summary.Events > 0 ||
+               result.Summary.TotalTokens > 0 ||
+               result.Summary.InputTokens > 0 ||
+               result.Summary.OutputTokens > 0 ||
+               result.Summary.ReasoningOutputTokens > 0 ||
+               result.BreakdownRows.Any(row =>
+                   row.Events > 0 ||
+                   row.TotalTokens > 0 ||
+                   row.InputTokens > 0 ||
+                   row.OutputTokens > 0 ||
+                   row.ReasoningOutputTokens > 0);
     }
 
     private static UIElement CreateCostCard(PricePreset preset, TokenUsageSummary summary)
@@ -915,10 +1001,10 @@ public partial class MainWindow : Window
         ApplyResetPaceSummary(effectiveQuota?.Week);
         if (effectiveQuota is null)
         {
-            Quota5hValue.Text = "5h";
-            Quota5hDetail.Text = "";
-            QuotaWeekValue.Text = "周";
-            QuotaWeekDetail.Text = "";
+            Quota5hValue.Text = "--";
+            Quota5hDetail.Text = "等待 Codex 实时额度";
+            QuotaWeekValue.Text = "--";
+            QuotaWeekDetail.Text = "暂未读取到周额度";
             return;
         }
 
@@ -1288,10 +1374,26 @@ public partial class MainWindow : Window
         StatusText.Text = text;
     }
 
-    private void SetBackgroundStatus(string text)
+    private void SetBackgroundStatus(CacheWarmStatus status)
     {
-        StatusText.Text = text;
-        QueryStatusText.Text = text;
+        CacheStatusButton.Content = status.Summary;
+        CacheStatusButton.ToolTip = $"{status.Phase}\n点击查看缓存详情";
+    }
+
+    private void CacheStatusButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (cacheDetailsWindow is { IsLoaded: true })
+        {
+            cacheDetailsWindow.Activate();
+            return;
+        }
+
+        cacheDetailsWindow = new CacheDetailsWindow(backgroundCacheWarmer)
+        {
+            Owner = this
+        };
+        cacheDetailsWindow.Closed += (_, _) => cacheDetailsWindow = null;
+        cacheDetailsWindow.Show();
     }
 
     private UsageSource CurrentSource()

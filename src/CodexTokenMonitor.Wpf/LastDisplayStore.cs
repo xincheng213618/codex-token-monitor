@@ -5,7 +5,7 @@ namespace CodexTokenMonitor;
 internal static class LastDisplayStore
 {
     private const string FolderName = "CodexTokenMonitor";
-    private const string FileName = "wpf-last-display.json";
+    private const string FileName = "wpf-last-display-v2.json";
     private static readonly JsonSerializerOptions JsonOptions = new();
     private static readonly object SyncRoot = new();
     private static readonly SemaphoreSlim WriteGate = new(1, 1);

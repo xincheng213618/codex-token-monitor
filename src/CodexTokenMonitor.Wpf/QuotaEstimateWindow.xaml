@@ -157,7 +157,7 @@
 
         <TextBlock Grid.Row="5" Style="{StaticResource SectionHeader}" Text="历史 7d 周期" />
 
-        <DataGrid x:Name="WeeklyGrid" Grid.Row="6">
+        <DataGrid x:Name="WeeklyGrid" Grid.Row="6" SelectionChanged="WeeklyGrid_SelectionChanged">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="周期" Binding="{Binding Period}" Width="230" />
                 <DataGridTextColumn Header="历时" Binding="{Binding Duration}" Width="106" />
