@@ -104,8 +104,10 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
 
         var totalPlot = plot.Add.Bars(totalBars);
         totalPlot.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(92, 119, 183, 171));
+        totalPlot.LegendText = "总 Token";
         var cachedPlot = plot.Add.Bars(cachedBars);
         cachedPlot.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(210, 32, 148, 128));
+        cachedPlot.LegendText = "缓存输入";
 
         var cumulativePlot = plot.Add.ScatterLine(
             xValues,
@@ -114,6 +116,11 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         cumulativePlot.Axes.YAxis = plot.Axes.Right;
         cumulativePlot.LineWidth = 2.2f;
         cumulativePlot.MarkerSize = 0;
+        cumulativePlot.LegendText = "累计总 Token";
+
+        plot.ShowLegend(Alignment.UpperLeft);
+        plot.Legend.FontName = "Microsoft YaHei UI";
+        plot.Legend.FontSize = 11;
 
         var bottom = plot.Axes.DateTimeTicksBottom();
         bottom.TickLabelStyle.FontName = "Segoe UI";
@@ -133,6 +140,7 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         plot.Axes.Right.TickLabelStyle.FontName = "Segoe UI";
         plot.Axes.Right.TickLabelStyle.FontSize = 10;
         plot.Axes.Right.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(116, 128, 145));
+        ApplyAxisLabels(plot);
 
         wpfPlot.Refresh();
     }
@@ -143,7 +151,23 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         plot.Clear();
         ApplyPlotStyle(plot);
         plot.Axes.SetLimits(0, 1, 0, 1);
+        ApplyAxisLabels(plot);
         wpfPlot.Refresh();
+    }
+
+    private void ApplyAxisLabels(Plot plot)
+    {
+        plot.Axes.Left.Label.Text = fixedBucketInterval switch
+        {
+            { } interval when interval == TimeSpan.FromMinutes(1) => "每分钟 Token（M）",
+            { } interval when interval == TimeSpan.FromMinutes(10) => "每 10 分钟 Token（M）",
+            { } interval when interval == TimeSpan.FromHours(1) => "每小时 Token（M）",
+            { } interval => $"每 {interval.TotalMinutes:N0} 分钟 Token（M）",
+            null => "单次事件 Token（M）"
+        };
+        plot.Axes.Right.Label.Text = "累计 Token（M）";
+        plot.Axes.Left.Label.FontName = "Microsoft YaHei UI";
+        plot.Axes.Right.Label.FontName = "Microsoft YaHei UI";
     }
 
     private static void ApplyPlotStyle(Plot plot)
