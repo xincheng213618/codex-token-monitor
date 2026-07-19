@@ -342,6 +342,91 @@ internal sealed class UsageCacheStore
         }
     }
 
+    public IReadOnlyList<TokenUsageEvent> GetAllDetailEvents()
+    {
+        if (!available)
+        {
+            return Array.Empty<TokenUsageEvent>();
+        }
+
+        try
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT event_key, timestamp_local, input_tokens, cached_input_tokens,
+                       output_tokens, reasoning_output_tokens, total_tokens
+                FROM usage_events
+                ORDER BY timestamp_local
+                """;
+
+            var result = new List<TokenUsageEvent>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new TokenUsageEvent(
+                    ParseDateTimeOffset(reader.GetString(1)),
+                    reader.GetInt64(2),
+                    reader.GetInt64(3),
+                    reader.GetInt64(4),
+                    reader.GetInt64(5),
+                    reader.GetInt64(6),
+                    reader.GetString(0)));
+            }
+
+            return UsageEventMerger.Merge(result);
+        }
+        catch
+        {
+            return Array.Empty<TokenUsageEvent>();
+        }
+    }
+
+    public int MergeImportedDetailEvents(IReadOnlyList<TokenUsageEvent> importedEvents)
+    {
+        if (!available || importedEvents.Count == 0)
+        {
+            return 0;
+        }
+
+        MarkImportedUsageEventKeys(importedEvents);
+        var added = 0;
+        foreach (var group in importedEvents
+                     .GroupBy(item => DateOnly.FromDateTime(item.Timestamp.ToOffset(CodexUsageReader.BeijingOffset).DateTime))
+                     .OrderBy(item => item.Key))
+        {
+            var date = group.Key;
+            var existing = GetDetailEvents(date);
+            var existingKeys = existing
+                .Select(UsageEventMerger.GetStableKey)
+                .ToHashSet(StringComparer.Ordinal);
+            var normalizedImports = group
+                .Select(item => item with { Timestamp = item.Timestamp.ToOffset(CodexUsageReader.BeijingOffset) })
+                .ToList();
+            var merged = UsageEventMerger.Merge(existing.Concat(normalizedImports));
+            added += merged.Count(item => !existingKeys.Contains(UsageEventMerger.GetStableKey(item)));
+
+            var dayStart = new DateTimeOffset(
+                date.Year,
+                date.Month,
+                date.Day,
+                0,
+                0,
+                0,
+                CodexUsageReader.BeijingOffset);
+            var bucket = CreateBucketFromEvents(dayStart, merged);
+            var hasRecord = TryGetRecord(date, out var record);
+            Put(
+                bucket,
+                hasRecord && record.IsComplete,
+                hasRecord ? record.ScannedThroughLocal : null,
+                merged,
+                replaceDetailEvents: true);
+        }
+
+        return added;
+    }
+
     public bool HasDetailEvents(DateOnly date)
     {
         if (!available)
@@ -380,7 +465,11 @@ internal sealed class UsageCacheStore
             using (var deleteEventsCommand = connection.CreateCommand())
             {
                 deleteEventsCommand.Transaction = transaction;
-                deleteEventsCommand.CommandText = "DELETE FROM usage_events WHERE date = $date";
+                deleteEventsCommand.CommandText = """
+                    DELETE FROM usage_events
+                    WHERE date = $date
+                      AND event_key NOT IN (SELECT event_key FROM imported_usage_event_keys)
+                    """;
                 deleteEventsCommand.Parameters.AddWithValue("$date", key);
                 deleted += deleteEventsCommand.ExecuteNonQuery();
             }
@@ -476,7 +565,11 @@ internal sealed class UsageCacheStore
                 {
                     using var deleteCommand = connection.CreateCommand();
                     deleteCommand.Transaction = transaction;
-                    deleteCommand.CommandText = "DELETE FROM usage_events WHERE date = $date";
+                    deleteCommand.CommandText = """
+                        DELETE FROM usage_events
+                        WHERE date = $date
+                          AND event_key NOT IN (SELECT event_key FROM imported_usage_event_keys)
+                        """;
                     deleteCommand.Parameters.AddWithValue("$date", key);
                     deleteCommand.ExecuteNonQuery();
                 }
@@ -566,6 +659,11 @@ internal sealed class UsageCacheStore
                 )
                 """);
             ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS idx_usage_events_time ON usage_events(timestamp_local)");
+            ExecuteNonQuery(connection, """
+                CREATE TABLE IF NOT EXISTS imported_usage_event_keys (
+                    event_key TEXT PRIMARY KEY
+                )
+                """);
             EnsureLongContextColumns(connection);
             return true;
         }
@@ -788,6 +886,43 @@ internal sealed class UsageCacheStore
                 return bucket;
             })
             .ToList();
+    }
+
+    private static TokenUsageBucket CreateBucketFromEvents(
+        DateTimeOffset dayStart,
+        IEnumerable<TokenUsageEvent> events)
+    {
+        var bucket = new TokenUsageBucket { StartLocal = dayStart };
+        foreach (var item in events)
+        {
+            bucket.Add(
+                item.Timestamp,
+                item.InputTokens,
+                item.CachedInputTokens,
+                item.OutputTokens,
+                item.ReasoningOutputTokens,
+                item.TotalTokens);
+        }
+
+        return bucket;
+    }
+
+    private void MarkImportedUsageEventKeys(IEnumerable<TokenUsageEvent> events)
+    {
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        foreach (var key in events
+                     .Select(UsageEventMerger.GetStableKey)
+                     .Distinct(StringComparer.Ordinal))
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "INSERT OR IGNORE INTO imported_usage_event_keys (event_key) VALUES ($event_key)";
+            command.Parameters.AddWithValue("$event_key", key);
+            command.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
     }
 
     private static void ExecuteNonQuery(SqliteConnection connection, string commandText)
@@ -1057,6 +1192,109 @@ internal sealed class QuotaSnapshotCacheStore
         }
     }
 
+    public IReadOnlyList<CodexQuotaSnapshot> GetAllSnapshots()
+    {
+        if (!available)
+        {
+            return Array.Empty<CodexQuotaSnapshot>();
+        }
+
+        try
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT snapshot_local, limit_id, limit_name,
+                       five_hour_used_percent, five_hour_reset_local,
+                       week_used_percent, week_reset_local
+                FROM quota_snapshots
+                ORDER BY snapshot_local
+                """;
+
+            var result = new List<CodexQuotaSnapshot>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                result.Add(new CodexQuotaSnapshot(
+                    ParseDateTimeOffset(reader.GetString(0)),
+                    ReadString(reader, 1),
+                    ReadString(reader, 2),
+                    ReadDecimal(reader, 3),
+                    ReadDateTimeOffset(reader, 4),
+                    ReadDecimal(reader, 5),
+                    ReadDateTimeOffset(reader, 6)));
+            }
+
+            return MergeSnapshotValues(result);
+        }
+        catch
+        {
+            return Array.Empty<CodexQuotaSnapshot>();
+        }
+    }
+
+    public int MergeImportedSnapshots(IReadOnlyList<CodexQuotaSnapshot> importedSnapshots)
+    {
+        if (!available || importedSnapshots.Count == 0)
+        {
+            return 0;
+        }
+
+        var normalizedImports = importedSnapshots
+            .Select(item => item with
+            {
+                SnapshotLocal = item.SnapshotLocal.ToOffset(CodexUsageReader.BeijingOffset),
+                FiveHourResetAtLocal = item.FiveHourResetAtLocal?.ToOffset(CodexUsageReader.BeijingOffset),
+                WeekResetAtLocal = item.WeekResetAtLocal?.ToOffset(CodexUsageReader.BeijingOffset)
+            })
+            .ToList();
+        MarkImportedSnapshotKeys(normalizedImports);
+
+        var added = 0;
+        foreach (var group in normalizedImports
+                     .GroupBy(item => DateOnly.FromDateTime(item.SnapshotLocal.DateTime))
+                     .OrderBy(item => item.Key))
+        {
+            var date = group.Key;
+            var existing = GetSnapshots(date);
+            var existingKeys = existing
+                .Select(BuildSnapshotKey)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var merged = MergeSnapshotValues(existing.Concat(group));
+            added += merged.Count(item => !existingKeys.Contains(BuildSnapshotKey(item)));
+
+            var hasRecord = TryGetRecord(date, out var record);
+            Put(
+                date,
+                merged,
+                hasRecord && record.IsComplete,
+                hasRecord ? record.ScannedThroughLocal : null);
+        }
+
+        return added;
+    }
+
+    private static IReadOnlyList<CodexQuotaSnapshot> MergeSnapshotValues(
+        IEnumerable<CodexQuotaSnapshot> snapshots)
+    {
+        return snapshots
+            .GroupBy(BuildSnapshotKey, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderBy(item => item.IsAnomaly)
+                .ThenByDescending(item => SnapshotCompleteness(item))
+                .First())
+            .OrderBy(item => item.SnapshotLocal)
+            .ToList();
+    }
+
+    private static int SnapshotCompleteness(CodexQuotaSnapshot snapshot)
+    {
+        return (snapshot.FiveHourUsedPercent is null ? 0 : 1) +
+               (snapshot.FiveHourResetAtLocal is null ? 0 : 1) +
+               (snapshot.WeekUsedPercent is null ? 0 : 1) +
+               (snapshot.WeekResetAtLocal is null ? 0 : 1);
+    }
+
     public IReadOnlyList<CodexQuotaSnapshot> GetSnapshots(DateTimeOffset startLocal, DateTimeOffset endLocal)
     {
         var result = new List<CodexQuotaSnapshot>();
@@ -1261,7 +1499,11 @@ internal sealed class QuotaSnapshotCacheStore
             using (var deleteSnapshotsCommand = connection.CreateCommand())
             {
                 deleteSnapshotsCommand.Transaction = transaction;
-                deleteSnapshotsCommand.CommandText = "DELETE FROM quota_snapshots WHERE date = $date";
+                deleteSnapshotsCommand.CommandText = """
+                    DELETE FROM quota_snapshots
+                    WHERE date = $date
+                      AND snapshot_key NOT IN (SELECT snapshot_key FROM imported_quota_snapshot_keys)
+                    """;
                 deleteSnapshotsCommand.Parameters.AddWithValue("$date", key);
                 deleted += deleteSnapshotsCommand.ExecuteNonQuery();
             }
@@ -1320,7 +1562,11 @@ internal sealed class QuotaSnapshotCacheStore
             using (var deleteCommand = connection.CreateCommand())
             {
                 deleteCommand.Transaction = transaction;
-                deleteCommand.CommandText = "DELETE FROM quota_snapshots WHERE date = $date";
+                deleteCommand.CommandText = """
+                    DELETE FROM quota_snapshots
+                    WHERE date = $date
+                      AND snapshot_key NOT IN (SELECT snapshot_key FROM imported_quota_snapshot_keys)
+                    """;
                 deleteCommand.Parameters.AddWithValue("$date", key);
                 deleteCommand.ExecuteNonQuery();
             }
@@ -1404,6 +1650,11 @@ internal sealed class QuotaSnapshotCacheStore
                 )
                 """);
             ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS idx_quota_snapshots_time ON quota_snapshots(snapshot_local)");
+            ExecuteNonQuery(connection, """
+                CREATE TABLE IF NOT EXISTS imported_quota_snapshot_keys (
+                    snapshot_key TEXT PRIMARY KEY
+                )
+                """);
             ExecuteNonQuery(connection, """
                 CREATE TABLE IF NOT EXISTS quota_7d_timeline (
                     date TEXT NOT NULL,
@@ -1522,6 +1773,24 @@ internal sealed class QuotaSnapshotCacheStore
         command.Parameters.AddWithValue("$start_local", FormatDateTimeOffset(startLocal));
         command.Parameters.AddWithValue("$end_local", FormatDateTimeOffset(endLocal));
         return command.ExecuteNonQuery();
+    }
+
+    private void MarkImportedSnapshotKeys(IEnumerable<CodexQuotaSnapshot> snapshots)
+    {
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        foreach (var key in snapshots
+                     .Select(BuildSnapshotKey)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "INSERT OR IGNORE INTO imported_quota_snapshot_keys (snapshot_key) VALUES ($snapshot_key)";
+            command.Parameters.AddWithValue("$snapshot_key", key);
+            command.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
     }
 
     private static string DateKey(DateOnly date)
@@ -2863,10 +3132,11 @@ internal static class CodexUsageReader
                     var detailStart = Max(dayStart, scanRange.StartLocal);
                     var detailEnd = Min(dayStart.AddDays(1), scanRange.EndLocal);
                     var newEvents = ReadEventsUncached(detailStart, detailEnd, useLiveCursor: true);
-                    detailEvents = newEvents
-                        .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1))
-                        .ToList();
-                    replaceDetailEvents = false;
+                    detailEvents = UsageEventMerger.Merge(cache.GetDetailEvents(date)
+                        .Concat(newEvents)
+                        .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1)));
+                    mergedBucket = CreateBucketFromEvents(dayStart, detailEvents);
+                    replaceDetailEvents = true;
                 }
 
                 cache.Put(mergedBucket, isComplete, scannedThrough, detailEvents, replaceDetailEvents);
@@ -2877,6 +3147,7 @@ internal static class CodexUsageReader
         if (cacheChanged)
         {
             cache.Save();
+            return cache.ReadRange(startLocal, endLocal);
         }
 
         summary.DailyBuckets.AddRange(
@@ -2943,7 +3214,7 @@ internal static class CodexUsageReader
             return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
         }
 
-        var fullEvents = ReadEventsUncached(startLocal, endLocal);
+        var fullEvents = UsageEventMerger.Merge(cachedEvents.Concat(ReadEventsUncached(startLocal, endLocal)));
         var fullBucket = CreateBucketFromEvents(dayStart, fullEvents);
         var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd;
         if (startLocal == dayStart)

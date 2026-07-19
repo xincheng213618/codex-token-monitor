@@ -16,6 +16,7 @@ internal static class CodexAppServerQuotaReader
     private static readonly TimeSpan FailureCacheDuration = TimeSpan.FromSeconds(10);
     private static DateTimeOffset lastAttemptUtc = DateTimeOffset.MinValue;
     private static CodexQuotaSnapshot? cachedSnapshot;
+    private static CodexCliCommand? selectedCommand;
 
     public static CodexQuotaSnapshot? ReadCurrent()
     {
@@ -90,9 +91,56 @@ internal static class CodexAppServerQuotaReader
 
     private static async Task<CodexQuotaSnapshot?> ReadCurrentAsync()
     {
+        var failedCommand = selectedCommand;
+        if (failedCommand is not null)
+        {
+            var cachedPathSnapshot = await TryReadCurrentAsync(failedCommand);
+            if (cachedPathSnapshot is not null)
+            {
+                return cachedPathSnapshot;
+            }
+
+            selectedCommand = null;
+        }
+
+        foreach (var command in CodexCliLocator.FindAll())
+        {
+            if (command == failedCommand)
+            {
+                continue;
+            }
+
+            var snapshot = await TryReadCurrentAsync(command);
+            if (snapshot is not null)
+            {
+                selectedCommand = command;
+                return snapshot;
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<CodexQuotaSnapshot?> TryReadCurrentAsync(CodexCliCommand command)
+    {
+        try
+        {
+            return await ReadCurrentAsync(command);
+        }
+        catch
+        {
+            // Multiple Codex installations can coexist. A packaged PATH entry
+            // may be visible but not launchable, so rediscover and switch only
+            // after the selected command actually fails.
+            return null;
+        }
+    }
+
+    private static async Task<CodexQuotaSnapshot?> ReadCurrentAsync(CodexCliCommand command)
+    {
         using var process = new Process
         {
-            StartInfo = CreateStartInfo()
+            StartInfo = CreateStartInfo(command)
         };
         if (!process.Start())
         {
@@ -138,33 +186,40 @@ internal static class CodexAppServerQuotaReader
         }
     }
 
-    private static ProcessStartInfo CreateStartInfo()
+    private static ProcessStartInfo CreateStartInfo(CodexCliCommand command)
     {
-        var commandProcessor = Environment.GetEnvironmentVariable("ComSpec");
-        if (string.IsNullOrWhiteSpace(commandProcessor))
+        ProcessStartInfo startInfo;
+        if (command.RequiresCommandShell)
         {
-            commandProcessor = "cmd.exe";
+            var commandProcessor = Environment.GetEnvironmentVariable("ComSpec");
+            if (string.IsNullOrWhiteSpace(commandProcessor))
+            {
+                commandProcessor = "cmd.exe";
+            }
+
+            var shellCommand = $"\"{command.FilePath}\" app-server --stdio";
+            startInfo = new ProcessStartInfo
+            {
+                FileName = commandProcessor,
+                Arguments = $"/d /s /c \"{shellCommand}\""
+            };
+        }
+        else
+        {
+            startInfo = new ProcessStartInfo
+            {
+                FileName = command.FilePath,
+                Arguments = "app-server --stdio"
+            };
         }
 
-        var npmCommand = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "npm",
-            "codex.cmd");
-        var command = File.Exists(npmCommand)
-            ? $"\"{npmCommand}\" app-server --stdio"
-            : "codex app-server --stdio";
-
-        return new ProcessStartInfo
-        {
-            FileName = commandProcessor,
-            Arguments = $"/d /s /c \"{command}\"",
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-            WindowStyle = ProcessWindowStyle.Hidden
-        };
+        startInfo.UseShellExecute = false;
+        startInfo.RedirectStandardInput = true;
+        startInfo.RedirectStandardOutput = true;
+        startInfo.RedirectStandardError = true;
+        startInfo.CreateNoWindow = true;
+        startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+        return startInfo;
     }
 
     private static async Task WriteLineAsync(StreamWriter writer, string line)

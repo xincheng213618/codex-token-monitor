@@ -239,7 +239,7 @@
         <Grid Grid.Row="0" Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="320" />
+                <ColumnDefinition Width="250" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TabControl x:Name="SourceTabs"
@@ -261,6 +261,22 @@
                     ToolTip="查看后台缓存进度与运行信息"
                     Click="CacheStatusButton_Click" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="DataTransferButton"
+                        Style="{StaticResource ToolButton}"
+                        Content="数据管理"
+                        ToolTip="导入或导出跨电脑 Codex 统计数据"
+                        Click="DataTransferButton_Click">
+                    <Button.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="导入其他电脑数据..."
+                                      ToolTip="仅合并同一 Codex 账户的数据"
+                                      Click="ImportDataButton_Click" />
+                            <MenuItem Header="导出本机数据..."
+                                      ToolTip="导出本机已缓存的 Codex 用量和额度快照"
+                                      Click="ExportDataButton_Click" />
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                </Button>
                 <Button x:Name="ResetSettingsButton" Style="{StaticResource ToolButton}" Content="重置设置" Click="ResetSettingsButton_Click" />
                 <Button x:Name="PlanSettingsButton" Style="{StaticResource ToolButton}" Content="套餐设置" Click="PlanSettingsButton_Click" />
                 <Button Style="{StaticResource ToolButton}" Content="价格设置" Margin="0" Click="PriceSettingsButton_Click" />

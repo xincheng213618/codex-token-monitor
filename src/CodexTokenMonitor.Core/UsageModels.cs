@@ -166,7 +166,7 @@ internal static class UsageEventMerger
             .ToList();
     }
 
-    private static string GetStableKey(TokenUsageEvent item)
+    internal static string GetStableKey(TokenUsageEvent item)
     {
         return !string.IsNullOrWhiteSpace(item.Key)
             ? item.Key

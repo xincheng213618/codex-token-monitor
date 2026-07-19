@@ -249,6 +249,135 @@ public partial class MainWindow : Window
         }
     }
 
+    private void DataTransferButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataTransferButton.ContextMenu is not { } menu)
+        {
+            return;
+        }
+
+        menu.PlacementTarget = DataTransferButton;
+        menu.IsOpen = true;
+    }
+
+    private async void ExportDataButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出 Codex 统计数据",
+            Filter = "Codex 监控器数据包 (*.codex-data.json)|*.codex-data.json|JSON 文件 (*.json)|*.json",
+            DefaultExt = ".codex-data.json",
+            AddExtension = true,
+            FileName = $"codex-data-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.codex-data.json"
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        backgroundCacheWarmer.CancelCurrent();
+        SetBusy(true);
+        SetStatus("正在导出 Codex 数据...");
+        try
+        {
+            CodexDataExportResult result;
+            await usageQueryGate.WaitAsync();
+            try
+            {
+                result = await Task.Run(() => CodexDataTransferService.Export(dialog.FileName));
+            }
+            finally
+            {
+                usageQueryGate.Release();
+            }
+
+            SetStatus($"已导出 {result.UsageEventCount:N0} 条用量 · {result.QuotaSnapshotCount:N0} 条额度快照");
+            System.Windows.MessageBox.Show(
+                this,
+                $"已导出到：\n{result.FilePath}\n\n" +
+                $"用量事件：{result.UsageEventCount:N0}\n" +
+                $"额度快照：{result.QuotaSnapshotCount:N0}",
+                "Codex 数据导出",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("数据导出失败");
+            System.Windows.MessageBox.Show(this, ex.Message, "Codex 数据导出", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetBusy(false);
+            _ = backgroundCacheWarmer.WarmNowAsync();
+        }
+    }
+
+    private async void ImportDataButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "导入其他电脑的 Codex 统计数据",
+            Filter = "Codex 监控器数据包 (*.codex-data.json)|*.codex-data.json|JSON 文件 (*.json)|*.json",
+            DefaultExt = ".codex-data.json",
+            Multiselect = true,
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        backgroundCacheWarmer.CancelCurrent();
+        SetBusy(true);
+        SetStatus($"正在导入 {dialog.FileNames.Length:N0} 个数据包...");
+        try
+        {
+            CodexDataImportResult result;
+            await usageQueryGate.WaitAsync();
+            try
+            {
+                result = await Task.Run(() => CodexDataTransferService.Import(dialog.FileNames));
+            }
+            finally
+            {
+                usageQueryGate.Release();
+            }
+
+            var codexModule = CurrentCodexModule();
+            codexModule.CurrentQuotaEstimate = null;
+            foreach (var module in usageModules.Values)
+            {
+                module.ClearDisplay();
+            }
+
+            SetStatus($"已导入 {result.AddedUsageEventCount:N0} 条新用量 · {result.AddedQuotaSnapshotCount:N0} 条新额度快照");
+            System.Windows.MessageBox.Show(
+                this,
+                $"已合并 {result.FileCount:N0} 个数据包（{result.DeviceCount:N0} 台电脑）。\n\n" +
+                $"新增用量事件：{result.AddedUsageEventCount:N0}\n" +
+                $"已存在用量事件：{result.ExistingUsageEventCount:N0}\n" +
+                $"新增额度快照：{result.AddedQuotaSnapshotCount:N0}\n" +
+                $"已存在额度快照：{result.ExistingQuotaSnapshotCount:N0}\n\n" +
+                "请只合并同一 Codex 账户的数据。重复导入不会重复计数。",
+                "Codex 数据导入",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("数据导入失败");
+            System.Windows.MessageBox.Show(this, ex.Message, "Codex 数据导入", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+
+        await RefreshUsageAsync();
+        _ = backgroundCacheWarmer.WarmNowAsync();
+    }
+
     private void ResetSettingsButton_Click(object sender, RoutedEventArgs e)
     {
         if (CurrentModule() is not CodexUsageModule)
