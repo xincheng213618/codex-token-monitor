@@ -195,6 +195,83 @@ public sealed class CodexDataTransferServiceTests
         }
     }
 
+    [Fact]
+    public void ExportRange_OnlyIncludesEventsAndSnapshotsInsideTheRange()
+    {
+        var sourceFolder = $"CodexTransferRangeSource-{Guid.NewGuid():N}";
+        var targetFolder = $"CodexTransferRangeTarget-{Guid.NewGuid():N}";
+        var transferPath = Path.Combine(Path.GetTempPath(), $"codex-range-{Guid.NewGuid():N}.codex.json");
+        var rangeStart = new DateTimeOffset(2026, 7, 20, 0, 0, 0, Beijing);
+        var rangeEnd = rangeStart.AddDays(2);
+        var beforeEvent = new TokenUsageEvent(rangeStart.AddTicks(-1), 10, 0, 1, 0, 11, "codex:before");
+        var startEvent = new TokenUsageEvent(rangeStart, 20, 0, 2, 0, 22, "codex:start");
+        var insideEvent = new TokenUsageEvent(rangeStart.AddDays(1).AddHours(8), 30, 0, 3, 0, 33, "codex:inside");
+        var endEvent = new TokenUsageEvent(rangeEnd, 40, 0, 4, 0, 44, "codex:end");
+        var beforeQuota = CreateQuota(rangeStart.AddTicks(-1), 10m);
+        var startQuota = CreateQuota(rangeStart, 11m);
+        var insideQuota = CreateQuota(rangeStart.AddDays(1).AddHours(8), 12m);
+        var endQuota = CreateQuota(rangeEnd, 13m);
+
+        try
+        {
+            PutEvents(sourceFolder, rangeStart.AddDays(-1), beforeEvent);
+            PutEvents(sourceFolder, rangeStart, startEvent);
+            PutEvents(sourceFolder, rangeStart.AddDays(1), insideEvent);
+            PutEvents(sourceFolder, rangeEnd, endEvent);
+            PutQuotaSnapshots(sourceFolder, rangeStart.AddDays(-1), beforeQuota);
+            PutQuotaSnapshots(sourceFolder, rangeStart, startQuota);
+            PutQuotaSnapshots(sourceFolder, rangeStart.AddDays(1), insideQuota);
+            PutQuotaSnapshots(sourceFolder, rangeEnd, endQuota);
+
+            var exported = CodexDataTransferService.ExportRange(
+                transferPath,
+                sourceFolder,
+                "device-a",
+                "Laptop A",
+                rangeStart.AddHours(12),
+                rangeStart,
+                rangeEnd);
+            var imported = CodexDataTransferService.Import(new[] { transferPath }, targetFolder);
+
+            Assert.Equal(2, exported.UsageEventCount);
+            Assert.Equal(2, exported.QuotaSnapshotCount);
+            Assert.Equal(2, imported.AddedUsageEventCount);
+            Assert.Equal(2, imported.AddedQuotaSnapshotCount);
+            Assert.Equal(
+                new[] { rangeStart, insideEvent.Timestamp },
+                UsageCacheStore.Load(targetFolder).GetAllDetailEvents().Select(item => item.Timestamp));
+            Assert.Equal(
+                new[] { rangeStart, insideQuota.SnapshotLocal },
+                QuotaSnapshotCacheStore.Load(targetFolder).GetAllSnapshots().Select(item => item.SnapshotLocal));
+        }
+        finally
+        {
+            UsageCacheStore.Delete(sourceFolder);
+            UsageCacheStore.Delete(targetFolder);
+            if (File.Exists(transferPath))
+            {
+                File.Delete(transferPath);
+            }
+        }
+    }
+
+    [Fact]
+    public void ExportScopes_UseBeijingCalendarDayAndMondayBasedWeek()
+    {
+        var wednesday = new DateTimeOffset(2026, 7, 22, 14, 30, 0, Beijing);
+
+        var today = CodexDataTransferService.GetExportRange(CodexDataExportScope.Today, wednesday);
+        var thisWeek = CodexDataTransferService.GetExportRange(CodexDataExportScope.ThisWeek, wednesday);
+        var all = CodexDataTransferService.GetExportRange(CodexDataExportScope.All, wednesday);
+
+        Assert.Equal(new DateTimeOffset(2026, 7, 22, 0, 0, 0, Beijing), today.StartInclusive);
+        Assert.Equal(new DateTimeOffset(2026, 7, 23, 0, 0, 0, Beijing), today.EndExclusive);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 0, 0, 0, Beijing), thisWeek.StartInclusive);
+        Assert.Equal(new DateTimeOffset(2026, 7, 27, 0, 0, 0, Beijing), thisWeek.EndExclusive);
+        Assert.Null(all.StartInclusive);
+        Assert.Null(all.EndExclusive);
+    }
+
     private static void PutEvents(
         string cacheFolder,
         DateTimeOffset dayStart,

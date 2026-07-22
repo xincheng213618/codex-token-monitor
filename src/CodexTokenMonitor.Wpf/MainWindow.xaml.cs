@@ -260,15 +260,36 @@ public partial class MainWindow : Window
         menu.IsOpen = true;
     }
 
+    private async void ExportTodayDataButton_Click(object sender, RoutedEventArgs e)
+    {
+        await ExportDataAsync(CodexDataExportScope.Today);
+    }
+
+    private async void ExportThisWeekDataButton_Click(object sender, RoutedEventArgs e)
+    {
+        await ExportDataAsync(CodexDataExportScope.ThisWeek);
+    }
+
     private async void ExportDataButton_Click(object sender, RoutedEventArgs e)
     {
+        await ExportDataAsync(CodexDataExportScope.All);
+    }
+
+    private async Task ExportDataAsync(CodexDataExportScope scope)
+    {
+        var (scopeLabel, fileScope) = scope switch
+        {
+            CodexDataExportScope.Today => ("今天", "today"),
+            CodexDataExportScope.ThisWeek => ("本周", "week"),
+            _ => ("全部", "all")
+        };
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
-            Title = "导出 Codex 统计数据",
+            Title = $"导出{scopeLabel} Codex 统计数据",
             Filter = "Codex 监控器数据包 (*.codex.json)|*.codex.json|旧版数据包 (*.codex-data.json)|*.codex-data.json|JSON 文件 (*.json)|*.json",
             DefaultExt = ".codex.json",
             AddExtension = true,
-            FileName = $"codex-data-{Environment.MachineName}-{DateTime.Now:yyyyMMdd-HHmmss}.codex.json"
+            FileName = $"codex-data-{Environment.MachineName}-{fileScope}-{DateTime.Now:yyyyMMdd-HHmmss}.codex.json"
         };
         if (dialog.ShowDialog(this) != true)
         {
@@ -277,24 +298,25 @@ public partial class MainWindow : Window
 
         backgroundCacheWarmer.CancelCurrent();
         SetBusy(true);
-        SetStatus("正在导出 Codex 数据...");
+        SetStatus($"正在导出{scopeLabel} Codex 数据...");
         try
         {
             CodexDataExportResult result;
             await usageQueryGate.WaitAsync();
             try
             {
-                result = await Task.Run(() => CodexDataTransferService.Export(dialog.FileName));
+                result = await Task.Run(() => CodexDataTransferService.Export(dialog.FileName, scope));
             }
             finally
             {
                 usageQueryGate.Release();
             }
 
-            SetStatus($"已导出 {result.UsageEventCount:N0} 条用量 · {result.QuotaSnapshotCount:N0} 条额度快照");
+            SetStatus($"已导出{scopeLabel}数据：{result.UsageEventCount:N0} 条用量 · {result.QuotaSnapshotCount:N0} 条额度快照");
             System.Windows.MessageBox.Show(
                 this,
                 $"已导出到：\n{result.FilePath}\n\n" +
+                $"数据范围：{scopeLabel}\n" +
                 $"用量事件：{result.UsageEventCount:N0}\n" +
                 $"额度快照：{result.QuotaSnapshotCount:N0}",
                 "Codex 数据导出",

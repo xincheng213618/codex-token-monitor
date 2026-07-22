@@ -271,8 +271,15 @@
                             <MenuItem Header="导入其他电脑数据..."
                                       ToolTip="仅合并同一 Codex 账户的数据"
                                       Click="ImportDataButton_Click" />
-                            <MenuItem Header="导出本机数据..."
-                                      ToolTip="导出本机已缓存的 Codex 用量和额度快照"
+                            <Separator />
+                            <MenuItem Header="仅导出今天数据..."
+                                      ToolTip="按北京时间导出今天 00:00 之后的数据"
+                                      Click="ExportTodayDataButton_Click" />
+                            <MenuItem Header="仅导出本周数据..."
+                                      ToolTip="按北京时间导出本周一 00:00 之后的数据"
+                                      Click="ExportThisWeekDataButton_Click" />
+                            <MenuItem Header="导出全部数据..."
+                                      ToolTip="导出所有已缓存的 Codex 用量和额度快照"
                                       Click="ExportDataButton_Click" />
                         </ContextMenu>
                     </Button.ContextMenu>

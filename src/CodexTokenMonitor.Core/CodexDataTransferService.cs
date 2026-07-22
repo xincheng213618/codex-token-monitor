@@ -14,6 +14,13 @@ internal sealed record CodexDataImportResult(
     int AddedQuotaSnapshotCount,
     int ExistingQuotaSnapshotCount);
 
+internal enum CodexDataExportScope
+{
+    All,
+    Today,
+    ThisWeek
+}
+
 /// <summary>
 /// Moves cached Codex usage events and quota snapshots between computers.
 /// Stable event/snapshot keys make repeated and overlapping imports idempotent.
@@ -33,12 +40,21 @@ internal static class CodexDataTransferService
 
     public static CodexDataExportResult Export(string filePath)
     {
-        return Export(
+        return Export(filePath, CodexDataExportScope.All);
+    }
+
+    public static CodexDataExportResult Export(string filePath, CodexDataExportScope scope)
+    {
+        var exportedAtLocal = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        var (startInclusive, endExclusive) = GetExportRange(scope, exportedAtLocal);
+        return ExportRange(
             filePath,
             CacheFolder,
             GetOrCreateDeviceId(),
             Environment.MachineName,
-            DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset));
+            exportedAtLocal,
+            startInclusive,
+            endExclusive);
     }
 
     internal static CodexDataExportResult Export(
@@ -48,12 +64,41 @@ internal static class CodexDataTransferService
         string deviceName,
         DateTimeOffset exportedAtLocal)
     {
+        return ExportRange(
+            filePath,
+            cacheFolder,
+            deviceId,
+            deviceName,
+            exportedAtLocal,
+            startInclusive: null,
+            endExclusive: null);
+    }
+
+    internal static CodexDataExportResult ExportRange(
+        string filePath,
+        string cacheFolder,
+        string deviceId,
+        string deviceName,
+        DateTimeOffset exportedAtLocal,
+        DateTimeOffset? startInclusive,
+        DateTimeOffset? endExclusive)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheFolder);
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        if ((startInclusive is null) != (endExclusive is null) || startInclusive >= endExclusive)
+        {
+            throw new ArgumentException("导出时间范围无效。");
+        }
 
-        var usageEvents = UsageCacheStore.Load(cacheFolder).GetAllDetailEvents();
-        var quotaSnapshots = QuotaSnapshotCacheStore.Load(cacheFolder).GetAllSnapshots();
+        var usageEvents = UsageCacheStore.Load(cacheFolder)
+            .GetAllDetailEvents()
+            .Where(item => IsInExportRange(item.Timestamp, startInclusive, endExclusive))
+            .ToList();
+        var quotaSnapshots = QuotaSnapshotCacheStore.Load(cacheFolder)
+            .GetAllSnapshots()
+            .Where(item => IsInExportRange(item.SnapshotLocal, startInclusive, endExclusive))
+            .ToList();
         var package = new CodexTransferPackage
         {
             Format = PackageFormat,
@@ -114,6 +159,45 @@ internal static class CodexDataTransferService
             package.UsageEvents.Count,
             package.QuotaSnapshots.Count,
             package.SourceDeviceName);
+    }
+
+    internal static (DateTimeOffset? StartInclusive, DateTimeOffset? EndExclusive) GetExportRange(
+        CodexDataExportScope scope,
+        DateTimeOffset exportedAtLocal)
+    {
+        var localNow = exportedAtLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        var todayStart = new DateTimeOffset(
+            localNow.Year,
+            localNow.Month,
+            localNow.Day,
+            0,
+            0,
+            0,
+            CodexUsageReader.BeijingOffset);
+
+        return scope switch
+        {
+            CodexDataExportScope.All => (null, null),
+            CodexDataExportScope.Today => (todayStart, todayStart.AddDays(1)),
+            CodexDataExportScope.ThisWeek => GetThisWeekRange(todayStart),
+            _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "未知的导出范围。")
+        };
+    }
+
+    private static (DateTimeOffset StartInclusive, DateTimeOffset EndExclusive) GetThisWeekRange(
+        DateTimeOffset todayStart)
+    {
+        var daysSinceMonday = ((int)todayStart.DayOfWeek + 6) % 7;
+        var weekStart = todayStart.AddDays(-daysSinceMonday);
+        return (weekStart, weekStart.AddDays(7));
+    }
+
+    private static bool IsInExportRange(
+        DateTimeOffset timestamp,
+        DateTimeOffset? startInclusive,
+        DateTimeOffset? endExclusive)
+    {
+        return startInclusive is null || timestamp >= startInclusive.Value && timestamp < endExclusive!.Value;
     }
 
     public static CodexDataImportResult Import(IReadOnlyList<string> filePaths)
