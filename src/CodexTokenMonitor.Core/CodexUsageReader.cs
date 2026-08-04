@@ -1924,7 +1924,7 @@ internal sealed class SubagentReplayFilter
         return false;
     }
 
-    private static DateTimeOffset? TryReadRecordTimestamp(string line)
+    internal static DateTimeOffset? TryReadRecordTimestamp(string line)
     {
         try
         {
@@ -3129,7 +3129,9 @@ internal static class CodexUsageReader
                 var replaceDetailEvents = true;
                 if (cache.HasDetailEvents(date))
                 {
-                    var detailStart = Max(dayStart, scanRange.StartLocal);
+                    var detailStart = isToday
+                        ? dayStart
+                        : Max(dayStart, scanRange.StartLocal);
                     var detailEnd = Min(dayStart.AddDays(1), scanRange.EndLocal);
                     var newEvents = ReadEventsUncached(detailStart, detailEnd, useLiveCursor: true);
                     detailEvents = UsageEventMerger.Merge(cache.GetDetailEvents(date)
@@ -3199,7 +3201,9 @@ internal static class CodexUsageReader
                     : Max(startLocal, effectiveScannedThrough.Value.AddTicks(1));
                 if (scanStart < effectiveEndLocal)
                 {
-                    var newEvents = ReadEventsUncached(scanStart, effectiveEndLocal, useLiveCursor: true);
+                    // Always give a fresh live cursor the full day. This self-heals a cache
+                    // produced by an older build that advanced past future-dated JSONL rows.
+                    var newEvents = ReadEventsUncached(dayStart, effectiveEndLocal, useLiveCursor: true);
                     var mergedEvents = UsageEventMerger.Merge(cachedEvents
                         .Concat(newEvents)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
@@ -3261,7 +3265,7 @@ internal static class CodexUsageReader
 
         foreach (var root in GetLogRoots())
         {
-            foreach (var file in EnumerateJsonlFiles(root, startLocal))
+            foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
             {
                 ReadFile(file, startLocal, endLocal, summary, dailyBuckets);
             }
@@ -3285,7 +3289,7 @@ internal static class CodexUsageReader
 
         foreach (var root in GetLogRoots())
         {
-            foreach (var file in EnumerateJsonlFiles(root, startLocal))
+            foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
             {
                 if (incremental)
                 {
@@ -3294,10 +3298,6 @@ internal static class CodexUsageReader
                 else
                 {
                     ReadEventFile(file, startLocal, endLocal, events);
-                    if (IsLiveRange(startLocal, endLocal))
-                    {
-                        UsageTailReader.Prime(file, startLocal);
-                    }
                 }
             }
         }
@@ -3329,8 +3329,6 @@ internal static class CodexUsageReader
                     events.Add(usageEvent);
                 }
             }
-
-            UsageReplayFilters[file] = replayFilter;
         }
         catch
         {
@@ -3345,11 +3343,16 @@ internal static class CodexUsageReader
         List<TokenUsageEvent> events)
     {
         var replayFilter = UsageReplayFilters.GetOrAdd(file, static _ => new SubagentReplayFilter());
-        UsageTailReader.ReadNewLines(file, startLocal, line =>
+        UsageTailReader.ReadNewLinesWhile(file, startLocal, line =>
         {
+            if (SubagentReplayFilter.TryReadRecordTimestamp(line) is { } timestamp && timestamp >= endLocal)
+            {
+                return false;
+            }
+
             if (!replayFilter.ShouldReadTokenCount(line))
             {
-                return;
+                return true;
             }
 
             var usageEvent = TryReadUsageEvent(line, startLocal, endLocal);
@@ -3357,6 +3360,8 @@ internal static class CodexUsageReader
             {
                 events.Add(usageEvent);
             }
+
+            return true;
         });
     }
 
@@ -3485,9 +3490,16 @@ internal static class CodexUsageReader
         }
     }
 
-    private static IEnumerable<string> EnumerateJsonlFiles(string root, DateTimeOffset startLocal)
+    private static IEnumerable<string> EnumerateJsonlFiles(
+        string root,
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal)
     {
-        var startUtc = startLocal.UtcDateTime;
+        // Active JSONL records can be stamped well ahead of LastWriteTimeUtc. Keep a
+        // bounded look-back for live reads and never drop a file with a pending cursor.
+        var startUtc = (IsLiveRange(startLocal, endLocal)
+            ? startLocal.Subtract(TimeSpan.FromDays(1))
+            : startLocal).UtcDateTime;
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -3506,7 +3518,9 @@ internal static class CodexUsageReader
                 continue;
             }
 
-            if (info.LastWriteTimeUtc >= startUtc)
+            if (info.LastWriteTimeUtc >= startUtc ||
+                UsageTailReader.IsTracked(file) ||
+                QuotaTailReader.IsTracked(file))
             {
                 yield return file;
             }
@@ -3528,7 +3542,7 @@ internal static class CodexUsageReader
         var incremental = IsLiveRange(startLocal, endLocal);
         foreach (var root in GetLogRoots())
         {
-            foreach (var file in EnumerateJsonlFiles(root, startLocal))
+            foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
             {
                 if (incremental)
                 {
@@ -3557,8 +3571,6 @@ internal static class CodexUsageReader
 
                         snapshots.Add(snapshot);
                     }
-
-                    QuotaReplayFilters[file] = replayFilter;
                 }
                 catch
                 {
@@ -3577,12 +3589,17 @@ internal static class CodexUsageReader
         List<RateLimitSnapshot> snapshots)
     {
         var replayFilter = QuotaReplayFilters.GetOrAdd(file, static _ => new SubagentReplayFilter());
-        QuotaTailReader.ReadNewLines(file, startLocal, line =>
+        QuotaTailReader.ReadNewLinesWhile(file, startLocal, line =>
         {
+            if (SubagentReplayFilter.TryReadRecordTimestamp(line) is { } timestamp && timestamp >= endLocal)
+            {
+                return false;
+            }
+
             if (!replayFilter.ShouldReadTokenCount(line) ||
                 !line.Contains("\"rate_limits\"", StringComparison.Ordinal))
             {
-                return;
+                return true;
             }
 
             var snapshot = TryReadRateLimitSnapshot(line, startLocal, endLocal);
@@ -3590,6 +3607,8 @@ internal static class CodexUsageReader
             {
                 snapshots.Add(snapshot);
             }
+
+            return true;
         });
     }
 
@@ -3852,8 +3871,6 @@ internal static class CodexUsageReader
 
                 ReadLine(line, startLocal, endLocal, summary, dailyBuckets);
             }
-
-            UsageReplayFilters[file] = replayFilter;
         }
         catch
         {

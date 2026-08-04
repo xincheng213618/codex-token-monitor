@@ -68,6 +68,30 @@ public sealed class LiveFileTailReaderTests : IDisposable
         Assert.Equal(new[] { "one", "two" }, Read(reader, path, late.AddHours(-4)));
     }
 
+    [Fact]
+    public void ReadNewLinesWhile_RetriesRejectedLineOnNextPass()
+    {
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "session.jsonl");
+        File.WriteAllText(path, "old\nfuture\nafter\n", Encoding.UTF8);
+        var reader = new LiveFileTailReader();
+        var first = new List<string>();
+
+        reader.ReadNewLinesWhile(path, DateTimeOffset.UtcNow, line =>
+        {
+            if (line == "future")
+            {
+                return false;
+            }
+
+            first.Add(line);
+            return true;
+        });
+
+        Assert.Equal(new[] { "old" }, first);
+        Assert.Equal(new[] { "future", "after" }, Read(reader, path));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(directory))

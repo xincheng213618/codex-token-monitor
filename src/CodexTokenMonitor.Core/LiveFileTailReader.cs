@@ -1,3 +1,6 @@
+using System.Buffers;
+using System.Text;
+
 namespace CodexTokenMonitor;
 
 /// <summary>
@@ -11,6 +14,19 @@ internal sealed class LiveFileTailReader
 
     public void ReadNewLines(string file, DateTimeOffset coverageStart, Action<string> consumeLine)
     {
+        ReadNewLinesWhile(file, coverageStart, line =>
+        {
+            consumeLine(line);
+            return true;
+        });
+    }
+
+    /// <summary>
+    /// Reads appended complete lines until <paramref name="consumeLine"/> rejects one.
+    /// A rejected line is deliberately left uncommitted so a later pass can retry it.
+    /// </summary>
+    public void ReadNewLinesWhile(string file, DateTimeOffset coverageStart, Func<string, bool> consumeLine)
+    {
         var cursor = cursors.GetOrAdd(file, static _ => new FileCursor());
         lock (cursor.SyncRoot)
         {
@@ -22,19 +38,75 @@ internal sealed class LiveFileTailReader
                     return;
                 }
 
-                using var reader = new StreamReader(stream);
-                while (reader.ReadLine() is { } line)
+                var committedOffset = cursor.Offset;
+                using var lineBuffer = new MemoryStream();
+                var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+                try
                 {
-                    consumeLine(line);
+                    var stopped = false;
+                    while (!stopped)
+                    {
+                        var bytesRead = stream.Read(buffer, 0, buffer.Length);
+                        if (bytesRead == 0)
+                        {
+                            break;
+                        }
+
+                        var chunkStartOffset = stream.Position - bytesRead;
+                        var segmentStart = 0;
+                        for (var index = 0; index < bytesRead; index++)
+                        {
+                            if (buffer[index] != (byte)'\n')
+                            {
+                                continue;
+                            }
+
+                            lineBuffer.Write(buffer, segmentStart, index - segmentStart);
+                            var line = Encoding.UTF8.GetString(lineBuffer.GetBuffer(), 0, checked((int)lineBuffer.Length));
+                            if (line.EndsWith('\r'))
+                            {
+                                line = line[..^1];
+                            }
+
+                            if (committedOffset == 0 && line.StartsWith('\uFEFF'))
+                            {
+                                line = line[1..];
+                            }
+
+                            if (!consumeLine(line))
+                            {
+                                stopped = true;
+                                break;
+                            }
+
+                            committedOffset = chunkStartOffset + index + 1;
+                            lineBuffer.SetLength(0);
+                            segmentStart = index + 1;
+                        }
+
+                        if (!stopped && segmentStart < bytesRead)
+                        {
+                            lineBuffer.Write(buffer, segmentStart, bytesRead - segmentStart);
+                        }
+                    }
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
                 }
 
-                Commit(stream, cursor);
+                Commit(stream, cursor, committedOffset);
             }
             catch
             {
                 // Active files can be moved or replaced between enumeration and open.
             }
         }
+    }
+
+    public bool IsTracked(string file)
+    {
+        return cursors.ContainsKey(file);
     }
 
     public void Prime(string file, DateTimeOffset coverageStart)
@@ -49,7 +121,7 @@ internal sealed class LiveFileTailReader
                     cursor.CoveredFrom = coverageStart;
                 }
                 using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                Commit(stream, cursor);
+                Commit(stream, cursor, stream.Length);
             }
             catch
             {
@@ -91,19 +163,10 @@ internal sealed class LiveFileTailReader
         return stream;
     }
 
-    private static void Commit(FileStream stream, FileCursor cursor)
+    private static void Commit(FileStream stream, FileCursor cursor, long committedOffset)
     {
         var length = stream.Length;
-        if (length == 0)
-        {
-            cursor.Offset = 0;
-        }
-        else
-        {
-            stream.Seek(-1, SeekOrigin.End);
-            cursor.Offset = stream.ReadByte() == (byte)'\n' ? length : cursor.Offset;
-        }
-
+        cursor.Offset = Math.Min(committedOffset, length);
         cursor.KnownLength = length;
         cursor.LastWriteTimeUtc = File.GetLastWriteTimeUtc(stream.Name);
     }

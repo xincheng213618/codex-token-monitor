@@ -71,7 +71,11 @@ internal static class CodexQuotaCycleReader
                 var index = periods.IndexOf(currentPeriod);
                 periods[index] = currentPeriod with
                 {
-                    PeriodEnd = currentWeek.WindowEndLocal,
+                    // A restored quota estimate can be older than this refresh. Do not
+                    // shrink the live cycle back to the stale snapshot's window end.
+                    PeriodEnd = currentPeriod.PeriodEnd >= currentWeek.WindowEndLocal
+                        ? currentPeriod.PeriodEnd
+                        : currentWeek.WindowEndLocal,
                     ResetAt = currentReset.Value,
                     IsCurrent = true
                 };
