@@ -24,6 +24,7 @@ internal sealed record CodexQuotaCycle(
 
 internal static class CodexQuotaCycleReader
 {
+    private static readonly TimeSpan CycleCacheLifetime = TimeSpan.FromSeconds(30);
     private static readonly DateTimeOffset DefaultStart = new(
         2026,
         1,
@@ -39,11 +40,27 @@ internal static class CodexQuotaCycleReader
     private static readonly TimeSpan TransientResetRunMaxDuration = TimeSpan.FromMinutes(3);
     private const int TransientResetRunMaxSnapshots = 5;
     private const decimal TransientResetMaxUsedPercent = 5m;
+    private static readonly object CycleCacheSync = new();
+    private static CycleCacheKey? cachedKey;
+    private static DateTimeOffset cycleCachedAtUtc;
+    private static IReadOnlyList<CodexQuotaCycle> cachedCycles = Array.Empty<CodexQuotaCycle>();
 
     public static IReadOnlyList<CodexQuotaCycle> ReadWeeklyCycles(
         CodexQuotaEstimate? currentQuota,
         DateTimeOffset now)
     {
+        var cacheKey = CycleCacheKey.From(currentQuota);
+        if (cacheKey is not null)
+        {
+            lock (CycleCacheSync)
+            {
+                if (cacheKey == cachedKey && DateTimeOffset.UtcNow - cycleCachedAtUtc <= CycleCacheLifetime)
+                {
+                    return cachedCycles;
+                }
+            }
+        }
+
         var snapshots = CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(DefaultStart, now.AddMinutes(1))
             .Where(item =>
                 CodexUsageReader.IsGeneralCodexQuotaSnapshot(item) &&
@@ -82,10 +99,31 @@ internal static class CodexQuotaCycleReader
             }
         }
 
-        return periods
+        var result = periods
             .Where(item => item.PeriodEnd > item.PeriodStart)
             .OrderByDescending(item => item.PeriodStart)
             .ToList();
+        if (cacheKey is not null)
+        {
+            lock (CycleCacheSync)
+            {
+                cachedKey = cacheKey;
+                cycleCachedAtUtc = DateTimeOffset.UtcNow;
+                cachedCycles = result;
+            }
+        }
+
+        return result;
+    }
+
+    public static void InvalidateCache()
+    {
+        lock (CycleCacheSync)
+        {
+            cachedKey = null;
+            cycleCachedAtUtc = default;
+            cachedCycles = Array.Empty<CodexQuotaCycle>();
+        }
     }
 
     public static bool IsSameQuotaReset(DateTimeOffset? first, DateTimeOffset? second)
@@ -385,5 +423,27 @@ internal static class CodexQuotaCycleReader
         public int Count => EndIndex - StartIndex + 1;
 
         public decimal MaxWeekUsedPercent { get; }
+    }
+
+    private sealed record CycleCacheKey(
+        DateTimeOffset SnapshotLocal,
+        string? LimitId,
+        decimal WeekUsedPercent,
+        DateTimeOffset WeekStartLocal,
+        DateTimeOffset WeekEndLocal,
+        DateTimeOffset? WeekResetAtLocal)
+    {
+        public static CycleCacheKey? From(CodexQuotaEstimate? quota)
+        {
+            return quota?.Week is not { } week || week.ResetAtLocal is null
+                ? null
+                : new CycleCacheKey(
+                    quota.SnapshotLocal,
+                    quota.LimitId,
+                    week.UsedPercent,
+                    week.WindowStartLocal,
+                    week.WindowEndLocal,
+                    week.ResetAtLocal);
+        }
     }
 }

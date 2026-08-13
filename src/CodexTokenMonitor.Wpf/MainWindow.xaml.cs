@@ -368,6 +368,7 @@ public partial class MainWindow : Window
 
             var codexModule = CurrentCodexModule();
             codexModule.CurrentQuotaEstimate = null;
+            CodexQuotaCycleReader.InvalidateCache();
             foreach (var module in usageModules.Values)
             {
                 module.ClearDisplay();
@@ -650,81 +651,112 @@ public partial class MainWindow : Window
             var range = GetSelectedRange();
             var includeLiveToday = !cacheOnly && ShouldIncludeLiveToday(range);
             var cachedQuota = module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null;
-            if (backgroundCacheWarmer.IsRunning)
+            if (range.Mode == RangeMode.Cycle && !includeLiveToday && module.TryGetCachedDisplay(range, out var cachedResult))
+            {
+                if (requestVersion != Volatile.Read(ref usageRefreshVersion) || isClosed)
+                {
+                    return;
+                }
+
+                module.StoreDisplay(range, cachedResult);
+                if (CurrentSource() == source)
+                {
+                    ApplySummary(range, cachedResult, module);
+                    SetStatus($"周期结果缓存命中 {DateTime.Now:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms");
+                    if (!cacheOnly && module.Reader.SupportsQuota)
+                    {
+                        _ = RefreshQuotaSummaryAsync();
+                    }
+                }
+
+                return;
+            }
+
+            var usesCachedCycleData = range.Mode == RangeMode.Cycle && !includeLiveToday;
+            if (!usesCachedCycleData && backgroundCacheWarmer.IsRunning)
             {
                 resumeBackgroundCache = true;
                 backgroundCacheWarmer.CancelCurrent();
                 SetStatus("正在刷新...");
             }
 
-            UsageQueryResult result;
-            await usageQueryGate.WaitAsync();
-            try
+            UsageQueryResult QueryUsage()
             {
-                result = await Task.Run(() =>
+                if (range.IsCustomStart)
                 {
-                    if (range.IsCustomStart)
-                    {
-                        var transientRows = module.Reader.ReadTransientDetailRows(range.Start, range.End);
-                        var transientSummary = CreateSummaryFromRows(range, transientRows);
-                        var transientQuota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
-                        var transientQuotaSnapshots = module.Reader.SupportsQuota
-                            ? ReadQuotaSnapshotsForRefresh(range, transientRows, includeLiveToday, transientQuota)
-                            : Array.Empty<CodexQuotaSnapshot>();
-                        return new UsageQueryResult(
-                            transientSummary,
-                            transientRows,
-                            UsageBreakdownBuilder.EstimateCodingTime(transientRows),
-                            transientQuota,
-                            transientQuotaSnapshots)
-                        {
-                            DetailRows = transientRows
-                        };
-                    }
-
-                    if (range.Mode == RangeMode.Day)
-                    {
-                        var dayUsage = module.Reader.ReadDay(range.Start, range.End, includeLiveToday);
-                        var dayQuota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
-                        var dayQuotaSnapshots = module.Reader.SupportsQuota
-                            ? ReadQuotaSnapshotsForRefresh(range, dayUsage.Rows, includeLiveToday, dayQuota)
-                            : Array.Empty<CodexQuotaSnapshot>();
-                        return new UsageQueryResult(
-                            dayUsage.Summary,
-                            dayUsage.Rows,
-                            UsageBreakdownBuilder.EstimateCodingTime(dayUsage.Rows),
-                            dayQuota,
-                            dayQuotaSnapshots)
-                        {
-                            DetailRows = dayUsage.Rows
-                        };
-                    }
-
-                    var summary = includeLiveToday
-                        ? module.Reader.ReadRange(range.Start, range.End, includeLiveToday)
-                        : module.Reader.ReadCachedRange(range.Start, range.End);
-                    var detailRows = module.Reader.ReadCachedDetailRows(range.Start, range.End);
-                    var rows = UsageBreakdownBuilder.Build(range, summary, detailRows, MultiDayBreakdownInterval);
-                    var codingTime = UsageBreakdownBuilder.EstimateCodingTimeForRange(
-                        module.Reader,
-                        range,
-                        rows,
-                        detailRows,
-                        includeLiveToday,
-                        !includeLiveToday);
-                    var quota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
-                    var quotaSnapshots = module.Reader.SupportsQuota
-                        ? ReadQuotaSnapshotsForRefresh(range, rows, includeLiveToday, quota)
+                    var transientRows = module.Reader.ReadTransientDetailRows(range.Start, range.End);
+                    var transientSummary = CreateSummaryFromRows(range, transientRows);
+                    var transientQuota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
+                    var transientQuotaSnapshots = module.Reader.SupportsQuota
+                        ? ReadQuotaSnapshotsForRefresh(range, transientRows, includeLiveToday, transientQuota)
                         : Array.Empty<CodexQuotaSnapshot>();
-                    return new UsageQueryResult(summary, rows, codingTime, quota, quotaSnapshots)
+                    return new UsageQueryResult(
+                        transientSummary,
+                        transientRows,
+                        UsageBreakdownBuilder.EstimateCodingTime(transientRows),
+                        transientQuota,
+                        transientQuotaSnapshots)
                     {
-                        DetailRows = detailRows
+                        DetailRows = transientRows
                     };
-                });
+                }
+
+                if (range.Mode == RangeMode.Day)
+                {
+                    var dayUsage = module.Reader.ReadDay(range.Start, range.End, includeLiveToday);
+                    var dayQuota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
+                    var dayQuotaSnapshots = module.Reader.SupportsQuota
+                        ? ReadQuotaSnapshotsForRefresh(range, dayUsage.Rows, includeLiveToday, dayQuota)
+                        : Array.Empty<CodexQuotaSnapshot>();
+                    return new UsageQueryResult(
+                        dayUsage.Summary,
+                        dayUsage.Rows,
+                        UsageBreakdownBuilder.EstimateCodingTime(dayUsage.Rows),
+                        dayQuota,
+                        dayQuotaSnapshots)
+                    {
+                        DetailRows = dayUsage.Rows
+                    };
+                }
+
+                var summary = includeLiveToday
+                    ? module.Reader.ReadRange(range.Start, range.End, includeLiveToday)
+                    : module.Reader.ReadCachedRange(range.Start, range.End);
+                var detailRows = module.Reader.ReadCachedDetailRows(range.Start, range.End);
+                var rows = UsageBreakdownBuilder.Build(range, summary, detailRows, MultiDayBreakdownInterval);
+                var codingTime = UsageBreakdownBuilder.EstimateCodingTimeForRange(
+                    module.Reader,
+                    range,
+                    rows,
+                    detailRows,
+                    includeLiveToday,
+                    !includeLiveToday);
+                var quota = ReadQuotaForRefresh(module.Reader, includeLiveToday, cachedQuota);
+                var quotaSnapshots = module.Reader.SupportsQuota
+                    ? ReadQuotaSnapshotsForRefresh(range, rows, includeLiveToday, quota)
+                    : Array.Empty<CodexQuotaSnapshot>();
+                return new UsageQueryResult(summary, rows, codingTime, quota, quotaSnapshots)
+                {
+                    DetailRows = detailRows
+                };
             }
-            finally
+
+            UsageQueryResult result;
+            if (usesCachedCycleData)
             {
-                usageQueryGate.Release();
+                result = await Task.Run(QueryUsage);
+            }
+            else
+            {
+                await usageQueryGate.WaitAsync();
+                try
+                {
+                    result = await Task.Run(QueryUsage);
+                }
+                finally
+                {
+                    usageQueryGate.Release();
+                }
             }
 
             if (requestVersion != Volatile.Read(ref usageRefreshVersion) || isClosed)
@@ -733,6 +765,11 @@ public partial class MainWindow : Window
             }
 
             module.StoreDisplay(range, result);
+            if (CanCacheCycleResult(module.Reader, range, includeLiveToday))
+            {
+                module.CacheDisplay(range, result);
+            }
+
             if (CurrentSource() == source)
             {
                 ApplySummary(range, result, module);
@@ -762,6 +799,23 @@ public partial class MainWindow : Window
                 _ = ResumeBackgroundCacheAsync();
             }
         }
+    }
+
+    private static bool CanCacheCycleResult(
+        IUsageSourceReader reader,
+        SelectedRange range,
+        bool includeLiveToday)
+    {
+        if (includeLiveToday || range.Mode != RangeMode.Cycle || range.IsCustomStart || range.Start >= range.End)
+        {
+            return false;
+        }
+
+        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        var todayStart = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
+        var lastIncluded = range.End.AddTicks(-1);
+        return lastIncluded < todayStart &&
+               reader.GetIncompleteHistoricalDays(range.Start, lastIncluded).Count == 0;
     }
 
     private async Task ResumeBackgroundCacheAsync()

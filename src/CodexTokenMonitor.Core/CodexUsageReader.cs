@@ -1965,6 +1965,12 @@ internal static class CodexUsageReader
         new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, SubagentReplayFilter> QuotaReplayFilters =
         new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object QuotaHistoryCacheSync = new();
+    private static readonly List<RateLimitSnapshot> QuotaHistorySnapshotCache = new();
+    private static readonly HashSet<QuotaHistoryKey> QuotaHistoryKeyCache = new(QuotaHistoryKeyComparer.Instance);
+    private static string? quotaHistoryCachedPath;
+    private static long quotaHistoryCachedLength = -1;
+    private static DateTime quotaHistoryCachedWriteTimeUtc;
 
     private sealed record RateLimitWindowSnapshot(decimal UsedPercent, int WindowMinutes, DateTimeOffset? ResetAtLocal);
 
@@ -1978,6 +1984,27 @@ internal static class CodexUsageReader
 
     private sealed record QuotaHistoryKey(DateTimeOffset SnapshotLocal, string LimitId);
 
+    private sealed class QuotaHistoryKeyComparer : IEqualityComparer<QuotaHistoryKey>
+    {
+        public static QuotaHistoryKeyComparer Instance { get; } = new();
+
+        public bool Equals(QuotaHistoryKey? first, QuotaHistoryKey? second)
+        {
+            return ReferenceEquals(first, second) ||
+                   first is not null &&
+                   second is not null &&
+                   first.SnapshotLocal == second.SnapshotLocal &&
+                   string.Equals(first.LimitId, second.LimitId, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public int GetHashCode(QuotaHistoryKey value)
+        {
+            return HashCode.Combine(
+                value.SnapshotLocal,
+                StringComparer.OrdinalIgnoreCase.GetHashCode(value.LimitId));
+        }
+    }
+
     private sealed record MaterializedQuotaPoint(
         CodexQuotaSnapshot Snapshot,
         DateTimeOffset? BeforeSnapshotLocal,
@@ -1986,12 +2013,14 @@ internal static class CodexUsageReader
     public static bool ClearCache()
     {
         ResetLiveFileCursors();
+        CodexQuotaCycleReader.InvalidateCache();
         return UsageCacheStore.Delete(CacheFolder);
     }
 
     public static bool ClearCachedDay(DateOnly date)
     {
         ResetLiveFileCursors();
+        CodexQuotaCycleReader.InvalidateCache();
         var usageDeleted = UsageCacheStore.DeleteDay(CacheFolder, date);
         var quotaDeleted = QuotaSnapshotCacheStore.DeleteDay(CacheFolder, date);
         return usageDeleted || quotaDeleted;
@@ -2828,22 +2857,29 @@ internal static class CodexUsageReader
         {
             var path = GetQuotaHistoryPath();
             var historyKey = new QuotaHistoryKey(snapshot.TimestampLocal, NormalizeLimitId(snapshot.LimitId));
-            if (QuotaHistoryContains(path, historyKey))
+            lock (QuotaHistoryCacheSync)
             {
-                return;
-            }
+                EnsureQuotaHistoryCacheLoaded(path);
+                if (QuotaHistoryKeyCache.Contains(historyKey))
+                {
+                    return;
+                }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            var line = JsonSerializer.Serialize(new
-            {
-                snapshotLocal = snapshot.TimestampLocal,
-                limitId = snapshot.LimitId,
-                limitName = snapshot.LimitName,
-                modelContextWindow = snapshot.ModelContextWindow,
-                fiveHour = ToQuotaHistoryWindow(snapshot.FiveHour),
-                week = ToQuotaHistoryWindow(snapshot.Week)
-            });
-            File.AppendAllText(path, line + Environment.NewLine);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                var line = JsonSerializer.Serialize(new
+                {
+                    snapshotLocal = snapshot.TimestampLocal,
+                    limitId = snapshot.LimitId,
+                    limitName = snapshot.LimitName,
+                    modelContextWindow = snapshot.ModelContextWindow,
+                    fiveHour = ToQuotaHistoryWindow(snapshot.FiveHour),
+                    week = ToQuotaHistoryWindow(snapshot.Week)
+                });
+                File.AppendAllText(path, line + Environment.NewLine);
+                QuotaHistorySnapshotCache.Add(snapshot);
+                QuotaHistoryKeyCache.Add(historyKey);
+                UpdateQuotaHistoryCacheFileState(path);
+            }
         }
         catch
         {
@@ -2866,50 +2902,56 @@ internal static class CodexUsageReader
         };
     }
 
-    private static bool QuotaHistoryContains(string path, QuotaHistoryKey expected)
+    private static void EnsureQuotaHistoryCacheLoaded(string path)
     {
-        if (!File.Exists(path))
+        var info = new FileInfo(path);
+        if (!info.Exists)
         {
-            return false;
+            ResetQuotaHistoryCache(path);
+            return;
         }
 
-        foreach (var line in File.ReadLines(path).Reverse())
+        if (string.Equals(quotaHistoryCachedPath, path, StringComparison.OrdinalIgnoreCase) &&
+            quotaHistoryCachedLength == info.Length &&
+            quotaHistoryCachedWriteTimeUtc == info.LastWriteTimeUtc)
         {
-            if (string.IsNullOrWhiteSpace(line))
+            return;
+        }
+
+        QuotaHistorySnapshotCache.Clear();
+        QuotaHistoryKeyCache.Clear();
+        foreach (var line in File.ReadLines(path))
+        {
+            if (string.IsNullOrWhiteSpace(line) || TryReadQuotaHistorySnapshot(line) is not { } snapshot)
             {
                 continue;
             }
 
-            try
-            {
-                var key = TryReadQuotaHistoryKey(line);
-                if (key is not null &&
-                    key.SnapshotLocal == expected.SnapshotLocal &&
-                    string.Equals(key.LimitId, expected.LimitId, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-            catch
-            {
-                // Skip a partially written final line and keep searching upward.
-            }
+            QuotaHistorySnapshotCache.Add(snapshot);
+            QuotaHistoryKeyCache.Add(new QuotaHistoryKey(
+                snapshot.TimestampLocal,
+                NormalizeLimitId(snapshot.LimitId)));
         }
 
-        return false;
+        UpdateQuotaHistoryCacheFileState(path);
     }
 
-    private static QuotaHistoryKey? TryReadQuotaHistoryKey(string line)
+    private static void ResetQuotaHistoryCache(string path)
     {
-        using var doc = JsonDocument.Parse(line);
-        if (!doc.RootElement.TryGetProperty("snapshotLocal", out var snapshotElement) ||
-            !DateTimeOffset.TryParse(snapshotElement.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var snapshot))
-        {
-            return null;
-        }
+        QuotaHistorySnapshotCache.Clear();
+        QuotaHistoryKeyCache.Clear();
+        quotaHistoryCachedPath = path;
+        quotaHistoryCachedLength = -1;
+        quotaHistoryCachedWriteTimeUtc = default;
+    }
 
-        var limitId = GetString(doc.RootElement, "limitId");
-        return new QuotaHistoryKey(snapshot, NormalizeLimitId(limitId));
+    private static void UpdateQuotaHistoryCacheFileState(string path)
+    {
+        var info = new FileInfo(path);
+        info.Refresh();
+        quotaHistoryCachedPath = path;
+        quotaHistoryCachedLength = info.Exists ? info.Length : -1;
+        quotaHistoryCachedWriteTimeUtc = info.Exists ? info.LastWriteTimeUtc : default;
     }
 
     private static string NormalizeLimitId(string? limitId)
@@ -2930,42 +2972,23 @@ internal static class CodexUsageReader
         DateTimeOffset endLocal)
     {
         var path = GetQuotaHistoryPath();
-        if (!File.Exists(path))
+        lock (QuotaHistoryCacheSync)
         {
-            return Array.Empty<RateLimitSnapshot>();
+            EnsureQuotaHistoryCacheLoaded(path);
+            return QuotaHistorySnapshotCache
+                .Where(snapshot => snapshot.TimestampLocal >= startLocal && snapshot.TimestampLocal < endLocal)
+                .ToList();
         }
-
-        var snapshots = new List<RateLimitSnapshot>();
-        foreach (var line in File.ReadLines(path))
-        {
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
-            var snapshot = TryReadQuotaHistorySnapshot(line, startLocal, endLocal);
-            if (snapshot is not null)
-            {
-                snapshots.Add(snapshot);
-            }
-        }
-
-        return snapshots;
     }
 
-    private static RateLimitSnapshot? TryReadQuotaHistorySnapshot(
-        string line,
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+    private static RateLimitSnapshot? TryReadQuotaHistorySnapshot(string line)
     {
         try
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
             if (!root.TryGetProperty("snapshotLocal", out var snapshotElement) ||
-                !DateTimeOffset.TryParse(snapshotElement.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var timestamp) ||
-                timestamp < startLocal ||
-                timestamp >= endLocal)
+                !DateTimeOffset.TryParse(snapshotElement.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var timestamp))
             {
                 return null;
             }

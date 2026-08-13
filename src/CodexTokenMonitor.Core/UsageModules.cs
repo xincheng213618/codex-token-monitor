@@ -28,6 +28,10 @@ internal sealed record UsageQueryResult(
 
 internal abstract class UsageSourceModule
 {
+    private const int DisplayCacheCapacity = 8;
+
+    private readonly Dictionary<DisplayCacheKey, UsageQueryResult> displayCache = new();
+    private readonly List<DisplayCacheKey> displayCacheOrder = new();
     private RangeMode mode = RangeMode.Day;
 
     protected UsageSourceModule(IUsageSourceReader reader)
@@ -68,12 +72,66 @@ internal abstract class UsageSourceModule
     {
         LastRange = range;
         LastResult = result;
+
+        var key = DisplayCacheKey.From(range);
+        if (displayCache.ContainsKey(key))
+        {
+            displayCache[key] = result;
+            TouchCachedDisplay(key);
+        }
+    }
+
+    public bool TryGetCachedDisplay(SelectedRange range, out UsageQueryResult result)
+    {
+        var key = DisplayCacheKey.From(range);
+        if (displayCache.TryGetValue(key, out result!))
+        {
+            TouchCachedDisplay(key);
+            return true;
+        }
+
+        result = null!;
+        return false;
+    }
+
+    public void CacheDisplay(SelectedRange range, UsageQueryResult result)
+    {
+        var key = DisplayCacheKey.From(range);
+        displayCache[key] = result;
+        TouchCachedDisplay(key);
+
+        while (displayCacheOrder.Count > DisplayCacheCapacity)
+        {
+            var oldest = displayCacheOrder[0];
+            displayCacheOrder.RemoveAt(0);
+            displayCache.Remove(oldest);
+        }
     }
 
     public void ClearDisplay()
     {
         LastRange = null;
         LastResult = null;
+        displayCache.Clear();
+        displayCacheOrder.Clear();
+    }
+
+    private void TouchCachedDisplay(DisplayCacheKey key)
+    {
+        displayCacheOrder.Remove(key);
+        displayCacheOrder.Add(key);
+    }
+
+    private readonly record struct DisplayCacheKey(
+        DateTimeOffset Start,
+        DateTimeOffset End,
+        RangeMode Mode,
+        bool IsCustomStart)
+    {
+        public static DisplayCacheKey From(SelectedRange range)
+        {
+            return new DisplayCacheKey(range.Start, range.End, range.Mode, range.IsCustomStart);
+        }
     }
 }
 
