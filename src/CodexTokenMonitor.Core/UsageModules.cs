@@ -173,6 +173,14 @@ internal sealed class WorkBuddyUsageModule : UsageSourceModule
     }
 }
 
+internal sealed class DshUsageModule : UsageSourceModule
+{
+    public DshUsageModule()
+        : base(UsageSourceReaders.For(UsageSource.Dsh))
+    {
+    }
+}
+
 internal static class UsageSourceModules
 {
     public static IReadOnlyDictionary<UsageSource, UsageSourceModule> Create()
@@ -181,13 +189,15 @@ internal static class UsageSourceModules
         var claude = new ClaudeCodeUsageModule();
         var zcode = new ZCodeUsageModule();
         var workBuddy = new WorkBuddyUsageModule();
+        var dsh = new DshUsageModule();
 
         return new Dictionary<UsageSource, UsageSourceModule>
         {
             [codex.Source] = codex,
             [claude.Source] = claude,
             [zcode.Source] = zcode,
-            [workBuddy.Source] = workBuddy
+            [workBuddy.Source] = workBuddy,
+            [dsh.Source] = dsh
         };
     }
 }

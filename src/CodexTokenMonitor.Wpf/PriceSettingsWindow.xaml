@@ -138,6 +138,7 @@
             <TabItem Header="Claude Code" />
             <TabItem Header="ZCode" />
             <TabItem Header="WorkBuddy" />
+            <TabItem Header="DSH" />
         </TabControl>
 
         <Border Grid.Row="2" Style="{StaticResource PanelBorder}">

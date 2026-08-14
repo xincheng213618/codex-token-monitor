@@ -979,6 +979,7 @@ public partial class MainWindow : Window
             UsageSource.ClaudeCode => 1,
             UsageSource.ZCode => 2,
             UsageSource.WorkBuddy => 3,
+            UsageSource.Dsh => 4,
             _ => 0
         };
     }
@@ -1608,6 +1609,7 @@ public partial class MainWindow : Window
             1 => UsageSource.ClaudeCode,
             2 => UsageSource.ZCode,
             3 => UsageSource.WorkBuddy,
+            4 => UsageSource.Dsh,
             _ => UsageSource.Codex
         };
     }

@@ -9,8 +9,9 @@ internal static class PricePresetGroups
     public const string ClaudeCode = "Claude Code";
     public const string ZCode = "ZCode";
     public const string WorkBuddy = "WorkBuddy";
+    public const string Dsh = "DSH";
 
-    public static readonly IReadOnlyList<string> All = new[] { Codex, ClaudeCode, ZCode, WorkBuddy };
+    public static readonly IReadOnlyList<string> All = new[] { Codex, ClaudeCode, ZCode, WorkBuddy, Dsh };
 
     public static string ForSource(UsageSource source)
     {
@@ -19,6 +20,7 @@ internal static class PricePresetGroups
             UsageSource.ClaudeCode => ClaudeCode,
             UsageSource.ZCode => ZCode,
             UsageSource.WorkBuddy => WorkBuddy,
+            UsageSource.Dsh => Dsh,
             _ => Codex
         };
     }
@@ -30,6 +32,7 @@ internal static class PricePresetGroups
             "claude" or "claude code" or "claudecode" => ClaudeCode,
             "zcode" or "glm" or "z.ai" or "zai" or "智谱" => ZCode,
             "workbuddy" or "work buddy" or "buddy" => WorkBuddy,
+            "dsh" or "deepseek harness" or "deepseek-harness" or "harness" => Dsh,
             _ => Codex
         };
     }
@@ -37,7 +40,7 @@ internal static class PricePresetGroups
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 14;
+    public int DisplayOrderVersion { get; set; } = 16;
     public string GptName { get; set; } = "GPT-5.6 Sol";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
@@ -55,6 +58,7 @@ internal sealed class PriceSettings
     public List<PricePreset> ClaudeCodePresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.ClaudeCode).ToList();
     public List<PricePreset> ZCodePresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.ZCode).ToList();
     public List<PricePreset> WorkBuddyPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.WorkBuddy).ToList();
+    public List<PricePreset> DshPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Dsh).ToList();
 
     public PriceProfile ToGptProfile()
     {
@@ -108,7 +112,8 @@ internal sealed class PriceSettings
             CodexPresets = CodexPresets.Select(item => item.Clone()).ToList(),
             ClaudeCodePresets = ClaudeCodePresets.Select(item => item.Clone()).ToList(),
             ZCodePresets = ZCodePresets.Select(item => item.Clone()).ToList(),
-            WorkBuddyPresets = WorkBuddyPresets.Select(item => item.Clone()).ToList()
+            WorkBuddyPresets = WorkBuddyPresets.Select(item => item.Clone()).ToList(),
+            DshPresets = DshPresets.Select(item => item.Clone()).ToList()
         };
     }
 
@@ -119,6 +124,7 @@ internal sealed class PriceSettings
             PricePresetGroups.ClaudeCode => ClaudeCodePresets,
             PricePresetGroups.ZCode => ZCodePresets,
             PricePresetGroups.WorkBuddy => WorkBuddyPresets,
+            PricePresetGroups.Dsh => DshPresets,
             _ => CodexPresets
         };
     }
@@ -135,6 +141,9 @@ internal sealed class PriceSettings
                 break;
             case PricePresetGroups.WorkBuddy:
                 WorkBuddyPresets = presets;
+                break;
+            case PricePresetGroups.Dsh:
+                DshPresets = presets;
                 break;
             default:
                 CodexPresets = presets;
@@ -191,7 +200,12 @@ internal sealed class PricePreset
         return new[]
         {
             Preset("OpenAI", "GPT-5.5 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI API Pricing"),
+            Preset("DeepSeek", "V4 Flash", "¥", "CNY / 1M tokens", 1_000_000m, 1.00m, 0.02m, 2.00m, "DeepSeek 官网 V4 Flash 定价"),
+            Preset("DeepSeek", "V4 Flash 高峰", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.10m, 9.00m, "DeepSeek 8-17 峰谷定价（高峰 9-12/14-18 点）"),
+            Preset("DeepSeek", "V4 Flash 空闲", "¥", "CNY / 1M tokens", 1_000_000m, 1.50m, 0.05m, 4.50m, "DeepSeek 8-17 峰谷定价（空闲时段）"),
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档"),
+            Preset("DeepSeek", "V4 Pro 高峰", "¥", "CNY / 1M tokens", 1_000_000m, 9.00m, 0.30m, 27.00m, "DeepSeek 8-17 峰谷定价（高峰 9-12/14-18 点）"),
+            Preset("DeepSeek", "V4 Pro 空闲", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, "DeepSeek 8-17 峰谷定价（空闲时段）"),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
             Preset("OpenAI", "GPT-5.6 Sol", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI Help Center GPT-5.6 preview"),
             Preset("OpenAI", "GPT-5.6 Terra", "$", "USD / 1M tokens", 1_000_000m, 2.50m, 0.25m, 15.00m, "OpenAI Help Center GPT-5.6 preview"),
@@ -283,6 +297,7 @@ internal sealed class PricePreset
             PricePresetGroups.ClaudeCode => ("Claude", "Fable 5 API"),
             PricePresetGroups.ZCode => ("智谱/Z.AI", "GLM-5.2 1M"),
             PricePresetGroups.WorkBuddy => ("Kimi（月之暗面）", "K3"),
+            PricePresetGroups.Dsh => ("DeepSeek", "V4 Flash"),
             _ => ("OpenAI", "GPT-5.6 Sol")
         };
         var ordered = new List<PricePreset>();
@@ -352,7 +367,7 @@ internal static class PriceSettingsStore
     {
         var settings = new PriceSettings
         {
-            DisplayOrderVersion = 14,
+            DisplayOrderVersion = 16,
             Presets = new(),
             CodexPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Codex), PricePresetGroups.Codex),
@@ -365,7 +380,10 @@ internal static class PriceSettingsStore
                 PricePresetGroups.ZCode),
             WorkBuddyPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.WorkBuddy), PricePresetGroups.WorkBuddy),
-                PricePresetGroups.WorkBuddy)
+                PricePresetGroups.WorkBuddy),
+            DshPresets = ApplyDefaultDisplayOrder(
+                NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Dsh), PricePresetGroups.Dsh),
+                PricePresetGroups.Dsh)
         };
         return settings;
     }
@@ -462,6 +480,7 @@ internal static class PriceSettingsStore
         var claudePresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.ClaudeCode), PricePresetGroups.ClaudeCode);
         var zCodePresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.ZCode), PricePresetGroups.ZCode);
         var workBuddyPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.WorkBuddy), PricePresetGroups.WorkBuddy);
+        var dshPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Dsh), PricePresetGroups.Dsh);
         var shouldRefreshDefaults = settings.DisplayOrderVersion < defaults.DisplayOrderVersion;
         if (shouldRefreshDefaults)
         {
@@ -469,6 +488,7 @@ internal static class PriceSettingsStore
             claudePresets = ApplyDefaultDisplayOrder(claudePresets, PricePresetGroups.ClaudeCode);
             zCodePresets = ApplyDefaultDisplayOrder(zCodePresets, PricePresetGroups.ZCode);
             workBuddyPresets = ApplyDefaultDisplayOrder(workBuddyPresets, PricePresetGroups.WorkBuddy);
+            dshPresets = ApplyDefaultDisplayOrder(dshPresets, PricePresetGroups.Dsh);
         }
 
         var gptName = string.IsNullOrWhiteSpace(settings.GptName)
@@ -497,7 +517,8 @@ internal static class PriceSettingsStore
             CodexPresets = codexPresets,
             ClaudeCodePresets = claudePresets,
             ZCodePresets = zCodePresets,
-            WorkBuddyPresets = workBuddyPresets
+            WorkBuddyPresets = workBuddyPresets,
+            DshPresets = dshPresets
         };
     }
 
@@ -554,7 +575,15 @@ internal static class PriceSettingsStore
             ("ZCode", "Xiaomi", "MiMo V2.5 Pro"),
             ("WorkBuddy", "Kimi（月之暗面）", "K3"),
             ("WorkBuddy", "DeepSeek", "V4 Pro"),
-            ("WorkBuddy", "智谱/Z.AI", "GLM-5.2 1M")
+            ("WorkBuddy", "智谱/Z.AI", "GLM-5.2 1M"),
+            ("DSH", "DeepSeek", "V4 Flash"),
+            ("DSH", "DeepSeek", "V4 Flash 高峰"),
+            ("DSH", "DeepSeek", "V4 Flash 空闲"),
+            ("DSH", "DeepSeek", "V4 Pro"),
+            ("DSH", "DeepSeek", "V4 Pro 高峰"),
+            ("DSH", "DeepSeek", "V4 Pro 空闲"),
+            ("DSH", "Xiaomi", "MiMo V2.5 Pro"),
+            ("DSH", "OpenAI", "GPT-5.6 Sol")
         };
 
         var ordered = new List<PricePreset>();

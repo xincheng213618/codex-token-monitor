@@ -244,7 +244,7 @@
             </Grid.ColumnDefinitions>
             <TabControl x:Name="SourceTabs"
                         Grid.Column="0"
-                        Width="416"
+                        Width="560"
                         Height="34"
                         HorizontalAlignment="Left"
                         Style="{StaticResource SourceTabsStyle}"
@@ -253,6 +253,7 @@
                 <TabItem Header="Claude Code" />
                 <TabItem Header="ZCode" />
                 <TabItem Header="WorkBuddy" />
+                <TabItem Header="DSH" />
             </TabControl>
             <Button x:Name="CacheStatusButton"
                     Grid.Column="1"

@@ -369,7 +369,7 @@ internal sealed class BackgroundCacheWarmer : IDisposable
     private UsageSource[] GetSourceOrder()
     {
         var current = currentSource();
-        var sources = new[] { UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode, UsageSource.WorkBuddy };
+        var sources = new[] { UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode, UsageSource.WorkBuddy, UsageSource.Dsh };
         return sources
             .Where(source => source == UsageSource.Codex)
             .Concat(sources.Where(source => source == current && source != UsageSource.Codex))

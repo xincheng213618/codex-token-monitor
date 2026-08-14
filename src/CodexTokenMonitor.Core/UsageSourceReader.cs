@@ -5,7 +5,8 @@ internal enum UsageSource
     Codex,
     ClaudeCode,
     ZCode,
-    WorkBuddy
+    WorkBuddy,
+    Dsh
 }
 
 internal sealed record DailyUsageSnapshot(
@@ -36,13 +37,15 @@ internal static class UsageSourceReaders
     private static readonly IUsageSourceReader ClaudeCode = new ClaudeCodeUsageSourceReader();
     private static readonly IUsageSourceReader ZCode = new ZCodeUsageSourceReader();
     private static readonly IUsageSourceReader WorkBuddy = new WorkBuddyUsageSourceReader();
+    private static readonly IUsageSourceReader Dsh = new DshUsageSourceReader();
 
     public static IReadOnlyList<IUsageSourceReader> All { get; } = new[]
     {
         Codex,
         ClaudeCode,
         ZCode,
-        WorkBuddy
+        WorkBuddy,
+        Dsh
     };
 
     public static IUsageSourceReader For(UsageSource source)
@@ -52,6 +55,7 @@ internal static class UsageSourceReaders
             UsageSource.ClaudeCode => ClaudeCode,
             UsageSource.ZCode => ZCode,
             UsageSource.WorkBuddy => WorkBuddy,
+            UsageSource.Dsh => Dsh,
             _ => Codex
         };
     }
@@ -360,6 +364,82 @@ internal static class UsageSourceReaders
             var dayEnd = dayStart.AddDays(1);
             _ = WorkBuddyUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
             _ = WorkBuddyUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
+        }
+    }
+
+    private sealed class DshUsageSourceReader : IUsageSourceReader
+    {
+        public UsageSource Source => UsageSource.Dsh;
+        public string Title => "DSH";
+        public bool SupportsQuota => false;
+
+        public bool ClearCache()
+        {
+            return DshUsageReader.ClearCache();
+        }
+
+        public bool RefreshCachedDay(DateOnly date)
+        {
+            var deleted = DshUsageReader.ClearCachedDay(date);
+            var dayStart = StartOfDay(date);
+            _ = DshUsageReader.ReadDetailRows(dayStart, EndForRefresh(dayStart), includeLiveToday: true);
+            return deleted;
+        }
+
+        public IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
+            DateTimeOffset startInclusive,
+            DateTimeOffset endInclusive)
+        {
+            return DshUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive);
+        }
+
+        public TokenUsageSummary ReadRange(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday)
+        {
+            return DshUsageReader.ReadRange(startLocal, endLocal, includeLiveToday);
+        }
+
+        public TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        {
+            return DshUsageReader.ReadCachedRange(startLocal, endLocal);
+        }
+
+        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        {
+            return DshUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+        }
+
+        public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday)
+        {
+            return DshUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday);
+        }
+
+        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        {
+            return DshUsageReader.ReadTransientDetailRows(startLocal, endLocal);
+        }
+
+        public DailyUsageSnapshot ReadDay(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday)
+        {
+            var rows = includeLiveToday
+                ? DshUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday)
+                : DshUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+            var summary = includeLiveToday
+                ? CreateSummaryFromRows(startLocal, endLocal, rows)
+                : DshUsageReader.ReadCachedRange(startLocal, endLocal);
+            return new DailyUsageSnapshot(summary, rows);
+        }
+
+        public void WarmHistoricalDay(DateTimeOffset dayStart)
+        {
+            var dayEnd = dayStart.AddDays(1);
+            _ = DshUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
+            _ = DshUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
         }
     }
 
