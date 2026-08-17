@@ -350,16 +350,102 @@ public partial class MainWindow : Window
             return;
         }
 
+        await ImportDataAsync(dialog.FileNames);
+    }
+
+    private void MainWindow_PreviewDragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        e.Effects = !isRefreshing && GetDroppedCodexDataPackages(e.Data).Count > 0
+            ? System.Windows.DragDropEffects.Copy
+            : System.Windows.DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void MainWindow_PreviewDrop(object sender, System.Windows.DragEventArgs e)
+    {
+        e.Handled = true;
+        if (isRefreshing)
+        {
+            System.Windows.MessageBox.Show(
+                this,
+                "当前正在刷新或处理数据，请稍后再拖入数据包。",
+                "Codex 数据导入",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var filePaths = GetDroppedCodexDataPackages(e.Data);
+        if (filePaths.Count == 0)
+        {
+            System.Windows.MessageBox.Show(
+                this,
+                "没有识别到 Codex 数据包。\n\n请拖入 *.codex.json 或旧版 *.codex-data.json 文件。",
+                "Codex 数据导入",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var fileList = string.Join("\n", filePaths.Take(8).Select(path => $"• {Path.GetFileName(path)}"));
+        if (filePaths.Count > 8)
+        {
+            fileList += $"\n• 另有 {filePaths.Count - 8:N0} 个数据包";
+        }
+
+        var prompt = filePaths.Count == 1
+            ? $"是否合并这个 Codex 数据包？\n\n{fileList}"
+            : $"是否合并这 {filePaths.Count:N0} 个 Codex 数据包？\n\n{fileList}";
+        var confirmation = System.Windows.MessageBox.Show(
+            this,
+            prompt + "\n\n请确认它们来自同一个 Codex 账户。重复导入不会重复计数。",
+            "确认合并 Codex 数据",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
+        if (confirmation != MessageBoxResult.Yes)
+        {
+            SetStatus("已取消合并数据包");
+            return;
+        }
+
+        await ImportDataAsync(filePaths);
+    }
+
+    private static IReadOnlyList<string> GetDroppedCodexDataPackages(System.Windows.IDataObject data)
+    {
+        if (!data.GetDataPresent(System.Windows.DataFormats.FileDrop) ||
+            data.GetData(System.Windows.DataFormats.FileDrop) is not string[] filePaths)
+        {
+            return Array.Empty<string>();
+        }
+
+        return filePaths
+            .Where(File.Exists)
+            .Where(IsCodexDataPackagePath)
+            .Select(Path.GetFullPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool IsCodexDataPackagePath(string filePath)
+    {
+        return filePath.EndsWith(".codex.json", StringComparison.OrdinalIgnoreCase) ||
+               filePath.EndsWith(".codex-data.json", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task ImportDataAsync(IReadOnlyList<string> filePaths)
+    {
         backgroundCacheWarmer.CancelCurrent();
         SetBusy(true);
-        SetStatus($"正在导入 {dialog.FileNames.Length:N0} 个数据包...");
+        SetStatus($"正在导入 {filePaths.Count:N0} 个数据包...");
         try
         {
             CodexDataImportResult result;
             await usageQueryGate.WaitAsync();
             try
             {
-                result = await Task.Run(() => CodexDataTransferService.Import(dialog.FileNames));
+                result = await Task.Run(() => CodexDataTransferService.Import(filePaths));
             }
             finally
             {
@@ -1530,6 +1616,7 @@ public partial class MainWindow : Window
         NextButton.IsEnabled = !busy;
         CurrentButton.IsEnabled = !busy;
         SourceTabs.IsEnabled = !busy;
+        DataTransferButton.IsEnabled = !busy;
         if (busy)
         {
             StartNowButton.IsEnabled = false;

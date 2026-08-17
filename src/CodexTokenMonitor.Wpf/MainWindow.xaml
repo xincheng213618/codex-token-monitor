@@ -10,7 +10,10 @@
         Height="900"
         WindowStartupLocation="CenterScreen"
         Background="#F6F8FB"
-        FontFamily="Microsoft YaHei UI">
+        FontFamily="Microsoft YaHei UI"
+        AllowDrop="True"
+        PreviewDragOver="MainWindow_PreviewDragOver"
+        PreviewDrop="MainWindow_PreviewDrop">
     <Window.Resources>
         <Style x:Key="PanelBorder" TargetType="Border">
             <Setter Property="Background" Value="White" />
@@ -265,7 +268,7 @@
                 <Button x:Name="DataTransferButton"
                         Style="{StaticResource ToolButton}"
                         Content="数据管理"
-                        ToolTip="导入或导出跨电脑 Codex 统计数据"
+                        ToolTip="导入或导出跨电脑 Codex 统计数据；也可将数据包拖到窗口中"
                         Click="DataTransferButton_Click">
                     <Button.ContextMenu>
                         <ContextMenu>
