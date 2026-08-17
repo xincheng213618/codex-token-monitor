@@ -153,6 +153,9 @@ internal sealed class UsageCacheStore
         bucket.LongContextInputTokens = record.LongContextInputTokens;
         bucket.LongContextCachedInputTokens = record.LongContextCachedInputTokens;
         bucket.LongContextOutputTokens = record.LongContextOutputTokens;
+        bucket.PeakInputTokens = record.PeakInputTokens;
+        bucket.PeakCachedInputTokens = record.PeakCachedInputTokens;
+        bucket.PeakOutputTokens = record.PeakOutputTokens;
         bucket.LastTokenEventLocal = record.LastTokenEventLocal;
         return true;
     }
@@ -224,7 +227,8 @@ internal sealed class UsageCacheStore
             SELECT events, input_tokens, cached_input_tokens, uncached_input_tokens,
                    output_tokens, reasoning_output_tokens, total_tokens, last_token_event_local,
                    long_context_events, long_context_input_tokens,
-                   long_context_cached_input_tokens, long_context_output_tokens
+                   long_context_cached_input_tokens, long_context_output_tokens,
+                   peak_input_tokens, peak_cached_input_tokens, peak_output_tokens
             FROM usage_days
             WHERE date = $date
             """;
@@ -247,6 +251,9 @@ internal sealed class UsageCacheStore
         bucket.LongContextInputTokens = reader.GetInt64(9);
         bucket.LongContextCachedInputTokens = reader.GetInt64(10);
         bucket.LongContextOutputTokens = reader.GetInt64(11);
+        bucket.PeakInputTokens = reader.GetInt64(12);
+        bucket.PeakCachedInputTokens = reader.GetInt64(13);
+        bucket.PeakOutputTokens = reader.GetInt64(14);
         return true;
     }
 
@@ -284,7 +291,7 @@ internal sealed class UsageCacheStore
                 SELECT date, is_complete, scanned_through_local, events, input_tokens, cached_input_tokens,
                        uncached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, last_token_event_local,
                        long_context_events, long_context_input_tokens, long_context_cached_input_tokens,
-                       long_context_output_tokens,
+                       long_context_output_tokens, peak_input_tokens, peak_cached_input_tokens, peak_output_tokens,
                        (SELECT COUNT(*) FROM usage_events WHERE usage_events.date = usage_days.date) AS detail_event_count
                 FROM usage_days
                 WHERE date = $date
@@ -314,7 +321,10 @@ internal sealed class UsageCacheStore
                 LongContextInputTokens = reader.GetInt64(12),
                 LongContextCachedInputTokens = reader.GetInt64(13),
                 LongContextOutputTokens = reader.GetInt64(14),
-                DetailEventCount = reader.GetInt32(15)
+                PeakInputTokens = reader.GetInt64(15),
+                PeakCachedInputTokens = reader.GetInt64(16),
+                PeakOutputTokens = reader.GetInt64(17),
+                DetailEventCount = reader.GetInt32(18)
             };
             return true;
         }
@@ -517,13 +527,13 @@ internal sealed class UsageCacheStore
                         date, is_complete, scanned_through_local, events, input_tokens, cached_input_tokens,
                         uncached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, last_token_event_local,
                         long_context_events, long_context_input_tokens, long_context_cached_input_tokens,
-                        long_context_output_tokens
+                        long_context_output_tokens, peak_input_tokens, peak_cached_input_tokens, peak_output_tokens
                     )
                     VALUES (
                         $date, $is_complete, $scanned_through_local, $events, $input_tokens, $cached_input_tokens,
                         $uncached_input_tokens, $output_tokens, $reasoning_output_tokens, $total_tokens, $last_token_event_local,
                         $long_context_events, $long_context_input_tokens, $long_context_cached_input_tokens,
-                        $long_context_output_tokens
+                        $long_context_output_tokens, $peak_input_tokens, $peak_cached_input_tokens, $peak_output_tokens
                     )
                     ON CONFLICT(date) DO UPDATE SET
                         is_complete = excluded.is_complete,
@@ -539,7 +549,10 @@ internal sealed class UsageCacheStore
                         long_context_events = excluded.long_context_events,
                         long_context_input_tokens = excluded.long_context_input_tokens,
                         long_context_cached_input_tokens = excluded.long_context_cached_input_tokens,
-                        long_context_output_tokens = excluded.long_context_output_tokens
+                        long_context_output_tokens = excluded.long_context_output_tokens,
+                        peak_input_tokens = excluded.peak_input_tokens,
+                        peak_cached_input_tokens = excluded.peak_cached_input_tokens,
+                        peak_output_tokens = excluded.peak_output_tokens
                     """;
                 command.Parameters.AddWithValue("$date", key);
                 command.Parameters.AddWithValue("$is_complete", isComplete ? 1 : 0);
@@ -556,6 +569,9 @@ internal sealed class UsageCacheStore
                 command.Parameters.AddWithValue("$long_context_input_tokens", bucket.LongContextInputTokens);
                 command.Parameters.AddWithValue("$long_context_cached_input_tokens", bucket.LongContextCachedInputTokens);
                 command.Parameters.AddWithValue("$long_context_output_tokens", bucket.LongContextOutputTokens);
+                command.Parameters.AddWithValue("$peak_input_tokens", bucket.PeakInputTokens);
+                command.Parameters.AddWithValue("$peak_cached_input_tokens", bucket.PeakCachedInputTokens);
+                command.Parameters.AddWithValue("$peak_output_tokens", bucket.PeakOutputTokens);
                 command.ExecuteNonQuery();
             }
 
@@ -642,7 +658,10 @@ internal sealed class UsageCacheStore
                     long_context_events INTEGER NOT NULL DEFAULT 0,
                     long_context_input_tokens INTEGER NOT NULL DEFAULT 0,
                     long_context_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
-                    long_context_output_tokens INTEGER NOT NULL DEFAULT 0
+                    long_context_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    peak_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    peak_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    peak_output_tokens INTEGER NOT NULL DEFAULT 0
                 )
                 """);
             ExecuteNonQuery(connection, """
@@ -665,6 +684,7 @@ internal sealed class UsageCacheStore
                 )
                 """);
             EnsureLongContextColumns(connection);
+            EnsurePeakPricingColumns(connection);
             return true;
         }
         catch
@@ -726,6 +746,54 @@ internal sealed class UsageCacheStore
                 long_context_output_tokens = COALESCE((
                     SELECT SUM(e.output_tokens) FROM usage_events e
                     WHERE e.date = usage_days.date AND e.input_tokens > {UsageTelemetryRules.OpenAiLongContextThresholdTokens}
+                ), 0)
+            """);
+    }
+
+    private static void EnsurePeakPricingColumns(SqliteConnection connection)
+    {
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA table_info(usage_days)";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                columns.Add(reader.GetString(1));
+            }
+        }
+
+        var addedColumn = false;
+        foreach (var column in new[] { "peak_input_tokens", "peak_cached_input_tokens", "peak_output_tokens" })
+        {
+            if (columns.Contains(column))
+            {
+                continue;
+            }
+
+            ExecuteNonQuery(connection, $"ALTER TABLE usage_days ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0");
+            addedColumn = true;
+        }
+
+        if (!addedColumn)
+        {
+            return;
+        }
+
+        const string peakPredicate = "((substr(e.timestamp_local, 12, 5) >= '09:00' AND substr(e.timestamp_local, 12, 5) < '12:00') OR (substr(e.timestamp_local, 12, 5) >= '14:00' AND substr(e.timestamp_local, 12, 5) < '18:00'))";
+        ExecuteNonQuery(connection, $"""
+            UPDATE usage_days
+            SET peak_input_tokens = COALESCE((
+                    SELECT SUM(e.input_tokens) FROM usage_events e
+                    WHERE e.date = usage_days.date AND {peakPredicate}
+                ), 0),
+                peak_cached_input_tokens = COALESCE((
+                    SELECT SUM(e.cached_input_tokens) FROM usage_events e
+                    WHERE e.date = usage_days.date AND {peakPredicate}
+                ), 0),
+                peak_output_tokens = COALESCE((
+                    SELECT SUM(e.output_tokens) FROM usage_events e
+                    WHERE e.date = usage_days.date AND {peakPredicate}
                 ), 0)
             """);
     }

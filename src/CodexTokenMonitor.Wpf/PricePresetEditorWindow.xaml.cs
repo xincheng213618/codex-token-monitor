@@ -71,7 +71,8 @@ internal partial class PricePresetEditorWindow : Window
             UncachedInput = input,
             CachedInput = cached,
             Output = output,
-            Source = SourceBox.Text.Trim()
+            Source = SourceBox.Text.Trim(),
+            Schedule = original.Schedule
         };
         DialogResult = true;
     }

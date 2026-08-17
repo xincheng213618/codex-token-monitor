@@ -1,12 +1,30 @@
 namespace CodexTokenMonitor;
 
+internal enum PriceSchedule
+{
+    Flat,
+    DeepSeekBeijingPeakDouble
+}
+
 internal sealed record PriceProfile(
     string Name,
     string CurrencySymbol,
     decimal UncachedInputPerMillion,
     decimal CachedInputPerMillion,
     decimal OutputPerMillion,
-    decimal Divisor);
+    decimal Divisor,
+    PriceSchedule Schedule = PriceSchedule.Flat);
+
+internal static class DeepSeekPricingSchedule
+{
+    public static bool IsPeak(DateTimeOffset timestamp)
+    {
+        var beijing = timestamp.ToOffset(CodexUsageReader.BeijingOffset);
+        var time = beijing.TimeOfDay;
+        return time >= TimeSpan.FromHours(9) && time < TimeSpan.FromHours(12) ||
+               time >= TimeSpan.FromHours(14) && time < TimeSpan.FromHours(18);
+    }
+}
 
 internal static class UsageTelemetryRules
 {
@@ -53,14 +71,29 @@ internal class TokenUsageBucket
     public long LongContextInputTokens { get; set; }
     public long LongContextCachedInputTokens { get; set; }
     public long LongContextOutputTokens { get; set; }
+    public long PeakInputTokens { get; set; }
+    public long PeakCachedInputTokens { get; set; }
+    public long PeakOutputTokens { get; set; }
     public DateTimeOffset? LastTokenEventLocal { get; set; }
     public double CacheRatioPercent => InputTokens > 0 ? CachedInputTokens / (double)InputTokens * 100 : 0;
 
     public decimal EstimateCost(PriceProfile profile)
     {
-        return (UncachedInputTokens / profile.Divisor * profile.UncachedInputPerMillion) +
-               (CachedInputTokens / profile.Divisor * profile.CachedInputPerMillion) +
-               (OutputTokens / profile.Divisor * profile.OutputPerMillion);
+        var baseCost = (UncachedInputTokens / profile.Divisor * profile.UncachedInputPerMillion) +
+                       (CachedInputTokens / profile.Divisor * profile.CachedInputPerMillion) +
+                       (OutputTokens / profile.Divisor * profile.OutputPerMillion);
+        if (profile.Schedule != PriceSchedule.DeepSeekBeijingPeakDouble)
+        {
+            return baseCost;
+        }
+
+        // DeepSeek presets store the official off-peak prices. Peak prices are
+        // exactly double, so adding the peak subset once produces the billable total.
+        var peakUncachedInput = Math.Max(0, PeakInputTokens - PeakCachedInputTokens);
+        var peakCost = (peakUncachedInput / profile.Divisor * profile.UncachedInputPerMillion) +
+                       (PeakCachedInputTokens / profile.Divisor * profile.CachedInputPerMillion) +
+                       (PeakOutputTokens / profile.Divisor * profile.OutputPerMillion);
+        return baseCost + peakCost;
     }
 
     public void Add(DateTimeOffset timestamp, long input, long cached, long output, long reasoning, long total)
@@ -79,6 +112,13 @@ internal class TokenUsageBucket
             LongContextInputTokens += input;
             LongContextCachedInputTokens += cached;
             LongContextOutputTokens += output;
+        }
+
+        if (DeepSeekPricingSchedule.IsPeak(timestamp))
+        {
+            PeakInputTokens += input;
+            PeakCachedInputTokens += cached;
+            PeakOutputTokens += output;
         }
 
         if (LastTokenEventLocal is null || timestamp > LastTokenEventLocal)
@@ -100,6 +140,9 @@ internal class TokenUsageBucket
         LongContextInputTokens += source.LongContextInputTokens;
         LongContextCachedInputTokens += source.LongContextCachedInputTokens;
         LongContextOutputTokens += source.LongContextOutputTokens;
+        PeakInputTokens += source.PeakInputTokens;
+        PeakCachedInputTokens += source.PeakCachedInputTokens;
+        PeakOutputTokens += source.PeakOutputTokens;
         if (source.LastTokenEventLocal is not null &&
             (LastTokenEventLocal is null || source.LastTokenEventLocal > LastTokenEventLocal))
         {
@@ -206,6 +249,9 @@ internal sealed class CachedDayRecord
     public long LongContextInputTokens { get; set; }
     public long LongContextCachedInputTokens { get; set; }
     public long LongContextOutputTokens { get; set; }
+    public long PeakInputTokens { get; set; }
+    public long PeakCachedInputTokens { get; set; }
+    public long PeakOutputTokens { get; set; }
     public DateTimeOffset? LastTokenEventLocal { get; set; }
     public int DetailEventCount { get; set; }
     public List<CachedUsageEvent> DetailEvents { get; set; } = new();

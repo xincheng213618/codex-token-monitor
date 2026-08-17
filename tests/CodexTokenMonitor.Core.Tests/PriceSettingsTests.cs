@@ -63,4 +63,35 @@ public sealed class PriceSettingsTests
         Assert.Equal(provider, first.Provider);
         Assert.Equal(model, first.Model);
     }
+
+    [Theory]
+    [InlineData("V4 Flash", 1.50, 0.05, 4.50)]
+    [InlineData("V4 Pro", 4.50, 0.15, 13.50)]
+    public void Defaults_UseMergedDeepSeekPeakSchedule(string model, double input, double cached, double output)
+    {
+        var presets = PricePreset.Defaults()
+            .Where(item => string.IsNullOrEmpty(item.Group) &&
+                           item.Provider == "DeepSeek" &&
+                           item.Model.StartsWith(model, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var preset = Assert.Single(presets);
+        Assert.Equal((decimal)input, preset.UncachedInput);
+        Assert.Equal((decimal)cached, preset.CachedInput);
+        Assert.Equal((decimal)output, preset.Output);
+        Assert.Equal(PriceSchedule.DeepSeekBeijingPeakDouble, preset.Schedule);
+    }
+
+    [Fact]
+    public void Defaults_DshShowsOneMergedPresetPerDeepSeekModel()
+    {
+        var deepSeek = PriceSettingsStore.Defaults().DshPresets
+            .Where(item => item.Provider == "DeepSeek")
+            .ToList();
+
+        Assert.Collection(
+            deepSeek,
+            item => Assert.Equal("V4 Flash", item.Model),
+            item => Assert.Equal("V4 Pro", item.Model));
+    }
 }

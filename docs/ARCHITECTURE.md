@@ -61,7 +61,7 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 - 每个模型调用对应一条 `assistant/chunk { "type": "usage" }` 记录（usage chunk 永远不会被打包压缩），字段：`inputTokens`（未缓存）、`cacheReadTokens`、`cacheWriteTokens`、`outputTokens`、`reasoningTokens`，顶层 `time` 为毫秒时间戳。
 - 字段映射：`InputTokens = inputTokens + cacheReadTokens`、`CachedInputTokens = cacheReadTokens`（与现有缓存命中率口径一致）、`OutputTokens = outputTokens`、`ReasoningOutputTokens = reasoningTokens`、`TotalTokens = 三者之和`。
 - 稳定 key 为 `(会话 id, seq)`，重复扫描/导入不重复计数；`assistant/message` 里的 `message.source` 记录 provider/model（如 `deepseek-official` / `deepseek-v4-flash`），`message.usage` 仅在无 usage chunk 时作为后备（当前版本不产生）。
-- 价格组映射到 DSH 组（默认首选 DeepSeek V4 Pro 档），后台预热会自动覆盖该来源。
+- 价格组映射到 DSH 组（默认首选 DeepSeek V4 Flash 峰谷合并档），每条事件按北京时间进入峰谷子汇总，后台预热会自动覆盖该来源。
 
 ## 3. 缓存与统计管线
 

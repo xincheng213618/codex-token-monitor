@@ -2,6 +2,11 @@
 
 按日期分组的变更摘要（依据 git 提交历史，哈希可点击到对应提交）。版本号未做正式发布管理，这里按提交日期划分阶段。
 
+## 2026-08-17
+
+- DeepSeek V4 Flash / Pro 更新为正式峰谷价格，移除旧固定价及分离的“高峰 / 空闲”预设。
+- 每条 token 事件按北京时间进入峰谷子汇总，最终在一个模型金额中合并计费；历史缓存自动回填高峰 token。
+
 ## 2026-08-14
 
 - **新增 DSH 统计来源**：读取 DeepSeek Harness 会话日志（`~/.dsh/sessions/**/session.jsonl.zstd`，zstd 多帧拼接 JSONL，`ZstdSharp.Port` 解压），统计每次模型调用的 input / 缓存读取 / output / reasoning；新增 DSH 来源 Tab 与价格组（默认 DeepSeek V4 Pro 档），复用现有缓存/汇总/费用管线，后台预热自动覆盖。

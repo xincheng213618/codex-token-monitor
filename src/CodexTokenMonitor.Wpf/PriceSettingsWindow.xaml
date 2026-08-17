@@ -201,6 +201,7 @@
                         <DataGridTextColumn Header="缓存输入" Binding="{Binding CachedInput, StringFormat={}{0:0.####}}" Width="100" />
                         <DataGridTextColumn Header="输出" Binding="{Binding Output, StringFormat={}{0:0.####}}" Width="90" />
                         <DataGridTextColumn Header="计价单位" Binding="{Binding UnitLabel}" Width="145" />
+                        <DataGridTextColumn Header="时段" Binding="{Binding ScheduleLabel}" Width="82" />
                         <DataGridTextColumn Header="价格来源" Binding="{Binding Source}" Width="*" MinWidth="170" />
                     </DataGrid.Columns>
                 </DataGrid>

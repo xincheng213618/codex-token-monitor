@@ -21,7 +21,7 @@
   - 主界面额度面板显示 5h 额度、7d 额度、当前套餐、重置过期、重置评估，并提供一键“估算”窗口。
   - “额度曲线”窗口按额度周期绘制 已用额度% vs 累计估算费用 曲线，按套餐筛选，多周期叠加对比。
 - 价格设置：
-  - 默认展示 GPT-5.6 Sol、DeepSeek V4 Pro、小米 MiMo V2.5 Pro 三档（Codex / ZCode / Claude Code / WorkBuddy 各自成组）。
+  - 默认展示 GPT-5.6 Sol、DeepSeek V4 Pro、小米 MiMo V2.5 Pro 三档（Codex / ZCode / Claude Code / WorkBuddy 各自成组）。DeepSeek V4 Flash / Pro 会按北京时间自动合并峰谷计价：`09:00–12:00`、`14:00–18:00` 使用高峰价，其余使用空闲价。
   - 内置可编辑价格库，包含 OpenAI、DeepSeek、小米、Kimi、智谱/Z.AI、豆包、MiniMax、千问、混元、Claude、Grok 等参考档；支持新增/编辑价格预设（`$`、`¥`、Credits 三种单位）。
 - 套餐设置：
   - 可记录实际购买套餐和金额。

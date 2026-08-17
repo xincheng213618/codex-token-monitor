@@ -49,6 +49,9 @@ public sealed class UsageCacheStoreTests
             Assert.Equal(100, row.InputTokens);
             Assert.Equal(300, summary.InputTokens);
             Assert.Equal(2, summary.Events);
+            Assert.Equal(300, summary.PeakInputTokens);
+            Assert.Equal(240, summary.PeakCachedInputTokens);
+            Assert.Equal(30, summary.PeakOutputTokens);
         }
         finally
         {

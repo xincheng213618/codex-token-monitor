@@ -545,6 +545,7 @@ internal sealed class PricePresetRow : INotifyPropertyChanged
     public string Model => Preset.Model;
     public string CurrencySymbol => Preset.CurrencySymbol;
     public string UnitLabel => Preset.UnitLabel;
+    public string ScheduleLabel => Preset.ScheduleLabel;
     public decimal UncachedInput => Preset.UncachedInput;
     public decimal CachedInput => Preset.CachedInput;
     public decimal Output => Preset.Output;
@@ -584,6 +585,7 @@ internal sealed class PricePresetRow : INotifyPropertyChanged
         OnPropertyChanged(nameof(Model));
         OnPropertyChanged(nameof(CurrencySymbol));
         OnPropertyChanged(nameof(UnitLabel));
+        OnPropertyChanged(nameof(ScheduleLabel));
         OnPropertyChanged(nameof(UncachedInput));
         OnPropertyChanged(nameof(CachedInput));
         OnPropertyChanged(nameof(Output));

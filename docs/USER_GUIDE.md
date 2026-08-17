@@ -15,7 +15,7 @@
 
 五个 Tab：**Codex**、**Claude Code**、**ZCode**、**WorkBuddy**、**DSH**。每个来源独立记忆当前模式、日期和自定义起点。只有 Codex 有额度面板。
 
-**DSH**（DeepSeek Harness）统计你通过 dsh 命令行/网页使用 DeepSeek 模型的 token 消耗（含缓存命中），读取的是本机 `~/.dsh/sessions` 下的会话日志；价格默认按 DSH 组里的 DeepSeek V4 Pro 档估算，可在“价格设置”中调整。
+**DSH**（DeepSeek Harness）统计你通过 dsh 命令行/网页使用 DeepSeek 模型的 token 消耗（含缓存命中），读取的是本机 `~/.dsh/sessions` 下的会话日志；主价格默认使用 DeepSeek V4 Flash。V4 Flash / Pro 各保留一个合并档，程序会按每条事件的北京时间自动套用高峰或空闲价格，可在“价格设置”中调整顺序。
 
 ### 2.2 额度面板（Codex）
 
@@ -69,6 +69,7 @@
 - 顶部三档快速价格（GPT-5.6 Sol / DeepSeek V4 Pro / 小米 MiMo V2.5 Pro），可直接改单价，用于顶部费用卡对比。
 - 下方按来源分组（Codex / Claude Code / ZCode / WorkBuddy / DSH）的价格预设列表；**新增价格 / 编辑价格**可自定义厂商、模型、货币（`$` / `¥` / `Credits`）与单位（`USD / 1M tokens`、`CNY / 1M tokens`、`Credits / token`），单位自动决定除数。
 - 默认库包含 OpenAI、DeepSeek、小米、Kimi、智谱/Z.AI、豆包、MiniMax、千问、混元、Claude、Grok 等参考档，可直接选用或修改。
+- DeepSeek V4 Flash / Pro 的表格价格是空闲时段单价；北京时间 `09:00–12:00`、`14:00–18:00` 自动按两倍高峰价计算，首页只显示每个模型合并后的一个金额。
 
 ## 6. 套餐设置
 

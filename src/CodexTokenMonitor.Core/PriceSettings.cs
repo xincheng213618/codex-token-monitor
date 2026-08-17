@@ -40,15 +40,15 @@ internal static class PricePresetGroups
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 16;
+    public int DisplayOrderVersion { get; set; } = 17;
     public string GptName { get; set; } = "GPT-5.6 Sol";
     public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
     public decimal GptOutputPerMillion { get; set; } = 30.00m;
 
-    public decimal DeepSeekUncachedInputPerMillion { get; set; } = 3.00m;
-    public decimal DeepSeekCachedInputPerMillion { get; set; } = 0.025m;
-    public decimal DeepSeekOutputPerMillion { get; set; } = 6.00m;
+    public decimal DeepSeekUncachedInputPerMillion { get; set; } = 4.50m;
+    public decimal DeepSeekCachedInputPerMillion { get; set; } = 0.15m;
+    public decimal DeepSeekOutputPerMillion { get; set; } = 13.50m;
 
     public decimal XiaomiUncachedInputCreditsPerToken { get; set; } = 300.00m;
     public decimal XiaomiCachedInputCreditsPerToken { get; set; } = 2.50m;
@@ -79,7 +79,8 @@ internal sealed class PriceSettings
             DeepSeekUncachedInputPerMillion,
             DeepSeekCachedInputPerMillion,
             DeepSeekOutputPerMillion,
-            1_000_000m);
+            1_000_000m,
+            PriceSchedule.DeepSeekBeijingPeakDouble);
     }
 
     public PriceProfile ToXiaomiProfile()
@@ -164,8 +165,10 @@ internal sealed class PricePreset
     public decimal CachedInput { get; set; }
     public decimal Output { get; set; }
     public string Source { get; set; } = "";
+    public PriceSchedule Schedule { get; set; }
 
     public string DisplayName => string.IsNullOrWhiteSpace(Provider) ? Model : $"{Provider} {Model}".Trim();
+    public string ScheduleLabel => Schedule == PriceSchedule.DeepSeekBeijingPeakDouble ? "峰谷自动" : "固定价";
 
     public PriceProfile ToProfile()
     {
@@ -175,7 +178,8 @@ internal sealed class PricePreset
             UncachedInput,
             CachedInput,
             Output,
-            Divisor <= 0 ? 1_000_000m : Divisor);
+            Divisor <= 0 ? 1_000_000m : Divisor,
+            Schedule);
     }
 
     public PricePreset Clone()
@@ -191,7 +195,8 @@ internal sealed class PricePreset
             UncachedInput = UncachedInput,
             CachedInput = CachedInput,
             Output = Output,
-            Source = Source
+            Source = Source,
+            Schedule = Schedule
         };
     }
 
@@ -200,12 +205,8 @@ internal sealed class PricePreset
         return new[]
         {
             Preset("OpenAI", "GPT-5.5 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI API Pricing"),
-            Preset("DeepSeek", "V4 Flash", "¥", "CNY / 1M tokens", 1_000_000m, 1.00m, 0.02m, 2.00m, "DeepSeek 官网 V4 Flash 定价"),
-            Preset("DeepSeek", "V4 Flash 高峰", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.10m, 9.00m, "DeepSeek 8-17 峰谷定价（高峰 9-12/14-18 点）"),
-            Preset("DeepSeek", "V4 Flash 空闲", "¥", "CNY / 1M tokens", 1_000_000m, 1.50m, 0.05m, 4.50m, "DeepSeek 8-17 峰谷定价（空闲时段）"),
-            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档"),
-            Preset("DeepSeek", "V4 Pro 高峰", "¥", "CNY / 1M tokens", 1_000_000m, 9.00m, 0.30m, 27.00m, "DeepSeek 8-17 峰谷定价（高峰 9-12/14-18 点）"),
-            Preset("DeepSeek", "V4 Pro 空闲", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, "DeepSeek 8-17 峰谷定价（空闲时段）"),
+            Preset("DeepSeek", "V4 Flash", "¥", "CNY / 1M tokens", 1_000_000m, 1.50m, 0.05m, 4.50m, "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）", schedule: PriceSchedule.DeepSeekBeijingPeakDouble),
+            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）", schedule: PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
             Preset("OpenAI", "GPT-5.6 Sol", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI Help Center GPT-5.6 preview"),
             Preset("OpenAI", "GPT-5.6 Terra", "$", "USD / 1M tokens", 1_000_000m, 2.50m, 0.25m, 15.00m, "OpenAI Help Center GPT-5.6 preview"),
@@ -215,7 +216,6 @@ internal sealed class PricePreset
             Preset("OpenAI", "GPT-5.4 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI API Pricing"),
             Preset("OpenAI", "GPT-5.4 mini Short", "$", "USD / 1M tokens", 1_000_000m, 1.50m, 0.15m, 9.00m, "OpenAI API Pricing"),
             Preset("OpenAI", "GPT-5.2 Reference", "$", "USD / 1M tokens", 1_000_000m, 1.75m, 0.175m, 14.00m, "价格库参考档"),
-            Preset("DeepSeek", "V4 Pro API", "$", "USD / 1M tokens", 1_000_000m, 0.435m, 0.0036m, 0.87m, "DeepSeek/OpenRouter reference"),
             Preset("Xiaomi", "MiMo V2.5 Pro API", "$", "USD / 1M tokens", 1_000_000m, 0.435m, 0.0036m, 0.87m, "MiMo pay-as-you-go"),
             Preset("Xiaomi", "Token Plan ¥99 / 110亿", "¥", "CNY / 1M tokens", 1_000_000m, 0.0090m, 0.0090m, 0.0090m, "99元=110亿 token 折算"),
             Preset("Kimi（月之暗面）", "K3", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Kimi API 官方价格"),
@@ -224,7 +224,7 @@ internal sealed class PricePreset
             Preset("Kimi（月之暗面）", "K2.6", "¥", "CNY / 1M tokens", 1_000_000m, 6.50m, 1.10m, 27.00m, "Kimi API 官方人民币价格"),
             Preset("Kimi（月之暗面）", "K2.5", "¥", "CNY / 1M tokens", 1_000_000m, 4.00m, 0.70m, 21.00m, "Kimi API 官方人民币价格"),
             Preset("智谱/Z.AI", "GLM-5.2 1M", "¥", "CNY / 1M tokens", 1_000_000m, 8.00m, 2.00m, 28.00m, "bigmodel.cn/pricing"),
-            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档", "ZCode"),
+            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）", "ZCode", PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan", "ZCode"),
             Preset("智谱/Z.AI", "GLM-5.1 <=32K", "¥", "CNY / 1M tokens", 1_000_000m, 6.00m, 1.30m, 24.00m, "bigmodel.cn/pricing"),
             Preset("智谱/Z.AI", "GLM-5.1 >32K", "¥", "CNY / 1M tokens", 1_000_000m, 8.00m, 2.00m, 28.00m, "bigmodel.cn/pricing"),
@@ -252,7 +252,7 @@ internal sealed class PricePreset
             Preset("腾讯混元", "Hy3", "¥", "CNY / 1M tokens", 1_000_000m, 1.00m, 0.25m, 4.00m, "腾讯云 TokenHub 官方价格"),
             Preset("Claude", "Fable 5 API", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 50.00m, "Anthropic pricing/cache read"),
             Preset("Claude", "Opus 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read"),
-            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 3.00m, 0.025m, 6.00m, "当前监控默认档", "Claude Code"),
+            Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）", "Claude Code", PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan", "Claude Code"),
             Preset("Claude", "Sonnet 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
             Preset("Claude", "Haiku 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read"),
@@ -332,7 +332,8 @@ internal sealed class PricePreset
         decimal cached,
         decimal output,
         string source,
-        string group = "")
+        string group = "",
+        PriceSchedule schedule = PriceSchedule.Flat)
     {
         return new PricePreset
         {
@@ -345,7 +346,8 @@ internal sealed class PricePreset
             UncachedInput = input,
             CachedInput = cached,
             Output = output,
-            Source = source
+            Source = source,
+            Schedule = schedule
         };
     }
 }
@@ -367,7 +369,7 @@ internal static class PriceSettingsStore
     {
         var settings = new PriceSettings
         {
-            DisplayOrderVersion = 16,
+            DisplayOrderVersion = 17,
             Presets = new(),
             CodexPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Codex), PricePresetGroups.Codex),
@@ -507,9 +509,15 @@ internal static class PriceSettingsStore
             GptUncachedInputPerMillion = PositiveOrDefault(settings.GptUncachedInputPerMillion, defaults.GptUncachedInputPerMillion),
             GptCachedInputPerMillion = PositiveOrDefault(settings.GptCachedInputPerMillion, defaults.GptCachedInputPerMillion),
             GptOutputPerMillion = PositiveOrDefault(settings.GptOutputPerMillion, defaults.GptOutputPerMillion),
-            DeepSeekUncachedInputPerMillion = PositiveOrDefault(settings.DeepSeekUncachedInputPerMillion, defaults.DeepSeekUncachedInputPerMillion),
-            DeepSeekCachedInputPerMillion = PositiveOrDefault(settings.DeepSeekCachedInputPerMillion, defaults.DeepSeekCachedInputPerMillion),
-            DeepSeekOutputPerMillion = PositiveOrDefault(settings.DeepSeekOutputPerMillion, defaults.DeepSeekOutputPerMillion),
+            DeepSeekUncachedInputPerMillion = shouldRefreshDefaults
+                ? defaults.DeepSeekUncachedInputPerMillion
+                : PositiveOrDefault(settings.DeepSeekUncachedInputPerMillion, defaults.DeepSeekUncachedInputPerMillion),
+            DeepSeekCachedInputPerMillion = shouldRefreshDefaults
+                ? defaults.DeepSeekCachedInputPerMillion
+                : PositiveOrDefault(settings.DeepSeekCachedInputPerMillion, defaults.DeepSeekCachedInputPerMillion),
+            DeepSeekOutputPerMillion = shouldRefreshDefaults
+                ? defaults.DeepSeekOutputPerMillion
+                : PositiveOrDefault(settings.DeepSeekOutputPerMillion, defaults.DeepSeekOutputPerMillion),
             XiaomiUncachedInputCreditsPerToken = PositiveOrDefault(settings.XiaomiUncachedInputCreditsPerToken, defaults.XiaomiUncachedInputCreditsPerToken),
             XiaomiCachedInputCreditsPerToken = PositiveOrDefault(settings.XiaomiCachedInputCreditsPerToken, defaults.XiaomiCachedInputCreditsPerToken),
             XiaomiOutputCreditsPerToken = PositiveOrDefault(settings.XiaomiOutputCreditsPerToken, defaults.XiaomiOutputCreditsPerToken),
@@ -577,11 +585,7 @@ internal static class PriceSettingsStore
             ("WorkBuddy", "DeepSeek", "V4 Pro"),
             ("WorkBuddy", "智谱/Z.AI", "GLM-5.2 1M"),
             ("DSH", "DeepSeek", "V4 Flash"),
-            ("DSH", "DeepSeek", "V4 Flash 高峰"),
-            ("DSH", "DeepSeek", "V4 Flash 空闲"),
             ("DSH", "DeepSeek", "V4 Pro"),
-            ("DSH", "DeepSeek", "V4 Pro 高峰"),
-            ("DSH", "DeepSeek", "V4 Pro 空闲"),
             ("DSH", "Xiaomi", "MiMo V2.5 Pro"),
             ("DSH", "OpenAI", "GPT-5.6 Sol")
         };
@@ -615,7 +619,7 @@ internal static class PriceSettingsStore
         var source = (input is { Count: > 0 } ? input : PricePreset.DefaultsForGroup(normalizedGroup))
             .Concat(PricePreset.DefaultsForGroup(normalizedGroup))
             .Where(item => !string.IsNullOrWhiteSpace(item.Model))
-            .Where(item => !IsRetiredTieredPresetName(item.Model))
+            .Where(item => !IsRetiredPreset(item))
             .Select(item => NormalizePreset(item, normalizedGroup))
             .ToList();
 
@@ -633,7 +637,7 @@ internal static class PriceSettingsStore
 
     private static PricePreset NormalizePreset(PricePreset item, string group)
     {
-        return new PricePreset
+        var normalized = new PricePreset
         {
             Group = PricePresetGroups.Normalize(group),
             Provider = item.Provider.Trim(),
@@ -644,8 +648,54 @@ internal static class PriceSettingsStore
             UncachedInput = PositiveOrDefault(item.UncachedInput, 0),
             CachedInput = PositiveOrDefault(item.CachedInput, 0),
             Output = PositiveOrDefault(item.Output, 0),
-            Source = item.Source.Trim()
+            Source = item.Source.Trim(),
+            Schedule = item.Schedule
         };
+
+        if (IsOfficialDeepSeekModel(normalized, "V4 Flash"))
+        {
+            normalized.UncachedInput = 1.50m;
+            normalized.CachedInput = 0.05m;
+            normalized.Output = 4.50m;
+            normalized.Source = "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）";
+            normalized.Schedule = PriceSchedule.DeepSeekBeijingPeakDouble;
+        }
+        else if (IsOfficialDeepSeekModel(normalized, "V4 Pro"))
+        {
+            normalized.UncachedInput = 4.50m;
+            normalized.CachedInput = 0.15m;
+            normalized.Output = 13.50m;
+            normalized.Source = "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）";
+            normalized.Schedule = PriceSchedule.DeepSeekBeijingPeakDouble;
+        }
+
+        return normalized;
+    }
+
+    private static bool IsRetiredPreset(PricePreset preset)
+    {
+        if (IsRetiredTieredPresetName(preset.Model))
+        {
+            return true;
+        }
+
+        if (!preset.Provider.Contains("DeepSeek", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var model = preset.Model.Trim();
+        return model.EndsWith(" 高峰", StringComparison.OrdinalIgnoreCase) ||
+               model.EndsWith(" 空闲", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(model, "V4 Pro API", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsOfficialDeepSeekModel(PricePreset preset, string model)
+    {
+        return preset.Provider.Contains("DeepSeek", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(preset.Model, model, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(preset.CurrencySymbol, "¥", StringComparison.OrdinalIgnoreCase) &&
+               preset.Divisor == 1_000_000m;
     }
 
     private static bool IsRetiredTieredPresetName(string? model)
