@@ -17,7 +17,7 @@ CodexTokenMonitor.slnx
 │  │   │            UsageModels（TokenUsageBucket/Summary/Event）
 │  │   ├─ 设置存储：PriceSettings、SubscriptionPlans、SubscriptionPlanImporter、
 │  │   │            ResetOpportunities
-│  │   └─ 数据交换：CodexDataTransferService
+│  │   └─ 数据交换：CodexDataTransferService、CodexDataSharingServer/Client
 │  ├─ CodexTokenMonitor.Wpf/        # WPF 界面（net8.0-windows10.0.19041.0）
 │  │   ├─ MainWindow、QuotaEstimateWindow、QuotaCostCurveWindow、CacheDetailsWindow
 │  │   ├─ WpfTokenTimelineControl、QuotaCostCurveControl、QuotaCostCurveCalculator
@@ -29,6 +29,10 @@ CodexTokenMonitor.slnx
 ```
 
 依赖关系：`Wpf → Core`，`Wpf` 通过 `Compile Include` 把 `LegacyDialogs` 的两个窗体直接编入。
+
+局域网共享使用 `Microsoft.AspNetCore.App` 中的 Kestrel，显式监听 IPv4 端口（默认 36666），由主窗口持有服务生命周期；`DataSharingWindow` 只负责手动启停和客户端操作。无自动同步、无启动时监听。所有请求使用 `X-Codex-Sharing-Key` 请求头鉴权，不启用 CORS，不接受客户端给定的文件路径。`GET /api/health` 返回协议版本与设备名，`GET /api/week` 导出本周 JSON 数据包，`POST /api/week` 接收原始 JSON 数据包并返回新增/已有事件与快照数。下载包含服务器已合并的其他设备数据。
+
+网络读写使用独立临时文件和流式传输；包上限 256 MB，每次传输限时 3 分钟，单个服务器同时只处理一个数据包，多余传输返回 409。`MainWindow.DataSharing.cs` 在已有 `usageQueryGate` 内调用导出/导入，导入先验证整包属于北京时间本周，再通过现有稳定键合并。网络成功返回与 UI 刷新分离，UI 刷新通过 Dispatcher 排队，避免缓存锁与主线程相互等待。共享配置位于 `%LOCALAPPDATA%\CodexTokenMonitor\data-sharing-v1.json`；自包含发布携带网络运行时，Lite 发布要求另装 ASP.NET Core 8 Runtime。
 
 ## 2. 数据源与读取
 

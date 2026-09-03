@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim usageQueryGate = new(1, 1);
     private readonly DispatcherTimer refreshTimer = new();
     private readonly BackgroundCacheWarmer backgroundCacheWarmer;
+    private readonly CancellationTokenSource lifetimeCancellation = new();
     private CacheDetailsWindow? cacheDetailsWindow;
     private readonly ResetOpportunitySynchronizer resetOpportunitySynchronizer = new();
     private readonly BreakdownGridAdapter breakdownGridAdapter;
@@ -42,6 +43,7 @@ public partial class MainWindow : Window
     private bool usageRefreshPending;
     private bool pendingCacheOnly;
     private long usageRefreshVersion;
+    private long quotaRefreshVersion;
     private Task usageRefreshLoopTask = Task.CompletedTask;
     private int lastVisibleCostColumnCount = -1;
 
@@ -87,13 +89,29 @@ public partial class MainWindow : Window
             _ = SyncResetOpportunitiesFromCodexAsync(showError: false);
             backgroundCacheWarmer.Start();
         };
-        Closed += (_, _) =>
+        Closed += async (_, _) =>
         {
             isClosed = true;
+            lifetimeCancellation.Cancel();
+            var sharingShutdown = dataSharingServer?.StopAsync() ?? Task.CompletedTask;
             refreshTimer.Stop();
             backgroundCacheWarmer.Dispose();
             LastDisplayStore.Flush();
+            await ObserveShutdownTaskAsync(sharingShutdown);
         };
+    }
+
+    private static async Task ObserveShutdownTaskAsync(Task task)
+    {
+        try
+        {
+            await task.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        catch
+        {
+            // Closing is best effort. Cancellation and any already-reported
+            // refresh error must not escape an async Closed handler.
+        }
     }
 
     private async void WeekPickerButton_Click(object sender, RoutedEventArgs e)

@@ -50,7 +50,7 @@ CI（GitHub Actions，`.github/workflows/build.yml`）会在 push / PR 时在 `w
 
 ## 发布单文件 exe
 
-便携版会把 .NET runtime 一起打进 exe，体积较大，但复制到没装 .NET 的 Windows 机器也能直接运行：
+默认 Release 为框架依赖单文件，约 50 MB，需要 .NET 8 Desktop Runtime 和 ASP.NET Core 8 Runtime（局域网共享服务使用）。正式输出仍为 `outputs/CodexTokenMonitor`：
 
 ```powershell
 dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Release -o .\outputs\CodexTokenMonitor
@@ -62,7 +62,7 @@ dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Relea
 outputs/CodexTokenMonitor/CodexTokenMonitor.exe
 ```
 
-轻量版（`Lite` 配置，框架依赖）只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime，exe 体积会小很多：
+轻量版（`Lite` 配置，框架依赖）只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime 和 ASP.NET Core 8 Runtime，exe 体积会小很多：
 
 ```powershell
 dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Lite -o .\outputs\CodexTokenMonitor-lite
@@ -79,6 +79,8 @@ outputs/CodexTokenMonitor-lite/CodexTokenMonitor.exe
 ```text
 outputs/一键生成CodexTokenMonitor.cmd
 ```
+
+局域网共享入口为 **数据管理 → 局域网共享**：默认端口 **36666**，手动开启本机服务；其他电脑填写地址和访问密钥，手动上传本周或下载并合并本周。使用说明见 [用户指南](docs/USER_GUIDE.md#局域网共享手动上传--下载本周)。
 
 ## 本地数据位置
 

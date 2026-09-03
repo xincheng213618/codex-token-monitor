@@ -31,6 +31,7 @@ internal static class CodexDataTransferService
     private const string PackageFormat = "codex-token-monitor-transfer";
     private const int PackageVersion = 1;
     private static readonly object DeviceIdSyncRoot = new();
+    private static readonly SemaphoreSlim ImportGate = new(1, 1);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -40,11 +41,15 @@ internal static class CodexDataTransferService
 
     public static CodexDataExportResult Export(string filePath)
     {
-        return Export(filePath, CodexDataExportScope.All);
+        return Export(filePath, CodexDataExportScope.All, CancellationToken.None);
     }
 
-    public static CodexDataExportResult Export(string filePath, CodexDataExportScope scope)
+    public static CodexDataExportResult Export(
+        string filePath,
+        CodexDataExportScope scope,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var exportedAtLocal = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var (startInclusive, endExclusive) = GetExportRange(scope, exportedAtLocal);
         return ExportRange(
@@ -54,7 +59,8 @@ internal static class CodexDataTransferService
             Environment.MachineName,
             exportedAtLocal,
             startInclusive,
-            endExclusive);
+            endExclusive,
+            cancellationToken);
     }
 
     internal static CodexDataExportResult Export(
@@ -62,8 +68,10 @@ internal static class CodexDataTransferService
         string cacheFolder,
         string deviceId,
         string deviceName,
-        DateTimeOffset exportedAtLocal)
+        DateTimeOffset exportedAtLocal,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         return ExportRange(
             filePath,
             cacheFolder,
@@ -71,7 +79,8 @@ internal static class CodexDataTransferService
             deviceName,
             exportedAtLocal,
             startInclusive: null,
-            endExclusive: null);
+            endExclusive: null,
+            cancellationToken);
     }
 
     internal static CodexDataExportResult ExportRange(
@@ -81,8 +90,10 @@ internal static class CodexDataTransferService
         string deviceName,
         DateTimeOffset exportedAtLocal,
         DateTimeOffset? startInclusive,
-        DateTimeOffset? endExclusive)
+        DateTimeOffset? endExclusive,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheFolder);
         ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
@@ -99,6 +110,7 @@ internal static class CodexDataTransferService
             .GetAllSnapshots()
             .Where(item => IsInExportRange(item.SnapshotLocal, startInclusive, endExclusive))
             .ToList();
+        cancellationToken.ThrowIfCancellationRequested();
         var package = new CodexTransferPackage
         {
             Format = PackageFormat,
@@ -140,10 +152,12 @@ internal static class CodexDataTransferService
         var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";
         try
         {
-            File.WriteAllText(
-                temporaryPath,
-                JsonSerializer.Serialize(package, JsonOptions),
-                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.SerializeAsync(stream, package, JsonOptions, cancellationToken).GetAwaiter().GetResult();
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporaryPath, fullPath, overwrite: true);
         }
         finally
@@ -200,15 +214,38 @@ internal static class CodexDataTransferService
         return startInclusive is null || timestamp >= startInclusive.Value && timestamp < endExclusive!.Value;
     }
 
-    public static CodexDataImportResult Import(IReadOnlyList<string> filePaths)
+    public static CodexDataImportResult Import(
+        IReadOnlyList<string> filePaths,
+        CancellationToken cancellationToken = default)
     {
-        return Import(filePaths, CacheFolder);
+        return Import(filePaths, CacheFolder, cancellationToken);
     }
 
     internal static CodexDataImportResult Import(
         IReadOnlyList<string> filePaths,
-        string cacheFolder)
+        string cacheFolder,
+        CancellationToken cancellationToken = default)
     {
+        return ImportCore(filePaths, cacheFolder, null, cancellationToken);
+    }
+
+    internal static CodexDataImportResult ImportThisWeek(
+        string filePath,
+        CancellationToken cancellationToken = default,
+        string cacheFolder = CacheFolder,
+        DateTimeOffset? now = null)
+    {
+        var range = GetExportRange(CodexDataExportScope.ThisWeek, now ?? DateTimeOffset.UtcNow);
+        return ImportCore(new[] { filePath }, cacheFolder, (range.StartInclusive!.Value, range.EndExclusive!.Value), cancellationToken);
+    }
+
+    private static CodexDataImportResult ImportCore(
+        IReadOnlyList<string> filePaths,
+        string cacheFolder,
+        (DateTimeOffset Start, DateTimeOffset End)? allowedRange,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(filePaths);
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheFolder);
         if (filePaths.Count == 0)
@@ -218,38 +255,88 @@ internal static class CodexDataTransferService
 
         // Validate every package before changing the cache, so one invalid file
         // cannot leave a partially imported batch.
-        var packages = filePaths.Select(ReadPackage).ToList();
+        var packages = new List<CodexTransferPackage>(filePaths.Count);
+        foreach (var filePath in filePaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            packages.Add(ReadPackage(filePath, cancellationToken));
+        }
+
         var usageEvents = new List<TokenUsageEvent>();
         var quotaSnapshots = new List<CodexQuotaSnapshot>();
         foreach (var package in packages)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             usageEvents.AddRange(package.UsageEvents.Select(item => ToUsageEvent(item, package.SourceDeviceId)));
             quotaSnapshots.AddRange(package.QuotaSnapshots.Select(ToQuotaSnapshot));
         }
 
+        if (allowedRange is { } range &&
+            (usageEvents.Any(item => item.Timestamp < range.Start || item.Timestamp >= range.End) ||
+             quotaSnapshots.Any(item => item.SnapshotLocal < range.Start || item.SnapshotLocal >= range.End)))
+        {
+            throw new InvalidDataException("数据包包含本周之外的数据，请检查两台电脑的日期并重新上传或下载本周数据。");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
         var mergedUsageEvents = UsageEventMerger.Merge(usageEvents);
         var mergedQuotaSnapshots = MergeQuotaSnapshots(quotaSnapshots);
-        var addedUsage = UsageCacheStore.Load(cacheFolder).MergeImportedDetailEvents(mergedUsageEvents);
-        var addedQuota = QuotaSnapshotCacheStore.Load(cacheFolder).MergeImportedSnapshots(mergedQuotaSnapshots);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        return new CodexDataImportResult(
-            packages.Count,
-            packages.Select(item => item.SourceDeviceId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
-            addedUsage,
-            mergedUsageEvents.Count - addedUsage,
-            addedQuota,
-            mergedQuotaSnapshots.Count - addedQuota);
+        // Keep the read/merge/write sequence exclusive across imports. The
+        // usage and quota stores share a SQLite file, but each store owns its
+        // own transactions; serializing this sequence prevents two overlapping
+        // imports from calculating a stale day aggregate and then overwriting
+        // the other import's summary.
+        ImportGate.Wait(cancellationToken);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var addedUsage = UsageCacheStore.Load(cacheFolder).MergeImportedDetailEvents(mergedUsageEvents);
+            var addedQuota = QuotaSnapshotCacheStore.Load(cacheFolder).MergeImportedSnapshots(mergedQuotaSnapshots);
+
+            return new CodexDataImportResult(
+                packages.Count,
+                packages.Select(item => item.SourceDeviceId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                addedUsage,
+                mergedUsageEvents.Count - addedUsage,
+                addedQuota,
+                mergedQuotaSnapshots.Count - addedQuota);
+        }
+        finally
+        {
+            ImportGate.Release();
+        }
     }
 
-    private static CodexTransferPackage ReadPackage(string filePath)
+    private static CodexTransferPackage ReadPackage(
+        string filePath,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        cancellationToken.ThrowIfCancellationRequested();
         CodexTransferPackage? package;
         try
         {
-            package = JsonSerializer.Deserialize<CodexTransferPackage>(
-                File.ReadAllText(filePath),
-                JsonOptions);
+            // Deserialize directly from the file stream.  Full exports can
+            // contain hundreds of thousands of events; ReadAllText would add
+            // another copy of the entire package to the process heap before
+            // JsonSerializer creates the object graph.
+            using var stream = new FileStream(
+                filePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 64 * 1024,
+                options: FileOptions.SequentialScan);
+            // Keep the synchronous public API, but let the serializer observe
+            // cancellation while a large package is still being read and parsed.
+            package = JsonSerializer.DeserializeAsync<CodexTransferPackage>(
+                    stream,
+                    JsonOptions,
+                    cancellationToken)
+                .GetAwaiter()
+                .GetResult();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -271,9 +358,10 @@ internal static class CodexDataTransferService
 
     private static TokenUsageEvent ToUsageEvent(PortableUsageEvent item, string sourceDeviceId)
     {
-        if (item.TimestampLocal == default ||
+        if (item is null || item.TimestampLocal == default ||
             item.InputTokens < 0 ||
             item.CachedInputTokens < 0 ||
+            item.CachedInputTokens > item.InputTokens ||
             item.OutputTokens < 0 ||
             item.ReasoningOutputTokens < 0 ||
             item.TotalTokens < 0)
@@ -297,7 +385,7 @@ internal static class CodexDataTransferService
 
     private static CodexQuotaSnapshot ToQuotaSnapshot(PortableQuotaSnapshot item)
     {
-        if (item.SnapshotLocal == default ||
+        if (item is null || item.SnapshotLocal == default ||
             !IsValidPercent(item.FiveHourUsedPercent) ||
             !IsValidPercent(item.WeekUsedPercent))
         {

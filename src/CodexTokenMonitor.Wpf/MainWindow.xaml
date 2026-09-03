@@ -285,6 +285,10 @@
                             <MenuItem Header="导出全部数据..."
                                       ToolTip="导出所有已缓存的 Codex 用量和额度快照"
                                       Click="ExportDataButton_Click" />
+                            <Separator />
+                            <MenuItem Header="局域网共享..."
+                                      ToolTip="本机作为服务器，或手动上传、下载并合并本周 Codex 数据"
+                                      Click="DataSharingButton_Click" />
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>
