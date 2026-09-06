@@ -16,7 +16,7 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Restore
-        run: dotnet restore .\CodexTokenMonitor.slnx
+        run: dotnet restore .\CodexTokenMonitor.slnx -r win-x64
 
       - name: Build
         run: dotnet build .\CodexTokenMonitor.slnx -c Release --no-restore
