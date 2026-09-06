@@ -2,8 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:ClassModifier="internal"
-        Title="局域网共享 · 本周 Codex 数据"
-        Width="730" Height="770" MinWidth="650" MinHeight="630"
+        Title="局域网共享 · Codex 数据同步"
+        Width="810" Height="830" MinWidth="650" MinHeight="630"
         WindowStartupLocation="CenterOwner" Background="#F6F8FB"
         FontFamily="Microsoft YaHei UI" ResizeMode="CanResizeWithGrip">
     <Window.Resources>
@@ -35,9 +35,9 @@
     </Window.Resources>
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="20">
-            <TextBlock Text="共享本周数据" FontSize="22" FontWeight="SemiBold" />
+            <TextBlock Text="跨电脑同步 Codex 数据" FontSize="22" FontWeight="SemiBold" />
             <TextBlock Margin="0,7,0,16" TextWrapping="Wrap" Foreground="#65758A"
-                       Text="只合并同一个 Codex 账户的数据。本周按北京时间周一 00:00 起算，重复上传或下载不会重复计数。" />
+                       Text="只合并同一个 Codex 账户的数据。第一次等两台电脑缓存完成后，点‘同步全部历史’；以后日常同步最近 8 天即可。重复同步不会重复计数。" />
 
             <Border Style="{StaticResource Card}">
                 <StackPanel>
@@ -63,8 +63,9 @@
                                  IsReadOnly="True" TextWrapping="Wrap" Margin="0,10,0,0" MinHeight="52"
                                  Text="开启服务后显示可供其他电脑连接的地址" />
                     </Grid>
-                    <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" Foreground="#65758A" FontSize="12"
-                               Text="开启后，本机被动接受上传与下载。关闭此窗口仍保持服务；退出程序即停止，下次启动需手动开启。" />
+                    <CheckBox x:Name="AutoStartBox" Content="启动程序时自动开启共享服务" Margin="0,12,0,0" />
+                    <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#65758A" FontSize="12"
+                               Text="开启后，本机接受上传与下载。关闭此窗口仍保持服务；退出程序即停止。数据同步由按钮手动执行。" />
                     <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#65758A" FontSize="12"
                                Text="连接不上时，请在 Windows 防火墙中允许此程序访问专用网络。HTTP 传输适用于可信局域网或 VPN。" />
                 </StackPanel>
@@ -83,12 +84,14 @@
                     </Grid>
                     <WrapPanel Margin="0,14,0,0">
                         <Button x:Name="TestButton" Content="测试连接" Click="TestButton_Click" Margin="0,0,10,6" />
-                        <Button x:Name="UploadButton" Content="上传本周" Click="UploadButton_Click" Margin="0,0,10,6" />
-                        <Button x:Name="DownloadButton" Content="下载并合并本周" Click="DownloadButton_Click" Margin="0,0,10,6" />
+                        <Button x:Name="HistorySyncButton" Content="同步全部历史" Click="HistorySyncButton_Click" Margin="0,0,10,6" />
+                        <Button x:Name="SyncButton" Content="双向同步最近 8 天" Click="SyncButton_Click" Margin="0,0,10,6" />
+                        <Button x:Name="UploadButton" Content="上传最近 8 天" Click="UploadButton_Click" Margin="0,0,10,6" />
+                        <Button x:Name="DownloadButton" Content="下载并合并最近 8 天" Click="DownloadButton_Click" Margin="0,0,10,6" />
                         <Button x:Name="CancelButton" Content="取消" IsEnabled="False" Click="CancelButton_Click" Margin="0,0,0,6" />
                     </WrapPanel>
                     <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#65758A" FontSize="12"
-                               Text="上传：把本机已缓存的本周数据合并到服务器。下载：把服务器汇总的本周数据合并到本机。每次都由你手动点击。" />
+                               Text="全部历史：分批上传本机已缓存记录，再下载并合并服务器记录，最后刷新最近用量。日常最近 8 天：覆盖当前 7d 额度窗口。长期离线或补录旧数据后，可再次同步全部历史；套餐与价格设置在各自电脑管理。" />
                 </StackPanel>
             </Border>
 

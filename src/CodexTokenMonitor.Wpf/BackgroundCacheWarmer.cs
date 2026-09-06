@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows.Threading;
 
 namespace CodexTokenMonitor;
@@ -38,14 +39,13 @@ internal sealed record CacheWarmStatus(
         "",
         null,
         null,
-        DateTimeOffset.Now,
+        BeijingClock.Now,
         Array.Empty<CacheWarmCategoryStatus>());
 }
 
 internal sealed class BackgroundCacheWarmer : IDisposable
 {
     private const int BackgroundCacheIntervalMs = 120_000;
-    private const int BackfillBatchDays = 7;
 
     private const string CodexUsageKey = "usage-Codex";
     private const string CodexQuotaKey = "codex-quota";
@@ -73,6 +73,7 @@ internal sealed class BackgroundCacheWarmer : IDisposable
     private DateTimeOffset? currentItemStartedAt;
     private string currentItem = "-";
     private string currentCategoryKey = "";
+    private Task currentWarmTask = Task.CompletedTask;
 
     public BackgroundCacheWarmer(
         Func<UsageSource> currentSource,
@@ -113,16 +114,57 @@ internal sealed class BackgroundCacheWarmer : IDisposable
 
     public void CancelCurrent()
     {
-        cts?.Cancel();
+        try
+        {
+            cts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // A completed warm cycle may be disposing its source concurrently.
+        }
     }
 
-    public async Task WarmNowAsync()
+    public Task WarmNowAsync()
     {
         if (isRunning || disposed)
         {
+            return Task.CompletedTask;
+        }
+
+        currentWarmTask = WarmNowCoreAsync();
+        return currentWarmTask;
+    }
+
+    public async Task WaitForCompletionAsync(TimeSpan timeout)
+    {
+        var task = currentWarmTask;
+        if (task.IsCompleted)
+        {
+            try
+            {
+                await task;
+            }
+            catch
+            {
+                // Observe a completed fault as part of shutdown bookkeeping.
+            }
+
             return;
         }
 
+        try
+        {
+            await task.WaitAsync(timeout);
+        }
+        catch
+        {
+            // Shutdown is best effort. The worker itself observes cancellation
+            // and the timeout prevents a stuck file read from blocking exit.
+        }
+    }
+
+    private async Task WarmNowCoreAsync()
+    {
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var lastHistoricalDay = StartOfDay(now).AddDays(-1);
         if (lastHistoricalDay < BackgroundCacheStart)
@@ -130,34 +172,29 @@ internal sealed class BackgroundCacheWarmer : IDisposable
             return;
         }
 
-        cts?.Cancel();
+        CancelCurrent();
         var localCts = new CancellationTokenSource();
         cts = localCts;
         var token = localCts.Token;
         isRunning = true;
-        startedAt ??= now;
+        startedAt = now;
+        currentItem = "-";
+        currentCategoryKey = "";
+        currentItemStartedAt = null;
         timer.Stop();
 
         try
         {
             var sources = GetSourceOrder();
-            var pending = sources.ToDictionary(
-                source => source,
-                source => UsageSourceReaders.For(source).GetIncompleteHistoricalDays(BackgroundCacheStart, lastHistoricalDay)
-                    .Select(day => DateOnly.FromDateTime(day.DateTime))
-                    .ToHashSet());
-            var pendingQuota = CodexUsageReader.GetIncompleteQuotaSnapshotDays(BackgroundCacheStart, lastHistoricalDay)
-                .Select(day => DateOnly.FromDateTime(day.DateTime))
-                .ToHashSet();
-            var pendingTimeline = CodexUsageReader.GetIncompleteQuotaTimelineDays(BackgroundCacheStart, lastHistoricalDay)
-                .Select(day => DateOnly.FromDateTime(day.DateTime))
-                .ToHashSet();
-            var timelineDays = pendingTimeline
-                .Concat(pending[UsageSource.Codex])
-                .Concat(pendingQuota)
-                .ToHashSet();
+            await WaitForForegroundAsync(token);
+            var plan = await BuildWarmPlanAsync(sources, lastHistoricalDay, token);
             var totalDays = (lastHistoricalDay - BackgroundCacheStart).Days + 1;
-            InitializeCategories(totalDays, sources, pending, pendingQuota, timelineDays);
+            InitializeCategories(
+                totalDays,
+                plan.Sources,
+                plan.Pending,
+                plan.PendingQuota,
+                plan.TimelineDays);
 
             if (CurrentStatus.RemainingItems == 0)
             {
@@ -165,19 +202,26 @@ internal sealed class BackgroundCacheWarmer : IDisposable
                 return;
             }
 
-            foreach (var source in sources)
+            foreach (var source in plan.Sources)
             {
-                await WarmUsageSourceAsync(source, pending[source], lastHistoricalDay, token);
+                await WarmUsageSourceAsync(source, plan.Pending[source], lastHistoricalDay, token);
                 if (source != UsageSource.Codex)
                 {
                     continue;
                 }
 
-                await WarmQuotaAsync(pendingQuota, lastHistoricalDay, token);
-                await WarmTimelineAsync(timelineDays, lastHistoricalDay, token);
+                await WarmQuotaAsync(plan.PendingQuota, lastHistoricalDay, token);
+                await WarmTimelineAsync(plan.TimelineDays, lastHistoricalDay, token);
             }
 
-            PublishComplete();
+            if (CurrentStatus.RemainingItems == 0)
+            {
+                PublishComplete();
+            }
+            else
+            {
+                PublishPendingRetry();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -200,11 +244,56 @@ internal sealed class BackgroundCacheWarmer : IDisposable
                 cts = null;
             }
 
+            localCts.Dispose();
+
             isRunning = false;
             if (!disposed)
             {
                 timer.Start();
             }
+        }
+    }
+
+    private async Task<WarmPlan> BuildWarmPlanAsync(
+        IReadOnlyList<UsageSource> sources,
+        DateTimeOffset lastHistoricalDay,
+        CancellationToken token)
+    {
+        await workGate.WaitAsync(token);
+        try
+        {
+            return await Task.Run(() =>
+            {
+                token.ThrowIfCancellationRequested();
+                var pending = sources.ToDictionary(
+                    source => source,
+                    source => UsageSourceReaders.For(source)
+                        .GetIncompleteHistoricalDays(BackgroundCacheStart, lastHistoricalDay, token)
+                        .Select(day => DateOnly.FromDateTime(day.DateTime))
+                        .ToHashSet());
+                var pendingQuota = CodexUsageReader.GetIncompleteQuotaSnapshotDays(
+                        BackgroundCacheStart,
+                        lastHistoricalDay,
+                        token)
+                    .Select(day => DateOnly.FromDateTime(day.DateTime))
+                    .ToHashSet();
+                var pendingTimeline = CodexUsageReader.GetIncompleteQuotaTimelineDays(
+                        BackgroundCacheStart,
+                        lastHistoricalDay,
+                        token)
+                    .Select(day => DateOnly.FromDateTime(day.DateTime))
+                    .ToHashSet();
+                var timelineDays = pendingTimeline
+                    .Concat(pending[UsageSource.Codex])
+                    .Concat(pendingQuota)
+                    .ToHashSet();
+
+                return new WarmPlan(sources, pending, pendingQuota, timelineDays);
+            }, token);
+        }
+        finally
+        {
+            workGate.Release();
         }
     }
 
@@ -228,19 +317,51 @@ internal sealed class BackgroundCacheWarmer : IDisposable
     {
         var reader = UsageSourceReaders.For(source);
         var categoryKey = UsageKey(source);
-        for (var day = lastHistoricalDay; day >= BackgroundCacheStart; day = day.AddDays(-1))
+        var days = EnumeratePendingDays(lastHistoricalDay, pendingDays).ToArray();
+        if (days.Length == 0)
         {
-            var date = DateOnly.FromDateTime(day.DateTime);
-            if (!pendingDays.Contains(date))
-            {
-                continue;
-            }
+            return;
+        }
 
-            await WaitForForegroundAsync(token);
-            PublishTask(categoryKey, $"{reader.Title} token {day:yyyy-MM-dd}");
-            await RunExclusiveAsync(() => reader.WarmHistoricalDay(day), token);
-            MarkCompleted(categoryKey);
-            await Task.Delay(20, token);
+        await WaitForForegroundAsync(token);
+        PublishTask(categoryKey, $"{reader.Title} token 批量读取 {days.Length} 天");
+        var progressClock = Stopwatch.StartNew();
+        await RunExclusiveAsync(() => reader.WarmHistoricalDays(
+            days,
+            token,
+            day => DispatchStatus(() =>
+            {
+                PublishTask(categoryKey, $"{reader.Title} token {day:yyyy-MM-dd}");
+                MarkCompleted(categoryKey);
+            }),
+            (completed, total) =>
+            {
+                if (completed != total && completed != 0 && progressClock.ElapsedMilliseconds < 500)
+                {
+                    return;
+                }
+
+                progressClock.Restart();
+                DispatchStatus(() => PublishTask(
+                    categoryKey,
+                    $"{reader.Title} token 读取日志 {completed:N0}/{total:N0} · 合并 {days.Length} 天"));
+            }), token);
+    }
+
+    private void DispatchStatus(Action update)
+    {
+        if (disposed || timer.Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        if (timer.Dispatcher.CheckAccess())
+        {
+            update();
+        }
+        else
+        {
+            timer.Dispatcher.Invoke(update);
         }
     }
 
@@ -250,14 +371,31 @@ internal sealed class BackgroundCacheWarmer : IDisposable
         CancellationToken token)
     {
         var days = EnumeratePendingDays(lastHistoricalDay, pendingQuota).ToList();
-        for (var index = 0; index < days.Count; index += BackfillBatchDays)
+        if (days.Count == 0)
         {
-            var batch = days.Skip(index).Take(BackfillBatchDays).OrderBy(day => day).ToList();
-            await WaitForForegroundAsync(token);
-            PublishTask(CodexQuotaKey, $"Codex 额度 {batch[0]:MM-dd} - {batch[^1]:MM-dd}");
-            await RunExclusiveAsync(() => CodexUsageReader.WarmQuotaSnapshotDays(batch, token), token);
-            MarkCompleted(CodexQuotaKey, batch.Count);
+            return;
         }
+
+        await WaitForForegroundAsync(token);
+        PublishTask(CodexQuotaKey, $"Codex 额度合并扫描 {days.Count} 天");
+        var progressClock = Stopwatch.StartNew();
+        await RunExclusiveAsync(() => CodexUsageReader.WarmQuotaSnapshotDays(
+            days, token,
+            day => DispatchStatus(() =>
+            {
+                PublishTask(CodexQuotaKey, $"Codex 额度 {day:yyyy-MM-dd}");
+                MarkCompleted(CodexQuotaKey);
+            }),
+            (completed, total) =>
+            {
+                if (completed != 0 && completed != total && progressClock.ElapsedMilliseconds < 500)
+                {
+                    return;
+                }
+                progressClock.Restart();
+                DispatchStatus(() => PublishTask(CodexQuotaKey,
+                    $"Codex 额度读取日志 {completed:N0}/{total:N0} · 合并 {days.Count} 天"));
+            }), token);
     }
 
     private async Task WarmTimelineAsync(
@@ -269,8 +407,11 @@ internal sealed class BackgroundCacheWarmer : IDisposable
         {
             await WaitForForegroundAsync(token);
             PublishTask(CodexTimelineKey, $"Codex 额度曲线 {day:yyyy-MM-dd}");
-            await RunExclusiveAsync(() => CodexUsageReader.WarmQuotaTimelineDay(day), token);
-            MarkCompleted(CodexTimelineKey);
+            await RunExclusiveAsync(() => CodexUsageReader.WarmQuotaTimelineDay(day, token), token);
+            if (CodexUsageReader.GetIncompleteQuotaTimelineDays(day, day, token).Count == 0)
+            {
+                MarkCompleted(CodexTimelineKey);
+            }
             await Task.Delay(20, token);
         }
     }
@@ -312,7 +453,7 @@ internal sealed class BackgroundCacheWarmer : IDisposable
         if (!string.Equals(currentItem, item, StringComparison.Ordinal))
         {
             currentItem = item;
-            currentItemStartedAt = DateTimeOffset.Now;
+            currentItemStartedAt = BeijingClock.Now;
         }
 
         var category = categories[categoryKey];
@@ -338,8 +479,20 @@ internal sealed class BackgroundCacheWarmer : IDisposable
         currentCategoryKey = "";
         currentItemStartedAt = null;
         Publish(
-            $"全部缓存已完成 {DateTime.Now:HH:mm:ss}",
-            $"缓存完成 {DateTime.Now:HH:mm:ss} · 点击查看",
+            $"全部缓存已完成 {BeijingClock.DateTimeNow:HH:mm:ss}",
+            $"缓存完成 {BeijingClock.DateTimeNow:HH:mm:ss} · 点击查看",
+            isRunning: false);
+    }
+
+    private void PublishPendingRetry()
+    {
+        var remaining = CurrentStatus.RemainingItems;
+        currentItem = "-";
+        currentCategoryKey = "";
+        currentItemStartedAt = null;
+        Publish(
+            $"本轮预热结束，仍待补扫 {remaining} 天",
+            $"缓存待重试 {remaining} 天 · 下一轮自动重试",
             isRunning: false);
     }
 
@@ -353,12 +506,33 @@ internal sealed class BackgroundCacheWarmer : IDisposable
             currentCategoryKey,
             startedAt,
             currentItemStartedAt,
-            DateTimeOffset.Now,
+            BeijingClock.Now,
             categories.Values
                 .OrderBy(item => CategoryOrder(item.Key))
                 .ToList());
-        setStatus(CurrentStatus);
-        StatusChanged?.Invoke(CurrentStatus);
+
+        // Status is auxiliary UI telemetry. A window can be torn down while
+        // the cache worker is unwinding cancellation; a dispatcher callback
+        // from that window must not turn a normal shutdown into a faulted
+        // background task.
+        try
+        {
+            setStatus(CurrentStatus);
+        }
+        catch
+        {
+            // Keep cache work alive even if its status consumer has already
+            // lost its dispatcher during application shutdown.
+        }
+
+        try
+        {
+            StatusChanged?.Invoke(CurrentStatus);
+        }
+        catch
+        {
+            // Status observers are optional and must never break cache work.
+        }
     }
 
     private async void Timer_Tick(object? sender, EventArgs e)
@@ -438,6 +612,13 @@ internal sealed class BackgroundCacheWarmer : IDisposable
 
     private static DateTimeOffset StartOfDay(DateTimeOffset value)
     {
-        return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, value.Offset);
+        var local = value.ToOffset(CodexUsageReader.BeijingOffset);
+        return new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
     }
+
+    private sealed record WarmPlan(
+        IReadOnlyList<UsageSource> Sources,
+        IReadOnlyDictionary<UsageSource, HashSet<DateOnly>> Pending,
+        HashSet<DateOnly> PendingQuota,
+        HashSet<DateOnly> TimelineDays);
 }

@@ -8,12 +8,21 @@ internal sealed record ZCodeUsageEntry(
     DateTimeOffset Timestamp,
     long Input,
     long Cached,
+    long CacheWrite,
     long Output,
     long Reasoning,
     long ReportedTotal)
 {
-    public long Total => ReportedTotal > 0 ? ReportedTotal : Input + Output;
-    public long CompletenessScore => Input + Cached + Output + Reasoning + Total;
+    public long Total => ReportedTotal > 0
+        ? ReportedTotal
+        : TokenCountMath.AddNonNegative(Input, Output);
+    public decimal CompletenessScore =>
+        (decimal)TokenCountMath.NonNegative(Input) +
+        TokenCountMath.NonNegative(Cached) +
+        TokenCountMath.NonNegative(CacheWrite) +
+        TokenCountMath.NonNegative(Output) +
+        TokenCountMath.NonNegative(Reasoning) +
+        TokenCountMath.NonNegative(Total);
 }
 
 internal static class ZCodeUsageReader
@@ -32,25 +41,48 @@ internal static class ZCodeUsageReader
 
     public static IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.GetIncompleteDays(CacheFolder, startInclusive, endInclusive);
+        return UsageCacheStore.GetIncompleteDays(CacheFolder, startInclusive, endInclusive, cancellationToken);
     }
 
-    public static TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    public static TokenUsageSummary ReadCachedRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal);
+        return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal, cancellationToken);
     }
 
     public static IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal);
+        return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal, cancellationToken);
     }
 
-    public static TokenUsageSummary ReadRange(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday = true)
+    public static void WarmHistoricalDays(
+        IEnumerable<DateTimeOffset> daysLocal,
+        CancellationToken cancellationToken = default,
+        Action<DateTimeOffset>? dayCompleted = null,
+        Action<int, int>? fileProgress = null)
     {
+        HistoricalUsageBatchWarmer.WarmDays(CacheFolder, daysLocal,
+            (start, end, token) => ReadEventsUncached(start, end, token, fileProgress),
+            cancellationToken, dayCompleted);
+    }
+
+    public static TokenUsageSummary ReadRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var summary = new TokenUsageSummary
         {
             StartLocal = startLocal,
@@ -66,6 +98,7 @@ internal static class ZCodeUsageReader
 
         for (var dayStart = StartOfDay(startLocal); dayStart < endLocal; dayStart = dayStart.AddDays(1))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var dayEnd = dayStart.AddDays(1);
             var clippedStart = Max(dayStart, startLocal);
             var clippedEnd = Min(dayEnd, endLocal);
@@ -86,15 +119,16 @@ internal static class ZCodeUsageReader
 
             if (fullHistoricalDay)
             {
-                if (cache.TryGetRecord(date, out var record) && record.IsComplete)
+                if (cache.TryGetRecord(date, out var record) &&
+                    record.IsComplete &&
+                    record.DetailEventCount == record.Events)
                 {
                     continue;
                 }
 
-                var scanStart = cache.TryGetRecord(date, out record) && record.ScannedThroughLocal is not null
-                    ? record.ScannedThroughLocal.Value.AddTicks(1)
-                    : dayStart;
-                AddScanRange(scanRanges, Max(scanStart, clippedStart), dayEnd, cacheHistoricalDays: true);
+                // Invalidated historical records can retain a watermark at the
+                // end of the day. Re-scan the full day to restore completion.
+                AddScanRange(scanRanges, dayStart, dayEnd, cacheHistoricalDays: true);
             }
             else if (liveToday)
             {
@@ -116,7 +150,9 @@ internal static class ZCodeUsageReader
 
         foreach (var scanRange in scanRanges)
         {
-            var scannedEvents = ReadEventsUncached(scanRange.StartLocal, scanRange.EndLocal);
+            cancellationToken.ThrowIfCancellationRequested();
+            var scannedResult = ReadEventsUncached(scanRange.StartLocal, scanRange.EndLocal, cancellationToken);
+            var scannedEvents = scannedResult.Events;
             var scanned = CreateSummaryFromEvents(scanRange.StartLocal, scanRange.EndLocal, scannedEvents);
             foreach (var bucket in scanned.DailyBuckets)
             {
@@ -125,6 +161,7 @@ internal static class ZCodeUsageReader
 
             for (var dayStart = StartOfDay(scanRange.StartLocal); dayStart < scanRange.EndLocal; dayStart = dayStart.AddDays(1))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var date = DateOnly.FromDateTime(dayStart.DateTime);
                 var isToday = dayStart == todayStart;
                 if (!scanRange.CacheHistoricalDays && !isToday)
@@ -134,7 +171,7 @@ internal static class ZCodeUsageReader
 
                 var detailStart = Max(dayStart, scanRange.StartLocal);
                 var detailEnd = Min(dayStart.AddDays(1), scanRange.EndLocal);
-                var existingEvents = cache.GetDetailEvents(date);
+                var existingEvents = cache.GetDetailEvents(date, cancellationToken);
                 var newEvents = scannedEvents
                     .Where(item => item.Timestamp >= detailStart && item.Timestamp < detailEnd)
                     .ToList();
@@ -142,7 +179,7 @@ internal static class ZCodeUsageReader
                     .Concat(newEvents)
                     .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1)));
                 var mergedBucket = CreateBucketFromEvents(dayStart, mergedEvents);
-                var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart;
+                var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart && scannedResult.IsComplete;
                 var scannedThrough = detailEnd.AddTicks(-1);
 
                 if (mergedEvents.Count == 0 && cache.TryGet(date, out var existingBucket))
@@ -155,14 +192,26 @@ internal static class ZCodeUsageReader
                     isComplete,
                     scannedThrough,
                     newEvents,
-                    replaceDetailEvents: existingEvents.Count == 0);
+                    replaceDetailEvents: existingEvents.Count == 0,
+                    cancellationToken: cancellationToken);
+                dailyBuckets[date] = mergedBucket;
                 cacheChanged = true;
             }
         }
 
         if (cacheChanged)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
+            summary = new TokenUsageSummary
+            {
+                StartLocal = startLocal,
+                EndLocal = endLocal
+            };
+            foreach (var bucket in dailyBuckets.Values)
+            {
+                AddBucketValues(summary, bucket);
+            }
         }
 
         summary.DailyBuckets.AddRange(
@@ -176,15 +225,19 @@ internal static class ZCodeUsageReader
     public static IReadOnlyList<TokenUsageBucket> ReadDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        bool includeLiveToday = true)
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var dayStart = StartOfDay(startLocal);
         var date = DateOnly.FromDateTime(dayStart.DateTime);
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var todayStart = StartOfDay(now);
         var dayEnd = dayStart.AddDays(1);
         var cache = UsageCacheStore.Load(CacheFolder);
-        var cachedEvents = cache.GetDetailEvents(date).ToList();
+        var cachedEvents = cache.GetDetailEvents(date, cancellationToken).ToList();
 
         if (dayStart == todayStart && !includeLiveToday)
         {
@@ -193,28 +246,39 @@ internal static class ZCodeUsageReader
 
         if (cache.TryGetRecord(date, out var record) && (cachedEvents.Count > 0 || record.Events == 0))
         {
-            var hasCompleteCoverage = record.IsComplete ||
-                                      record.ScannedThroughLocal is not null &&
-                                      record.ScannedThroughLocal.Value >= endLocal.AddTicks(-1);
+            var hasCompleteDetails = cachedEvents.Count == record.Events;
+            var hasCompleteCoverage = hasCompleteDetails && (record.IsComplete ||
+                                      dayStart >= todayStart && record.ScannedThroughLocal is not null &&
+                                      record.ScannedThroughLocal.Value >= endLocal.AddTicks(-1));
             if (hasCompleteCoverage)
             {
                 return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
             }
 
-            if (includeLiveToday)
+            if (dayStart < todayStart || includeLiveToday)
             {
-                var scanStart = record.ScannedThroughLocal is null
-                    ? startLocal
+                var replaceDetails = !hasCompleteDetails || dayStart < todayStart && !record.IsComplete;
+                var scanStart = replaceDetails || record.ScannedThroughLocal is null
+                    ? replaceDetails ? dayStart : startLocal
                     : Max(startLocal, record.ScannedThroughLocal.Value.AddTicks(1));
-                if (scanStart < endLocal)
+                var scanEnd = dayStart < todayStart ? dayEnd : endLocal;
+                if (scanStart < scanEnd)
                 {
-                    var newEvents = ReadEventsUncached(scanStart, endLocal);
+                    var newEventsResult = ReadEventsUncached(scanStart, scanEnd, cancellationToken);
+                    var newEvents = newEventsResult.Events;
                     var mergedEvents = UsageEventMerger.Merge(cachedEvents
                         .Concat(newEvents)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
                     var mergedBucket = CreateBucketFromEvents(dayStart, mergedEvents);
-                    var isComplete = dayStart < todayStart && endLocal >= dayEnd;
-                    cache.Put(mergedBucket, isComplete, endLocal.AddTicks(-1), newEvents, replaceDetailEvents: false);
+                    var isComplete = dayStart < todayStart && scanEnd >= dayEnd && newEventsResult.IsComplete;
+                    cache.Put(
+                        mergedBucket,
+                        isComplete,
+                        scanEnd.AddTicks(-1),
+                        replaceDetails ? mergedEvents : newEvents,
+                        replaceDetailEvents: replaceDetails,
+                        cancellationToken: cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                     cache.Save();
                     cachedEvents = mergedEvents.ToList();
                 }
@@ -223,12 +287,19 @@ internal static class ZCodeUsageReader
             return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
         }
 
-        var fullEvents = ReadEventsUncached(startLocal, endLocal);
+        var fullEventsResult = ReadEventsUncached(startLocal, endLocal, cancellationToken);
+        var fullEvents = fullEventsResult.Events;
         var fullBucket = CreateBucketFromEvents(dayStart, fullEvents);
-        var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd;
+        var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd && fullEventsResult.IsComplete;
         if (startLocal == dayStart)
         {
-            cache.Put(fullBucket, completeHistoricalDay, endLocal.AddTicks(-1), fullEvents);
+            cache.Put(
+                fullBucket,
+                completeHistoricalDay,
+                endLocal.AddTicks(-1),
+                fullEvents,
+                cancellationToken: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
         }
 
@@ -237,9 +308,13 @@ internal static class ZCodeUsageReader
 
     public static IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal));
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal, cancellationToken).Events);
     }
 
     private static TokenUsageSummary CreateSummaryFromEvents(
@@ -260,6 +335,7 @@ internal static class ZCodeUsageReader
                 usageEvent.Timestamp,
                 usageEvent.InputTokens,
                 usageEvent.CachedInputTokens,
+                usageEvent.CacheWriteInputTokens,
                 usageEvent.OutputTokens,
                 usageEvent.ReasoningOutputTokens,
                 usageEvent.TotalTokens);
@@ -278,6 +354,7 @@ internal static class ZCodeUsageReader
                 usageEvent.Timestamp,
                 usageEvent.InputTokens,
                 usageEvent.CachedInputTokens,
+                usageEvent.CacheWriteInputTokens,
                 usageEvent.OutputTokens,
                 usageEvent.ReasoningOutputTokens,
                 usageEvent.TotalTokens);
@@ -291,19 +368,33 @@ internal static class ZCodeUsageReader
         return summary;
     }
 
-    private static List<TokenUsageEvent> ReadEventsUncached(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private static UsageEventScanResult ReadEventsUncached(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken,
+        Action<int, int>? fileProgress = null)
     {
         var entries = new Dictionary<string, ZCodeUsageEntry>(StringComparer.Ordinal);
+        var isComplete = true;
 
+        var files = new List<string>();
         foreach (var root in GetLogRoots())
         {
-            foreach (var file in EnumerateJsonlFiles(root, startLocal))
+            cancellationToken.ThrowIfCancellationRequested();
+            files.AddRange(EnumerateJsonlFiles(root, startLocal));
+        }
+        fileProgress?.Invoke(0, files.Count);
+        for (var index = 0; index < files.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!ReadFile(files[index], startLocal, endLocal, entries, cancellationToken))
             {
-                ReadFile(file, startLocal, endLocal, entries);
+                isComplete = false;
             }
+            fileProgress?.Invoke(index + 1, files.Count);
         }
 
-        return entries.Values
+        var events = entries.Values
             .OrderBy(item => item.Timestamp)
             .Select(item => new TokenUsageEvent(
                 item.Timestamp,
@@ -312,14 +403,17 @@ internal static class ZCodeUsageReader
                 item.Output,
                 item.Reasoning,
                 item.Total,
-                $"zcode:{item.Key}"))
+                $"zcode:{item.Key}",
+                item.CacheWrite))
             .ToList();
+        return new UsageEventScanResult(events, isComplete);
     }
 
     private static IEnumerable<string> GetLogRoots()
     {
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var cliRoot = Path.Combine(profile, ".zcode", "cli");
+        var cliRoot = UsageLogPaths.GetOverrideRoot(UsageSource.ZCode) ??
+                      Path.Combine(profile, ".zcode", "cli");
         foreach (var name in new[] { "rollout", "debug" })
         {
             var root = Path.Combine(cliRoot, name);
@@ -358,11 +452,12 @@ internal static class ZCodeUsageReader
         }
     }
 
-    private static void ReadFile(
+    private static bool ReadFile(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        Dictionary<string, ZCodeUsageEntry> entries)
+        Dictionary<string, ZCodeUsageEntry> entries,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -370,6 +465,7 @@ internal static class ZCodeUsageReader
             using var reader = new StreamReader(stream);
             while (reader.ReadLine() is { } line)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!line.Contains("\"usage\"", StringComparison.Ordinal))
                 {
                     continue;
@@ -381,17 +477,26 @@ internal static class ZCodeUsageReader
                     continue;
                 }
 
-                if (!entries.TryGetValue(entry.Key, out var existing) ||
+                // A batch must retain the same identity on different days,
+                // just as separate daily scans do.
+                var dayKey = $"{entry.Timestamp:yyyy-MM-dd}|{entry.Key}";
+                if (!entries.TryGetValue(dayKey, out var existing) ||
                     entry.CompletenessScore > existing.CompletenessScore)
                 {
-                    entries[entry.Key] = entry;
+                    entries[dayKey] = entry;
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
-            return;
+            return false;
         }
+
+        return true;
     }
 
     private static ZCodeUsageEntry? TryReadLine(
@@ -439,6 +544,7 @@ internal static class ZCodeUsageReader
 
             var input = GetInt64(usage, "inputTokens");
             var cacheRead = GetInt64(usage, "cacheReadTokens");
+            var cacheWrite = GetInt64(usage, "cacheWriteTokens");
             var output = GetInt64(usage, "outputTokens");
             var reasoning = GetInt64(usage, "reasoningTokens");
             var total = GetInt64(usage, "totalTokens");
@@ -449,7 +555,7 @@ internal static class ZCodeUsageReader
                 return null;
             }
 
-            return new ZCodeUsageEntry(key, timestamp, input, cached, output, reasoning, total);
+            return new ZCodeUsageEntry(key, timestamp, input, cached, cacheWrite, output, reasoning, total);
         }
         catch
         {
@@ -467,6 +573,7 @@ internal static class ZCodeUsageReader
                     item.Timestamp,
                     item.InputTokens,
                     item.CachedInputTokens,
+                    item.CacheWriteInputTokens,
                     item.OutputTokens,
                     item.ReasoningOutputTokens,
                     item.TotalTokens);
@@ -486,6 +593,7 @@ internal static class ZCodeUsageReader
                 item.Timestamp,
                 item.InputTokens,
                 item.CachedInputTokens,
+                item.CacheWriteInputTokens,
                 item.OutputTokens,
                 item.ReasoningOutputTokens,
                 item.TotalTokens);

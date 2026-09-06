@@ -75,10 +75,10 @@ internal static class ResetOpportunityFormatter
 
 internal static class ResetOpportunityStore
 {
-    private const string CacheFolder = "CodexTokenMonitor";
     private const string CreditsEndpoint = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
     private static readonly object SyncRoot = new();
-    private static bool initialized;
+    private static string? initializedPath;
+    private static IReadOnlyList<ResetOpportunityRecord>? cachedRecords;
 
     public static IReadOnlyList<ResetOpportunityRecord> Defaults()
     {
@@ -93,40 +93,59 @@ internal static class ResetOpportunityStore
     public static IReadOnlyList<ResetOpportunityRecord> Load()
     {
         EnsureInitialized();
-        return ReadRecords();
+        lock (SyncRoot)
+        {
+            cachedRecords ??= CloneRecords(ReadRecords());
+            return CloneRecords(cachedRecords);
+        }
     }
 
     public static void Save(IReadOnlyList<ResetOpportunityRecord> records)
     {
         EnsureInitialized();
-        using var connection = OpenConnection();
-        using var transaction = connection.BeginTransaction();
-        using (var deleteCommand = connection.CreateCommand())
-        {
-            deleteCommand.Transaction = transaction;
-            deleteCommand.CommandText = "DELETE FROM reset_opportunities";
-            deleteCommand.ExecuteNonQuery();
-        }
+        var normalizedRecords = records
+            .Where(item => item.ExpiresLocal > item.GrantedLocal)
+            .OrderBy(item => item.GrantedLocal)
+            .Select(item => new ResetOpportunityRecord
+            {
+                Id = string.IsNullOrWhiteSpace(item.Id) ? Guid.NewGuid().ToString("N") : item.Id,
+                GrantedLocal = item.GrantedLocal,
+                ExpiresLocal = item.ExpiresLocal,
+                IsUsed = item.IsUsed,
+                Note = item.Note?.Trim() ?? ""
+            })
+            .ToList();
 
-        foreach (var record in records
-                     .Where(item => item.ExpiresLocal > item.GrantedLocal)
-                     .OrderBy(item => item.GrantedLocal))
+        lock (SyncRoot)
         {
-            using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = """
-                INSERT INTO reset_opportunities (id, granted_local, expires_local, is_used, note)
-                VALUES ($id, $granted_local, $expires_local, $is_used, $note)
-                """;
-            command.Parameters.AddWithValue("$id", string.IsNullOrWhiteSpace(record.Id) ? Guid.NewGuid().ToString("N") : record.Id);
-            command.Parameters.AddWithValue("$granted_local", FormatDateTimeOffset(record.GrantedLocal));
-            command.Parameters.AddWithValue("$expires_local", FormatDateTimeOffset(record.ExpiresLocal));
-            command.Parameters.AddWithValue("$is_used", record.IsUsed ? 1 : 0);
-            command.Parameters.AddWithValue("$note", record.Note.Trim());
-            command.ExecuteNonQuery();
-        }
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            using (var deleteCommand = connection.CreateCommand())
+            {
+                deleteCommand.Transaction = transaction;
+                deleteCommand.CommandText = "DELETE FROM reset_opportunities";
+                deleteCommand.ExecuteNonQuery();
+            }
 
-        transaction.Commit();
+            foreach (var record in normalizedRecords)
+            {
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = """
+                    INSERT INTO reset_opportunities (id, granted_local, expires_local, is_used, note)
+                    VALUES ($id, $granted_local, $expires_local, $is_used, $note)
+                    """;
+                command.Parameters.AddWithValue("$id", record.Id);
+                command.Parameters.AddWithValue("$granted_local", FormatDateTimeOffset(record.GrantedLocal));
+                command.Parameters.AddWithValue("$expires_local", FormatDateTimeOffset(record.ExpiresLocal));
+                command.Parameters.AddWithValue("$is_used", record.IsUsed ? 1 : 0);
+                command.Parameters.AddWithValue("$note", record.Note);
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            cachedRecords = CloneRecords(normalizedRecords);
+        }
     }
 
     public static ResetOpportunitySummary Summarize(DateTimeOffset nowLocal)
@@ -316,7 +335,7 @@ internal static class ResetOpportunityStore
     {
         lock (SyncRoot)
         {
-            if (initialized)
+            if (initializedPath == MonitorSettingsDatabase.Path)
             {
                 return;
             }
@@ -336,7 +355,8 @@ internal static class ResetOpportunityStore
             using var countCommand = connection.CreateCommand();
             countCommand.CommandText = "SELECT COUNT(*) FROM reset_opportunities";
             var count = Convert.ToInt32(countCommand.ExecuteScalar(), CultureInfo.InvariantCulture);
-            initialized = true;
+            initializedPath = MonitorSettingsDatabase.Path;
+            cachedRecords = null;
             if (count == 0)
             {
                 Save(Defaults());
@@ -346,7 +366,7 @@ internal static class ResetOpportunityStore
 
     private static SqliteConnection OpenConnection()
     {
-        var path = UsageCacheStore.GetCachePath(CacheFolder);
+        var path = MonitorSettingsDatabase.Path;
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
@@ -385,5 +405,19 @@ internal static class ResetOpportunityStore
     private static DateTimeOffset ParseDateTimeOffset(string value)
     {
         return DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+    }
+
+    private static IReadOnlyList<ResetOpportunityRecord> CloneRecords(IEnumerable<ResetOpportunityRecord> records)
+    {
+        return records
+            .Select(item => new ResetOpportunityRecord
+            {
+                Id = item.Id,
+                GrantedLocal = item.GrantedLocal,
+                ExpiresLocal = item.ExpiresLocal,
+                IsUsed = item.IsUsed,
+                Note = item.Note
+            })
+            .ToList();
     }
 }

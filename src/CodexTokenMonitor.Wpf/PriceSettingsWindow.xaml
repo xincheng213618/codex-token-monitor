@@ -122,7 +122,7 @@
 
         <StackPanel Grid.Row="0" Margin="2,0,0,14">
             <TextBlock Text="价格设置" FontSize="21" FontWeight="Bold" Foreground="#172334" />
-            <TextBlock Text="每个来源都显示完整价格表；表格顺序就是主界面展示顺序，前 3 项为主价格和优先对比价格。"
+            <TextBlock Text="此处价格用于 API 等价和换模型费用。Codex 订阅额度单独按 Sol $5 / $0.50 / $30 基准折算，不随 API 促销价变化。"
                        Margin="0,5,0,0" Foreground="#576374" />
         </StackPanel>
 
@@ -199,6 +199,7 @@
                         <DataGridTextColumn Header="币种" Binding="{Binding CurrencySymbol}" Width="64" />
                         <DataGridTextColumn Header="未缓存输入" Binding="{Binding UncachedInput, StringFormat={}{0:0.####}}" Width="108" />
                         <DataGridTextColumn Header="缓存输入" Binding="{Binding CachedInput, StringFormat={}{0:0.####}}" Width="100" />
+                        <DataGridTextColumn Header="缓存创建" Binding="{Binding CacheWriteInput, StringFormat={}{0:0.####}}" Width="100" />
                         <DataGridTextColumn Header="输出" Binding="{Binding Output, StringFormat={}{0:0.####}}" Width="90" />
                         <DataGridTextColumn Header="计价单位" Binding="{Binding UnitLabel}" Width="145" />
                         <DataGridTextColumn Header="时段" Binding="{Binding ScheduleLabel}" Width="82" />

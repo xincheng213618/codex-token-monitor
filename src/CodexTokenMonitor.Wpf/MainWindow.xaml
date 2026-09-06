@@ -275,6 +275,9 @@
                             <MenuItem Header="导入其他电脑数据..."
                                       ToolTip="仅合并同一 Codex 账户的数据"
                                       Click="ImportDataButton_Click" />
+                            <MenuItem Header="导出当前明细 CSV..."
+                                      ToolTip="导出当前来源和时间范围的分桶明细、费用与额度快照"
+                                      Click="ExportCurrentCsvButton_Click" />
                             <Separator />
                             <MenuItem Header="仅导出今天数据..."
                                       ToolTip="按北京时间导出今天 00:00 之后的数据"
@@ -287,7 +290,7 @@
                                       Click="ExportDataButton_Click" />
                             <Separator />
                             <MenuItem Header="局域网共享..."
-                                      ToolTip="本机作为服务器，或手动上传、下载并合并本周 Codex 数据"
+                                      ToolTip="两台电脑双向同步最近 8 天的 Codex 模型用量与额度快照"
                                       Click="DataSharingButton_Click" />
                         </ContextMenu>
                     </Button.ContextMenu>
@@ -362,7 +365,14 @@
                                      Margin="0,0,8,0"
                                      Visibility="Collapsed"
                                      ValueChanged="WeekEndPicker_ValueChanged" />
-                <ComboBox x:Name="CycleBox" Width="310" Margin="0,0,8,0" Visibility="Collapsed" SelectionChanged="CycleBox_SelectionChanged" />
+                <ComboBox x:Name="CycleBox" Width="310" Margin="0,0,8,0" Visibility="Collapsed" SelectionChanged="CycleBox_SelectionChanged">
+                    <ComboBox.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="分析所选周期的模型与额度代价"
+                                      Click="AnalyzeSelectedCycleMenuItem_Click" />
+                        </ContextMenu>
+                    </ComboBox.ContextMenu>
+                </ComboBox>
                 <Button x:Name="WeekPickerButton" Style="{StaticResource ToolButton}" Width="74" Content="选7天" Visibility="Collapsed" Click="WeekPickerButton_Click" />
                 <Button x:Name="NextButton" Style="{StaticResource ToolButton}" Width="40" Content="&gt;" Click="NextButton_Click" />
                 <Button x:Name="CurrentButton" Style="{StaticResource ToolButton}" Width="86" Content="今天" Click="CurrentButton_Click" />
@@ -400,12 +410,15 @@
             </Grid>
         </Border>
 
-        <UniformGrid x:Name="UsageMetricsPanel" Grid.Row="4" Columns="4" Rows="2" Height="118" Margin="0,0,0,6">
+        <UniformGrid x:Name="UsageMetricsPanel" Grid.Row="4" Columns="5" Rows="2" Height="118" Margin="0,0,0,6">
             <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Input" /><TextBlock x:Name="InputValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
             <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Cached" /><TextBlock x:Name="CachedValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
+            </Border>
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
+                <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Cache Write" /><TextBlock x:Name="CacheWriteValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
             </Border>
             <Border Style="{StaticResource PanelBorder}" Margin="0,0,8,0">
                 <StackPanel><TextBlock Style="{StaticResource MetricCaption}" Text="Uncached" /><TextBlock x:Name="UncachedValue" Style="{StaticResource MetricValue}" Text="-" /></StackPanel>
@@ -501,6 +514,12 @@
 
         <DockPanel Grid.Row="6" Margin="0,16,0,0" LastChildFill="False">
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="CopySummaryButton"
+                        Style="{StaticResource ToolButton}"
+                        Content="复制摘要"
+                        ToolTip="复制当前来源和时间范围的 token、费用与额度摘要"
+                        IsEnabled="False"
+                        Click="CopySummaryButton_Click" />
                 <CheckBox x:Name="AutoRefreshBox" Content="自动刷新" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" />
                 <TextBlock x:Name="StatusText" Text="准备就绪" Foreground="#576374" VerticalAlignment="Center" />
             </StackPanel>

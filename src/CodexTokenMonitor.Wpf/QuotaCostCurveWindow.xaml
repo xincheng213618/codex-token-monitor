@@ -43,7 +43,7 @@
         <DockPanel Grid.Row="2" Margin="0,12,0,0" LastChildFill="False">
             <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="关闭" Click="CloseButton_Click" />
             <TextBlock DockPanel.Dock="Left" Foreground="#576374" VerticalAlignment="Center"
-                       Text="每条颜色代表一个周期，绿色粗线为当前周期；曲线越陡，表示同样 1% 额度对应的等价费用越少。" />
+                       Text="每种颜色代表一个周期，绿色粗线为当前周期。订阅基准中 Sol 按输入 $5 / 缓存 $0.50 / 输出 $30 每百万 Token 折算，不随 API 降价变化；Fast 另乘倍率，无速度标记默认 1x。折算值用于比较周期，不是官方美元余额。" />
         </DockPanel>
     </Grid>
 </Window>

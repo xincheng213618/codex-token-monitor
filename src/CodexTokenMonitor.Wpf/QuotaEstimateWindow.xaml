@@ -100,7 +100,7 @@
                     <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="Bold" Foreground="#374151" Text="5h" VerticalAlignment="Center" />
                     <TextBlock x:Name="FiveHourPlan" Grid.Row="0" Grid.Column="1" Foreground="#576374" TextAlignment="Right" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                     <TextBlock x:Name="FiveHourValue" Grid.Row="1" Grid.Column="0" FontFamily="Segoe UI" FontSize="32" FontWeight="Bold" Foreground="#1D2837" Text="-" VerticalAlignment="Center" />
-                    <TextBlock x:Name="FiveHourDetail" Grid.Row="1" Grid.Column="1" Foreground="#374151" Text="-" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock x:Name="FiveHourDetail" Grid.Row="1" Grid.Column="1" Foreground="#374151" Text="-" TextWrapping="Wrap" VerticalAlignment="Center" />
                     <TextBlock x:Name="FiveHourStable" Grid.Row="2" Grid.ColumnSpan="2" Foreground="#576374" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                 </Grid>
             </Border>
@@ -119,7 +119,7 @@
                     <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="Bold" Foreground="#374151" Text="7d" VerticalAlignment="Center" />
                     <TextBlock x:Name="WeekPlan" Grid.Row="0" Grid.Column="1" Foreground="#576374" TextAlignment="Right" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                     <TextBlock x:Name="WeekValue" Grid.Row="1" Grid.Column="0" FontFamily="Segoe UI" FontSize="32" FontWeight="Bold" Foreground="#1D2837" Text="-" VerticalAlignment="Center" />
-                    <TextBlock x:Name="WeekDetail" Grid.Row="1" Grid.Column="1" Foreground="#374151" Text="-" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock x:Name="WeekDetail" Grid.Row="1" Grid.Column="1" Foreground="#374151" Text="-" TextWrapping="Wrap" VerticalAlignment="Center" />
                     <TextBlock x:Name="WeekStable" Grid.Row="2" Grid.ColumnSpan="2" Foreground="#576374" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                 </Grid>
             </Border>
@@ -155,9 +155,21 @@
             <ContentControl x:Name="EmbeddedCurveHost" />
         </Border>
 
-        <TextBlock Grid.Row="5" Style="{StaticResource SectionHeader}" Text="历史 7d 周期" />
+        <DockPanel Grid.Row="5" Margin="0,0,0,8">
+            <TextBlock DockPanel.Dock="Right" Foreground="#738195" FontSize="11" VerticalAlignment="Center"
+                       Text="右键周期 → 查看模型、额度代价与波动" />
+            <TextBlock Style="{StaticResource SectionHeader}" Margin="0" Text="历史 7d 周期" />
+        </DockPanel>
 
-        <DataGrid x:Name="WeeklyGrid" Grid.Row="6" SelectionChanged="WeeklyGrid_SelectionChanged">
+        <DataGrid x:Name="WeeklyGrid" Grid.Row="6"
+                  SelectionChanged="WeeklyGrid_SelectionChanged"
+                  PreviewMouseRightButtonDown="WeeklyGrid_PreviewMouseRightButtonDown">
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="分析此周期的模型与额度代价"
+                              Click="AnalyzeCycleMenuItem_Click" />
+                </ContextMenu>
+            </DataGrid.ContextMenu>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="周期" Binding="{Binding Period}" Width="230" />
                 <DataGridTextColumn Header="历时" Binding="{Binding Duration}" Width="106" />
@@ -168,8 +180,19 @@
                 <DataGridTextColumn Header="应%" Binding="{Binding ExpectedPercent}" Width="62" />
                 <DataGridTextColumn Header="节奏" Binding="{Binding Rhythm}" Width="126" />
                 <DataGridTextColumn Header="Tokens" Binding="{Binding Tokens}" Width="108" />
-                <DataGridTextColumn Header="已用 $" Binding="{Binding UsedCost}" Width="82" />
-                <DataGridTextColumn Header="100% $" Binding="{Binding EstimatedLimit}" Width="82" />
+                <DataGridTextColumn Header="订阅折算 $（含 Fast）" Binding="{Binding UsedCost}" Width="180">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding CostDetail}" /></Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="已识别 Fast" Binding="{Binding FastCount}" Width="90">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="ToolTip" Value="{Binding CostDetail}" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="订阅折算 100% $" Binding="{Binding EstimatedLimit}" Width="116" />
                 <DataGridTextColumn Header="套餐" Binding="{Binding PlanNames}" Width="96" />
                 <DataGridTextColumn Header="实际 ¥" Binding="{Binding PlanAmount}" Width="84" />
             </DataGrid.Columns>

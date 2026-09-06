@@ -6,6 +6,7 @@ internal sealed class CodexDataSharingSettings
 {
     public const int DefaultPort = 36666;
     public int Port { get; set; } = DefaultPort;
+    public bool AutoStart { get; set; } = true;
     public string AccessKey { get; set; } = CreateAccessKey();
     public string ServerAddress { get; set; } = "";
     public string ServerAccessKey { get; set; } = "";

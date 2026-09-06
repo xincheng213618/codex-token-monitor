@@ -4,7 +4,29 @@ namespace CodexTokenMonitor.Tests;
 
 public sealed class CodexAppServerQuotaReaderTests
 {
+    [Theory]
+    [InlineData("{\"result\":{\"account\":{\"type\":\"chatgpt\",\"planType\":\"pro\"}}}", "pro")]
+    [InlineData("{\"result\":{\"account\":{\"type\":\"chatgpt\",\"planType\":\"plus\"}}}", "plus")]
+    [InlineData("{\"result\":{\"account\":{\"type\":\"apiKey\"}}}", null)]
+    [InlineData("{\"result\":{\"account\":null}}", null)]
+    [InlineData("{\"error\":{\"message\":\"unavailable\"}}", null)]
+    [InlineData("invalid", null)]
+    public void AccountPlanDoesNotInventBillingAmountOrProMultiplier(string json, string? expected)
+    {
+        Assert.Equal(expected, CodexAppServerQuotaReader.ParsePlanTypeResponse(json));
+    }
+
     private static readonly TimeSpan Beijing = TimeSpan.FromHours(8);
+
+    [Fact]
+    public void ReadCurrent_ThrowsImmediatelyWhenCancelled()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() =>
+            CodexAppServerQuotaReader.ReadCurrent(cancellation.Token));
+    }
 
     [Fact]
     public void ParseRateLimitsResponse_ReadsWeeklyOnlyPrimaryWindow()
@@ -61,5 +83,16 @@ public sealed class CodexAppServerQuotaReaderTests
         Assert.Null(CodexAppServerQuotaReader.ParseRateLimitsResponse(
             "{\"id\":2,\"result\":{\"rateLimits\":{\"limitId\":\"codex_bengalfox\",\"primary\":{\"usedPercent\":3,\"windowDurationMins\":10080}}}}",
             snapshotTime));
+    }
+
+    [Fact]
+    public void ParseRateLimitsResponse_RejectsImpossiblePercentages()
+    {
+        var snapshotTime = new DateTimeOffset(2026, 7, 19, 13, 0, 0, Beijing);
+        var response = """
+            {"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":101,"windowDurationMins":10080}}}}
+            """;
+
+        Assert.Null(CodexAppServerQuotaReader.ParseRateLimitsResponse(response, snapshotTime));
     }
 }

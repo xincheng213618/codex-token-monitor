@@ -12,21 +12,33 @@ internal sealed class LiveFileTailReader
     private readonly ConcurrentDictionary<string, FileCursor> cursors =
         new(StringComparer.OrdinalIgnoreCase);
 
-    public void ReadNewLines(string file, DateTimeOffset coverageStart, Action<string> consumeLine)
+    public bool ReadNewLines(
+        string file,
+        DateTimeOffset coverageStart,
+        Action<string> consumeLine,
+        CancellationToken cancellationToken = default)
     {
-        ReadNewLinesWhile(file, coverageStart, line =>
+        return ReadNewLinesWhile(file, coverageStart, line =>
         {
             consumeLine(line);
             return true;
-        });
+        }, cancellationToken);
     }
 
     /// <summary>
     /// Reads appended complete lines until <paramref name="consumeLine"/> rejects one.
     /// A rejected line is deliberately left uncommitted so a later pass can retry it.
+    /// Returns false when the file could not be opened/read or ended with an
+    /// uncommitted partial line; a deliberate consumer stop is considered successful.
     /// </summary>
-    public void ReadNewLinesWhile(string file, DateTimeOffset coverageStart, Func<string, bool> consumeLine)
+    public bool ReadNewLinesWhile(
+        string file,
+        DateTimeOffset coverageStart,
+        Func<string, bool> consumeLine,
+        CancellationToken cancellationToken = default,
+        Action? onRestart = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var cursor = cursors.GetOrAdd(file, static _ => new FileCursor());
         lock (cursor.SyncRoot)
         {
@@ -35,17 +47,20 @@ internal sealed class LiveFileTailReader
                 using var stream = OpenStream(file, coverageStart, cursor);
                 if (stream is null)
                 {
-                    return;
+                    return true;
                 }
 
+                if (stream.Position == 0) onRestart?.Invoke();
                 var committedOffset = cursor.Offset;
                 using var lineBuffer = new MemoryStream();
                 var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+                var hasPartialLine = false;
                 try
                 {
                     var stopped = false;
                     while (!stopped)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var bytesRead = stream.Read(buffer, 0, buffer.Length);
                         if (bytesRead == 0)
                         {
@@ -56,6 +71,7 @@ internal sealed class LiveFileTailReader
                         var segmentStart = 0;
                         for (var index = 0; index < bytesRead; index++)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
                             if (buffer[index] != (byte)'\n')
                             {
                                 continue;
@@ -89,6 +105,8 @@ internal sealed class LiveFileTailReader
                             lineBuffer.Write(buffer, segmentStart, bytesRead - segmentStart);
                         }
                     }
+
+                    hasPartialLine = !stopped && lineBuffer.Length > 0;
                 }
                 finally
                 {
@@ -96,10 +114,16 @@ internal sealed class LiveFileTailReader
                 }
 
                 Commit(stream, cursor, committedOffset);
+                return !hasPartialLine;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch
             {
                 // Active files can be moved or replaced between enumeration and open.
+                return false;
             }
         }
     }
@@ -107,6 +131,42 @@ internal sealed class LiveFileTailReader
     public bool IsTracked(string file)
     {
         return cursors.ContainsKey(file);
+    }
+
+    /// <summary>
+    /// Drops cursor state for files that are no longer present or are outside the
+    /// caller's live look-back window. This only removes in-memory state; it never
+    /// deletes or changes a log file.
+    /// </summary>
+    public int PruneBeforeUtc(DateTime cutoffUtc)
+    {
+        var removed = 0;
+        foreach (var pair in cursors)
+        {
+            lock (pair.Value.SyncRoot)
+            {
+                bool shouldRemove;
+                try
+                {
+                    var info = new FileInfo(pair.Key);
+                    shouldRemove = !info.Exists || info.LastWriteTimeUtc < cutoffUtc;
+                }
+                catch
+                {
+                    // Keep state when metadata cannot be inspected; a transient
+                    // filesystem error must not make the next read replay a file.
+                    continue;
+                }
+
+                if (shouldRemove &&
+                    ((ICollection<KeyValuePair<string, FileCursor>>)cursors).Remove(pair))
+                {
+                    removed++;
+                }
+            }
+        }
+
+        return removed;
     }
 
     public void Prime(string file, DateTimeOffset coverageStart)

@@ -11,10 +11,11 @@ using Microsoft.Extensions.Logging;
 
 namespace CodexTokenMonitor;
 
-/// <summary>A manually started, passive HTTP endpoint for the existing transfer packages.</summary>
+/// <summary>A passive HTTP endpoint whose lifetime is owned by the desktop app.</summary>
 internal sealed class CodexDataSharingServer(
     Func<string, CancellationToken, Task<CodexDataExportResult>> exportWeek,
-    Func<string, CancellationToken, Task<CodexDataImportResult>> importWeek) : IAsyncDisposable
+    Func<string, CancellationToken, Task<CodexDataImportResult>> importWeek,
+    CodexHistorySharingStore? historyStore = null) : IAsyncDisposable
 {
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private readonly SemaphoreSlim transferGate = new(1, 1);
@@ -132,21 +133,24 @@ internal sealed class CodexDataSharingServer(
         if (context.Request.Path == "/api/health" && HttpMethods.IsGet(context.Request.Method))
         {
             await context.Response.WriteAsJsonAsync(new CodexDataSharingPeer(
-                CodexDataSharingProtocol.Format, 1, Environment.MachineName), context.RequestAborted);
+                CodexDataSharingProtocol.Format, CodexDataSharingProtocol.Version, Environment.MachineName,
+                historyStore is not null), context.RequestAborted);
             return;
         }
 
-        if (context.Request.Path != "/api/week")
+        var historyDates = context.Request.Path == "/api/history/dates" && historyStore is not null;
+        var history = context.Request.Path == "/api/history" && historyStore is not null;
+        if (context.Request.Path != "/api/week" && !history && !historyDates)
         {
             await WriteErrorAsync(context, 404, "未找到共享接口。");
             return;
         }
 
         var upload = HttpMethods.IsPost(context.Request.Method);
-        if (!upload && !HttpMethods.IsGet(context.Request.Method))
+        if ((!upload && !HttpMethods.IsGet(context.Request.Method)) || (historyDates && upload))
         {
             context.Response.Headers.Allow = "GET, POST";
-            await WriteErrorAsync(context, 405, "只支持上传或下载本周数据。");
+            await WriteErrorAsync(context, 405, "不支持此请求方法。");
             return;
         }
 
@@ -167,6 +171,22 @@ internal sealed class CodexDataSharingServer(
         using var temporary = new CodexSharingTemporaryFile();
         try
         {
+            if (historyDates)
+            {
+                await context.Response.WriteAsJsonAsync(await historyStore!.GetDatesAsync(timeout.Token), timeout.Token);
+                return;
+            }
+            CodexHistoryRange? historyRange = null;
+            if (history)
+            {
+                if (!DateOnly.TryParseExact(context.Request.Query["start"], "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                        DateTimeStyles.None, out var start) ||
+                    !DateOnly.TryParseExact(context.Request.Query["end"], "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                        DateTimeStyles.None, out var end))
+                    throw new InvalidDataException("请提供有效的历史同步日期范围。");
+                historyRange = new(start, end);
+                historyRange.Validate();
+            }
             if (upload)
             {
                 CodexDataSharingProtocol.CheckPackageSize(context.Request.ContentLength ?? 0);
@@ -175,18 +195,22 @@ internal sealed class CodexDataSharingServer(
                     await CodexDataSharingProtocol.CopyPackageAsync(context.Request.Body, stream, timeout.Token);
                 }
 
-                var result = await importWeek(temporary.FilePath, timeout.Token);
+                var result = historyRange is null
+                    ? await importWeek(temporary.FilePath, timeout.Token)
+                    : await historyStore!.ImportAsync(temporary.FilePath, historyRange, timeout.Token);
                 NotifyActivity($"收到上传：新增 {result.AddedUsageEventCount:N0} 条用量、{result.AddedQuotaSnapshotCount:N0} 条额度快照");
                 await context.Response.WriteAsJsonAsync(result, timeout.Token);
             }
             else
             {
-                var result = await exportWeek(temporary.FilePath, timeout.Token);
+                var result = historyRange is null
+                    ? await exportWeek(temporary.FilePath, timeout.Token)
+                    : await historyStore!.ExportAsync(temporary.FilePath, historyRange, timeout.Token);
                 await using var stream = File.OpenRead(temporary.FilePath);
                 CodexDataSharingProtocol.CheckPackageSize(stream.Length);
                 context.Response.ContentType = "application/json; charset=utf-8";
                 context.Response.ContentLength = stream.Length;
-                context.Response.Headers.ContentDisposition = "attachment; filename=codex-this-week.codex.json";
+                context.Response.Headers.ContentDisposition = "attachment; filename=codex-usage.codex.json";
                 await stream.CopyToAsync(context.Response.Body, timeout.Token);
                 NotifyActivity($"完成下载：{result.UsageEventCount:N0} 条用量、{result.QuotaSnapshotCount:N0} 条额度快照");
             }

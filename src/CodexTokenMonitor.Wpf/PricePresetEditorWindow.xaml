@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:ClassModifier="internal"
         Width="620"
-        Height="590"
+        Height="680"
         MinWidth="560"
-        MinHeight="540"
+        MinHeight="610"
         ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterOwner"
         Background="#F6F8FB"
@@ -48,7 +48,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
             <TextBlock x:Name="HeadingText" FontSize="19" FontWeight="Bold" Foreground="#172334" />
-            <TextBlock Text="价格按每百万 token 或每 token 填写；缓存输入按 prompt cache read 价格填写。"
+            <TextBlock Text="缓存输入是 cache read；缓存创建是 cache write，留空时按未缓存输入价计算。"
                        Margin="0,5,0,0" Foreground="#667387" TextWrapping="Wrap" />
         </StackPanel>
 
@@ -67,8 +67,12 @@
                     <RowDefinition Height="*" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
+                <TextBlock Grid.Row="9" Style="{StaticResource FieldLabel}" Text="模型 ID（可选）" />
+                <TextBox x:Name="ModelIdBox" Grid.Row="9" Grid.Column="1" ToolTip="日志中的模型 ID，如 gpt-5.6-sol；留空时自动匹配模型名称。" />
                 <TextBlock Grid.Row="0" Style="{StaticResource FieldLabel}" Text="供应商" />
                 <TextBox x:Name="ProviderBox" Grid.Row="0" Grid.Column="1" />
                 <TextBlock Grid.Row="1" Style="{StaticResource FieldLabel}" Text="模型名称 *" />
@@ -81,10 +85,12 @@
                 <TextBox x:Name="InputBox" Grid.Row="4" Grid.Column="1" HorizontalContentAlignment="Right" />
                 <TextBlock Grid.Row="5" Style="{StaticResource FieldLabel}" Text="缓存输入" />
                 <TextBox x:Name="CachedBox" Grid.Row="5" Grid.Column="1" HorizontalContentAlignment="Right" />
-                <TextBlock Grid.Row="6" Style="{StaticResource FieldLabel}" Text="输出" />
-                <TextBox x:Name="OutputBox" Grid.Row="6" Grid.Column="1" HorizontalContentAlignment="Right" />
-                <TextBlock Grid.Row="7" Style="{StaticResource FieldLabel}" Text="价格来源" />
-                <TextBox x:Name="SourceBox" Grid.Row="7" Grid.Column="1" />
+                <TextBlock Grid.Row="6" Style="{StaticResource FieldLabel}" Text="缓存创建" />
+                <TextBox x:Name="CacheWriteBox" Grid.Row="6" Grid.Column="1" HorizontalContentAlignment="Right" />
+                <TextBlock Grid.Row="7" Style="{StaticResource FieldLabel}" Text="输出" />
+                <TextBox x:Name="OutputBox" Grid.Row="7" Grid.Column="1" HorizontalContentAlignment="Right" />
+                <TextBlock Grid.Row="8" Style="{StaticResource FieldLabel}" Text="价格来源" />
+                <TextBox x:Name="SourceBox" Grid.Row="8" Grid.Column="1" />
             </Grid>
         </Border>
 

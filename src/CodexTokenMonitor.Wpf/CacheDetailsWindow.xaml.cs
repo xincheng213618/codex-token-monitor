@@ -11,6 +11,7 @@ public partial class CacheDetailsWindow : Window
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private CacheWarmStatus status;
     private string lastActivityItem = "";
+    private bool isClosed;
 
     internal CacheDetailsWindow(BackgroundCacheWarmer warmer)
     {
@@ -24,6 +25,7 @@ public partial class CacheDetailsWindow : Window
         ApplyStatus(status);
         Closed += (_, _) =>
         {
+            isClosed = true;
             timer.Stop();
             timer.Tick -= Timer_Tick;
             warmer.StatusChanged -= Warmer_StatusChanged;
@@ -36,9 +38,20 @@ public partial class CacheDetailsWindow : Window
 
     private void Warmer_StatusChanged(CacheWarmStatus next)
     {
+        if (isClosed)
+        {
+            return;
+        }
+
         if (!Dispatcher.CheckAccess())
         {
-            _ = Dispatcher.BeginInvoke(() => Warmer_StatusChanged(next));
+            _ = Dispatcher.BeginInvoke(() =>
+            {
+                if (!isClosed)
+                {
+                    Warmer_StatusChanged(next);
+                }
+            });
             return;
         }
 
@@ -92,7 +105,7 @@ public partial class CacheDetailsWindow : Window
 
     private void UpdateRuntimeDetails()
     {
-        var now = DateTimeOffset.Now;
+        var now = BeijingClock.Now;
         var totalElapsed = status.StartedAt is null ? TimeSpan.Zero : now - status.StartedAt.Value;
         var itemElapsed = status.CurrentItemStartedAt is null ? TimeSpan.Zero : now - status.CurrentItemStartedAt.Value;
         TimingText.Text = $"本轮 {FormatDuration(totalElapsed)} · 当前任务 {FormatDuration(itemElapsed)} · 最近更新 {status.UpdatedAt:HH:mm:ss}";

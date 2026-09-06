@@ -13,7 +13,7 @@ public sealed class CodexDataTransferServiceTests
         var targetFolder = $"CodexTransferTarget-{Guid.NewGuid():N}";
         var transferPath = Path.Combine(Path.GetTempPath(), $"codex-transfer-{Guid.NewGuid():N}.json");
         var dayStart = new DateTimeOffset(2026, 7, 18, 0, 0, 0, Beijing);
-        var firstEvent = new TokenUsageEvent(dayStart.AddHours(9), 100, 60, 10, 2, 110, "codex:turn-1");
+        var firstEvent = new TokenUsageEvent(dayStart.AddHours(9), 100, 60, 10, 2, 110, "codex:turn-1", 10);
         var secondEvent = new TokenUsageEvent(dayStart.AddHours(10), 200, 120, 20, 4, 220, "codex:turn-2");
         var quota = new CodexQuotaSnapshot(
             dayStart.AddHours(10),
@@ -34,6 +34,7 @@ public sealed class CodexDataTransferServiceTests
                     item.Timestamp,
                     item.InputTokens,
                     item.CachedInputTokens,
+                    item.CacheWriteInputTokens,
                     item.OutputTokens,
                     item.ReasoningOutputTokens,
                     item.TotalTokens);
@@ -45,6 +46,10 @@ public sealed class CodexDataTransferServiceTests
                 new[] { quota },
                 isComplete: true,
                 scannedThroughLocal: dayStart.AddDays(1).AddTicks(-1));
+
+            Assert.Equal(
+                QuotaSnapshotCacheStore.Load(sourceFolder).GetAllSnapshots(),
+                QuotaSnapshotCacheStore.Load(sourceFolder).EnumerateSnapshots(null, null).ToList());
 
             var exported = CodexDataTransferService.Export(
                 transferPath,
@@ -69,6 +74,7 @@ public sealed class CodexDataTransferServiceTests
             Assert.Equal(2, importedUsage.Events);
             Assert.Equal(300, importedUsage.InputTokens);
             Assert.Equal(180, importedUsage.CachedInputTokens);
+            Assert.Equal(10, importedUsage.CacheWriteInputTokens);
             Assert.Equal(2m, Assert.Single(importedQuota).WeekUsedPercent);
 
             var date = DateOnly.FromDateTime(dayStart.DateTime);
@@ -130,6 +136,149 @@ public sealed class CodexDataTransferServiceTests
                 {
                     File.Delete(path);
                 }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Import_ParallelPackagesPreservesCombinedDayAggregates()
+    {
+        var sourceFolderA = $"CodexTransferParallelSourceA-{Guid.NewGuid():N}";
+        var sourceFolderB = $"CodexTransferParallelSourceB-{Guid.NewGuid():N}";
+        var targetFolder = $"CodexTransferParallelTarget-{Guid.NewGuid():N}";
+        var packageA = Path.Combine(Path.GetTempPath(), $"codex-parallel-a-{Guid.NewGuid():N}.codex.json");
+        var packageB = Path.Combine(Path.GetTempPath(), $"codex-parallel-b-{Guid.NewGuid():N}.codex.json");
+        var dayStart = new DateTimeOffset(2026, 7, 21, 0, 0, 0, Beijing);
+        var eventA = new TokenUsageEvent(dayStart.AddHours(9), 100, 60, 10, 2, 110, "codex:parallel-a");
+        var eventB = new TokenUsageEvent(dayStart.AddHours(10), 200, 120, 20, 4, 220, "codex:parallel-b");
+        var quotaA = CreateQuota(dayStart.AddHours(9), 20m);
+        var quotaB = CreateQuota(dayStart.AddHours(10), 21m);
+
+        try
+        {
+            PutEvents(sourceFolderA, dayStart, eventA);
+            PutEvents(sourceFolderB, dayStart, eventB);
+            PutQuotaSnapshots(sourceFolderA, dayStart, quotaA);
+            PutQuotaSnapshots(sourceFolderB, dayStart, quotaB);
+            CodexDataTransferService.Export(packageA, sourceFolderA, "parallel-a", "Laptop A", dayStart.AddDays(1));
+            CodexDataTransferService.Export(packageB, sourceFolderB, "parallel-b", "Laptop B", dayStart.AddDays(1));
+
+            await Task.WhenAll(
+                Task.Run(() => CodexDataTransferService.Import(new[] { packageA }, targetFolder)),
+                Task.Run(() => CodexDataTransferService.Import(new[] { packageB }, targetFolder)));
+
+            var usage = UsageCacheStore.Load(targetFolder).ReadRange(dayStart, dayStart.AddDays(1));
+            var quotas = QuotaSnapshotCacheStore.Load(targetFolder).GetSnapshots(dayStart, dayStart.AddDays(1));
+            Assert.Equal(2, usage.Events);
+            Assert.Equal(300, usage.InputTokens);
+            Assert.Equal(2, quotas.Count);
+        }
+        finally
+        {
+            UsageCacheStore.Delete(sourceFolderA);
+            UsageCacheStore.Delete(sourceFolderB);
+            UsageCacheStore.Delete(targetFolder);
+            foreach (var path in new[] { packageA, packageB })
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void Import_RejectsCachedInputGreaterThanInput()
+    {
+        var targetFolder = $"CodexTransferTarget-{Guid.NewGuid():N}";
+        var invalidPath = Path.Combine(Path.GetTempPath(), $"codex-invalid-{Guid.NewGuid():N}.codex.json");
+
+        try
+        {
+            File.WriteAllText(
+                invalidPath,
+                """
+                {
+                  "format": "codex-token-monitor-transfer",
+                  "version": 2,
+                  "packageId": "invalid",
+                  "sourceDeviceId": "device-a",
+                  "sourceDeviceName": "Laptop A",
+                  "exportedAtLocal": "2026-07-18T09:00:00.0000000+08:00",
+                  "usageEvents": [
+                    {
+                      "key": "codex:bad",
+                      "timestampLocal": "2026-07-18T09:00:00.0000000+08:00",
+                      "inputTokens": 10,
+                      "cachedInputTokens": 11,
+                      "outputTokens": 1,
+                      "reasoningOutputTokens": 0,
+                      "totalTokens": 11
+                    }
+                  ],
+                  "quotaSnapshots": []
+                }
+                """);
+
+            Assert.Throws<InvalidDataException>(() =>
+                CodexDataTransferService.Import(new[] { invalidPath }, targetFolder));
+            Assert.Empty(UsageCacheStore.Load(targetFolder).GetAllDetailEvents());
+        }
+        finally
+        {
+            UsageCacheStore.Delete(targetFolder);
+            if (File.Exists(invalidPath))
+            {
+                File.Delete(invalidPath);
+            }
+        }
+    }
+
+    [Fact]
+    public void Import_RejectsQuotaSnapshotWithoutUsableWindow()
+    {
+        var targetFolder = $"CodexTransferTarget-{Guid.NewGuid():N}";
+        var invalidPath = Path.Combine(Path.GetTempPath(), $"codex-invalid-quota-{Guid.NewGuid():N}.codex.json");
+
+        try
+        {
+            File.WriteAllText(
+                invalidPath,
+                """
+                {
+                  "format": "codex-token-monitor-transfer",
+                  "version": 2,
+                  "packageId": "invalid-quota",
+                  "sourceDeviceId": "device-a",
+                  "sourceDeviceName": "Laptop A",
+                  "exportedAtLocal": "2026-07-18T09:00:00.0000000+08:00",
+                  "usageEvents": [],
+                  "quotaSnapshots": [
+                    {
+                      "snapshotLocal": "2026-07-18T09:00:00.0000000+08:00",
+                      "limitId": "codex",
+                      "limitName": "Codex",
+                      "fiveHourUsedPercent": null,
+                      "fiveHourResetAtLocal": null,
+                      "weekUsedPercent": null,
+                      "weekResetAtLocal": null,
+                      "isAnomaly": false
+                    }
+                  ]
+                }
+                """);
+
+            Assert.Throws<InvalidDataException>(() =>
+                CodexDataTransferService.Import(new[] { invalidPath }, targetFolder));
+            Assert.Empty(QuotaSnapshotCacheStore.Load(targetFolder).GetAllSnapshots());
+        }
+        finally
+        {
+            UsageCacheStore.Delete(targetFolder);
+            if (File.Exists(invalidPath))
+            {
+                File.Delete(invalidPath);
             }
         }
     }

@@ -20,15 +20,44 @@ internal interface IUsageSourceReader
     bool SupportsQuota { get; }
 
     bool ClearCache();
-    bool RefreshCachedDay(DateOnly date);
-    IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(DateTimeOffset startInclusive, DateTimeOffset endInclusive);
-    TokenUsageSummary ReadRange(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday);
-    TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal);
-    IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal);
-    IReadOnlyList<TokenUsageBucket> ReadDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday);
-    IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal);
-    DailyUsageSnapshot ReadDay(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday);
-    void WarmHistoricalDay(DateTimeOffset dayStart);
+    bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default);
+    IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
+        DateTimeOffset startInclusive,
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default);
+    TokenUsageSummary ReadRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        bool includeLiveToday,
+        CancellationToken cancellationToken = default);
+    TokenUsageSummary ReadCachedRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default);
+    IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default);
+    IReadOnlyList<TokenUsageBucket> ReadDetailRows(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        bool includeLiveToday,
+        CancellationToken cancellationToken = default);
+    IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default);
+    DailyUsageSnapshot ReadDay(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        bool includeLiveToday,
+        CancellationToken cancellationToken = default);
+    void WarmHistoricalDay(DateTimeOffset dayStart, CancellationToken cancellationToken = default);
+    void WarmHistoricalDays(
+        IEnumerable<DateTimeOffset> daysLocal,
+        CancellationToken cancellationToken = default,
+        Action<DateTimeOffset>? dayCompleted = null,
+        Action<int, int>? fileProgress = null);
 }
 
 internal static class UsageSourceReaders
@@ -71,71 +100,98 @@ internal static class UsageSourceReaders
             return CodexUsageReader.ClearCache();
         }
 
-        public bool RefreshCachedDay(DateOnly date)
+        public bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var deleted = CodexUsageReader.ClearCachedDay(date);
             var dayStart = StartOfDay(date);
-            _ = CodexUsageReader.ReadDetailRows(dayStart, EndForRefresh(dayStart), includeLiveToday: true);
-            CodexUsageReader.WarmQuotaSnapshotDay(dayStart);
-            CodexUsageReader.WarmQuotaTimelineDay(dayStart);
+            _ = CodexUsageReader.ReadDetailRows(
+                dayStart,
+                EndForRefresh(dayStart),
+                includeLiveToday: true,
+                cancellationToken: cancellationToken);
+            CodexUsageReader.WarmQuotaSnapshotDay(dayStart, cancellationToken);
+            CodexUsageReader.WarmQuotaTimelineDay(dayStart, cancellationToken);
             return deleted;
         }
 
         public IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
             DateTimeOffset startInclusive,
-            DateTimeOffset endInclusive)
+            DateTimeOffset endInclusive,
+            CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive);
+            return CodexUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive, cancellationToken);
         }
 
         public TokenUsageSummary ReadRange(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadRange(startLocal, endLocal, includeLiveToday);
+            return CodexUsageReader.ReadRange(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public TokenUsageSummary ReadCachedRange(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadCachedRange(startLocal, endLocal);
+            return CodexUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+            return CodexUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
         }
 
         public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday);
+            return CodexUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadTransientDetailRows(startLocal, endLocal);
+            return CodexUsageReader.ReadTransientDetailRows(startLocal, endLocal, cancellationToken);
         }
 
-        public DailyUsageSnapshot ReadDay(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday)
+        public DailyUsageSnapshot ReadDay(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
             var rows = includeLiveToday
-                ? CodexUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday)
-                : CodexUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+                ? CodexUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken)
+                : CodexUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
             var summary = includeLiveToday
                 ? CreateSummaryFromRows(startLocal, endLocal, rows)
-                : CodexUsageReader.ReadCachedRange(startLocal, endLocal);
+                : CodexUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
             return new DailyUsageSnapshot(summary, rows);
         }
 
-        public void WarmHistoricalDay(DateTimeOffset dayStart)
+        public void WarmHistoricalDay(DateTimeOffset dayStart, CancellationToken cancellationToken = default)
         {
-            var dayEnd = dayStart.AddDays(1);
-            _ = CodexUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
-            _ = CodexUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
-            CodexUsageReader.WarmQuotaTimelineDay(dayStart);
+            WarmHistoricalDays(new[] { dayStart }, cancellationToken);
+        }
+
+        public void WarmHistoricalDays(
+            IEnumerable<DateTimeOffset> daysLocal,
+            CancellationToken cancellationToken = default,
+            Action<DateTimeOffset>? dayCompleted = null,
+            Action<int, int>? fileProgress = null)
+        {
+            CodexUsageReader.WarmHistoricalDays(daysLocal, cancellationToken, dayCompleted, fileProgress);
         }
     }
 
@@ -150,68 +206,96 @@ internal static class UsageSourceReaders
             return ClaudeUsageReader.ClearCache();
         }
 
-        public bool RefreshCachedDay(DateOnly date)
+        public bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var deleted = ClaudeUsageReader.ClearCachedDay(date);
             var dayStart = StartOfDay(date);
-            _ = ClaudeUsageReader.ReadDetailRows(dayStart, EndForRefresh(dayStart), includeLiveToday: true);
+            _ = ClaudeUsageReader.ReadDetailRows(
+                dayStart,
+                EndForRefresh(dayStart),
+                includeLiveToday: true,
+                cancellationToken: cancellationToken);
             return deleted;
         }
 
         public IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
             DateTimeOffset startInclusive,
-            DateTimeOffset endInclusive)
+            DateTimeOffset endInclusive,
+            CancellationToken cancellationToken = default)
         {
-            return ClaudeUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive);
+            return ClaudeUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive, cancellationToken);
         }
 
         public TokenUsageSummary ReadRange(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return ClaudeUsageReader.ReadRange(startLocal, endLocal, includeLiveToday);
+            return ClaudeUsageReader.ReadRange(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public TokenUsageSummary ReadCachedRange(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return ClaudeUsageReader.ReadCachedRange(startLocal, endLocal);
+            return ClaudeUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return ClaudeUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+            return ClaudeUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
         }
 
         public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return ClaudeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday);
+            return ClaudeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return ClaudeUsageReader.ReadTransientDetailRows(startLocal, endLocal);
+            return ClaudeUsageReader.ReadTransientDetailRows(startLocal, endLocal, cancellationToken);
         }
 
-        public DailyUsageSnapshot ReadDay(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday)
+        public DailyUsageSnapshot ReadDay(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
             var rows = includeLiveToday
-                ? ClaudeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday)
-                : ClaudeUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+                ? ClaudeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken)
+                : ClaudeUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
             var summary = includeLiveToday
                 ? CreateSummaryFromRows(startLocal, endLocal, rows)
-                : ClaudeUsageReader.ReadCachedRange(startLocal, endLocal);
+                : ClaudeUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
             return new DailyUsageSnapshot(summary, rows);
         }
 
-        public void WarmHistoricalDay(DateTimeOffset dayStart)
+        public void WarmHistoricalDay(DateTimeOffset dayStart, CancellationToken cancellationToken = default)
         {
-            var dayEnd = dayStart.AddDays(1);
-            _ = ClaudeUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
-            _ = ClaudeUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
+            WarmHistoricalDays(new[] { dayStart }, cancellationToken);
+        }
+
+        public void WarmHistoricalDays(
+            IEnumerable<DateTimeOffset> daysLocal,
+            CancellationToken cancellationToken = default,
+            Action<DateTimeOffset>? dayCompleted = null,
+            Action<int, int>? fileProgress = null)
+        {
+            ClaudeUsageReader.WarmHistoricalDays(daysLocal, cancellationToken, dayCompleted, fileProgress);
         }
     }
 
@@ -226,68 +310,96 @@ internal static class UsageSourceReaders
             return ZCodeUsageReader.ClearCache();
         }
 
-        public bool RefreshCachedDay(DateOnly date)
+        public bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var deleted = ZCodeUsageReader.ClearCachedDay(date);
             var dayStart = StartOfDay(date);
-            _ = ZCodeUsageReader.ReadDetailRows(dayStart, EndForRefresh(dayStart), includeLiveToday: true);
+            _ = ZCodeUsageReader.ReadDetailRows(
+                dayStart,
+                EndForRefresh(dayStart),
+                includeLiveToday: true,
+                cancellationToken: cancellationToken);
             return deleted;
         }
 
         public IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
             DateTimeOffset startInclusive,
-            DateTimeOffset endInclusive)
+            DateTimeOffset endInclusive,
+            CancellationToken cancellationToken = default)
         {
-            return ZCodeUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive);
+            return ZCodeUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive, cancellationToken);
         }
 
         public TokenUsageSummary ReadRange(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return ZCodeUsageReader.ReadRange(startLocal, endLocal, includeLiveToday);
+            return ZCodeUsageReader.ReadRange(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public TokenUsageSummary ReadCachedRange(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return ZCodeUsageReader.ReadCachedRange(startLocal, endLocal);
+            return ZCodeUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return ZCodeUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+            return ZCodeUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
         }
 
         public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return ZCodeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday);
+            return ZCodeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return ZCodeUsageReader.ReadTransientDetailRows(startLocal, endLocal);
+            return ZCodeUsageReader.ReadTransientDetailRows(startLocal, endLocal, cancellationToken);
         }
 
-        public DailyUsageSnapshot ReadDay(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday)
+        public DailyUsageSnapshot ReadDay(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
             var rows = includeLiveToday
-                ? ZCodeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday)
-                : ZCodeUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+                ? ZCodeUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken)
+                : ZCodeUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
             var summary = includeLiveToday
                 ? CreateSummaryFromRows(startLocal, endLocal, rows)
-                : ZCodeUsageReader.ReadCachedRange(startLocal, endLocal);
+                : ZCodeUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
             return new DailyUsageSnapshot(summary, rows);
         }
 
-        public void WarmHistoricalDay(DateTimeOffset dayStart)
+        public void WarmHistoricalDay(DateTimeOffset dayStart, CancellationToken cancellationToken = default)
         {
-            var dayEnd = dayStart.AddDays(1);
-            _ = ZCodeUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
-            _ = ZCodeUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
+            WarmHistoricalDays(new[] { dayStart }, cancellationToken);
+        }
+
+        public void WarmHistoricalDays(
+            IEnumerable<DateTimeOffset> daysLocal,
+            CancellationToken cancellationToken = default,
+            Action<DateTimeOffset>? dayCompleted = null,
+            Action<int, int>? fileProgress = null)
+        {
+            ZCodeUsageReader.WarmHistoricalDays(daysLocal, cancellationToken, dayCompleted, fileProgress);
         }
     }
 
@@ -302,68 +414,96 @@ internal static class UsageSourceReaders
             return WorkBuddyUsageReader.ClearCache();
         }
 
-        public bool RefreshCachedDay(DateOnly date)
+        public bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var deleted = WorkBuddyUsageReader.ClearCachedDay(date);
             var dayStart = StartOfDay(date);
-            _ = WorkBuddyUsageReader.ReadDetailRows(dayStart, EndForRefresh(dayStart), includeLiveToday: true);
+            _ = WorkBuddyUsageReader.ReadDetailRows(
+                dayStart,
+                EndForRefresh(dayStart),
+                includeLiveToday: true,
+                cancellationToken: cancellationToken);
             return deleted;
         }
 
         public IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
             DateTimeOffset startInclusive,
-            DateTimeOffset endInclusive)
+            DateTimeOffset endInclusive,
+            CancellationToken cancellationToken = default)
         {
-            return WorkBuddyUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive);
+            return WorkBuddyUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive, cancellationToken);
         }
 
         public TokenUsageSummary ReadRange(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return WorkBuddyUsageReader.ReadRange(startLocal, endLocal, includeLiveToday);
+            return WorkBuddyUsageReader.ReadRange(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public TokenUsageSummary ReadCachedRange(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return WorkBuddyUsageReader.ReadCachedRange(startLocal, endLocal);
+            return WorkBuddyUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return WorkBuddyUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+            return WorkBuddyUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
         }
 
         public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return WorkBuddyUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday);
+            return WorkBuddyUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return WorkBuddyUsageReader.ReadTransientDetailRows(startLocal, endLocal);
+            return WorkBuddyUsageReader.ReadTransientDetailRows(startLocal, endLocal, cancellationToken);
         }
 
-        public DailyUsageSnapshot ReadDay(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday)
+        public DailyUsageSnapshot ReadDay(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
             var rows = includeLiveToday
-                ? WorkBuddyUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday)
-                : WorkBuddyUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+                ? WorkBuddyUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken)
+                : WorkBuddyUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
             var summary = includeLiveToday
                 ? CreateSummaryFromRows(startLocal, endLocal, rows)
-                : WorkBuddyUsageReader.ReadCachedRange(startLocal, endLocal);
+                : WorkBuddyUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
             return new DailyUsageSnapshot(summary, rows);
         }
 
-        public void WarmHistoricalDay(DateTimeOffset dayStart)
+        public void WarmHistoricalDay(DateTimeOffset dayStart, CancellationToken cancellationToken = default)
         {
-            var dayEnd = dayStart.AddDays(1);
-            _ = WorkBuddyUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
-            _ = WorkBuddyUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
+            WarmHistoricalDays(new[] { dayStart }, cancellationToken);
+        }
+
+        public void WarmHistoricalDays(
+            IEnumerable<DateTimeOffset> daysLocal,
+            CancellationToken cancellationToken = default,
+            Action<DateTimeOffset>? dayCompleted = null,
+            Action<int, int>? fileProgress = null)
+        {
+            WorkBuddyUsageReader.WarmHistoricalDays(daysLocal, cancellationToken, dayCompleted, fileProgress);
         }
     }
 
@@ -378,68 +518,96 @@ internal static class UsageSourceReaders
             return DshUsageReader.ClearCache();
         }
 
-        public bool RefreshCachedDay(DateOnly date)
+        public bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var deleted = DshUsageReader.ClearCachedDay(date);
             var dayStart = StartOfDay(date);
-            _ = DshUsageReader.ReadDetailRows(dayStart, EndForRefresh(dayStart), includeLiveToday: true);
+            _ = DshUsageReader.ReadDetailRows(
+                dayStart,
+                EndForRefresh(dayStart),
+                includeLiveToday: true,
+                cancellationToken: cancellationToken);
             return deleted;
         }
 
         public IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
             DateTimeOffset startInclusive,
-            DateTimeOffset endInclusive)
+            DateTimeOffset endInclusive,
+            CancellationToken cancellationToken = default)
         {
-            return DshUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive);
+            return DshUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive, cancellationToken);
         }
 
         public TokenUsageSummary ReadRange(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return DshUsageReader.ReadRange(startLocal, endLocal, includeLiveToday);
+            return DshUsageReader.ReadRange(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public TokenUsageSummary ReadCachedRange(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return DshUsageReader.ReadCachedRange(startLocal, endLocal);
+            return DshUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return DshUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+            return DshUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
         }
 
         public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
             DateTimeOffset startLocal,
             DateTimeOffset endLocal,
-            bool includeLiveToday)
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
-            return DshUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday);
+            return DshUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
-        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+        public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            CancellationToken cancellationToken = default)
         {
-            return DshUsageReader.ReadTransientDetailRows(startLocal, endLocal);
+            return DshUsageReader.ReadTransientDetailRows(startLocal, endLocal, cancellationToken);
         }
 
-        public DailyUsageSnapshot ReadDay(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday)
+        public DailyUsageSnapshot ReadDay(
+            DateTimeOffset startLocal,
+            DateTimeOffset endLocal,
+            bool includeLiveToday,
+            CancellationToken cancellationToken = default)
         {
             var rows = includeLiveToday
-                ? DshUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday)
-                : DshUsageReader.ReadCachedDetailRows(startLocal, endLocal);
+                ? DshUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken)
+                : DshUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
             var summary = includeLiveToday
                 ? CreateSummaryFromRows(startLocal, endLocal, rows)
-                : DshUsageReader.ReadCachedRange(startLocal, endLocal);
+                : DshUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
             return new DailyUsageSnapshot(summary, rows);
         }
 
-        public void WarmHistoricalDay(DateTimeOffset dayStart)
+        public void WarmHistoricalDay(DateTimeOffset dayStart, CancellationToken cancellationToken = default)
         {
-            var dayEnd = dayStart.AddDays(1);
-            _ = DshUsageReader.ReadRange(dayStart, dayEnd, includeLiveToday: false);
-            _ = DshUsageReader.ReadDetailRows(dayStart, dayEnd, includeLiveToday: false);
+            WarmHistoricalDays(new[] { dayStart }, cancellationToken);
+        }
+
+        public void WarmHistoricalDays(
+            IEnumerable<DateTimeOffset> daysLocal,
+            CancellationToken cancellationToken = default,
+            Action<DateTimeOffset>? dayCompleted = null,
+            Action<int, int>? fileProgress = null)
+        {
+            DshUsageReader.WarmHistoricalDays(daysLocal, cancellationToken, dayCompleted, fileProgress);
         }
     }
 
@@ -460,23 +628,6 @@ internal static class UsageSourceReaders
         DateTimeOffset endLocal,
         IReadOnlyList<TokenUsageBucket> rows)
     {
-        var summary = new TokenUsageSummary
-        {
-            StartLocal = startLocal,
-            EndLocal = endLocal
-        };
-
-        foreach (var row in rows)
-        {
-            summary.Add(
-                row.StartLocal,
-                row.InputTokens,
-                row.CachedInputTokens,
-                row.OutputTokens,
-                row.ReasoningOutputTokens,
-                row.TotalTokens);
-        }
-
-        return summary;
+        return UsageSummaryBuilder.FromRows(startLocal, endLocal, rows);
     }
 }

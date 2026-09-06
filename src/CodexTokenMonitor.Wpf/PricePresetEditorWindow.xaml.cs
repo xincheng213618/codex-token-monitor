@@ -25,10 +25,14 @@ internal partial class PricePresetEditorWindow : Window
     {
         ProviderBox.Text = preset.Provider;
         ModelBox.Text = preset.Model;
+        ModelIdBox.Text = preset.ModelId;
         CurrencyBox.Text = string.IsNullOrWhiteSpace(preset.CurrencySymbol) ? "$" : preset.CurrencySymbol;
         UnitBox.Text = string.IsNullOrWhiteSpace(preset.UnitLabel) ? "USD / 1M tokens" : preset.UnitLabel;
         InputBox.Text = FormatDecimal(preset.UncachedInput);
         CachedBox.Text = FormatDecimal(preset.CachedInput);
+        CacheWriteBox.Text = preset.CacheWriteInput is { } cacheWrite
+            ? FormatDecimal(cacheWrite)
+            : "";
         OutputBox.Text = FormatDecimal(preset.Output);
         SourceBox.Text = preset.Source;
     }
@@ -53,6 +57,12 @@ internal partial class PricePresetEditorWindow : Window
             return;
         }
 
+        if (!TryReadOptionalPrice(CacheWriteBox.Text, out var cacheWrite))
+        {
+            ShowValidation("缓存创建价格必须留空或填写大于等于 0 的数字。", CacheWriteBox);
+            return;
+        }
+
         if (!TryReadPrice(OutputBox.Text, out var output))
         {
             ShowValidation("输出价格必须是大于等于 0 的数字。", OutputBox);
@@ -65,11 +75,13 @@ internal partial class PricePresetEditorWindow : Window
             Group = original.Group,
             Provider = ProviderBox.Text.Trim(),
             Model = ModelBox.Text.Trim(),
+            ModelId = ModelIdBox.Text.Trim(),
             CurrencySymbol = string.IsNullOrWhiteSpace(CurrencyBox.Text) ? "$" : CurrencyBox.Text.Trim(),
             UnitLabel = unit,
             Divisor = InferDivisor(unit, original.Divisor),
             UncachedInput = input,
             CachedInput = cached,
+            CacheWriteInput = cacheWrite,
             Output = output,
             Source = SourceBox.Text.Trim(),
             Schedule = original.Schedule
@@ -88,6 +100,24 @@ internal partial class PricePresetEditorWindow : Window
         var valid = decimal.TryParse(text, NumberStyles.Number, CultureInfo.CurrentCulture, out value) ||
                     decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out value);
         return valid && value >= 0;
+    }
+
+    private static bool TryReadOptionalPrice(string text, out decimal? value)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            value = null;
+            return true;
+        }
+
+        if (TryReadPrice(text, out var parsed))
+        {
+            value = parsed;
+            return true;
+        }
+
+        value = null;
+        return false;
     }
 
     private static string FormatDecimal(decimal value)

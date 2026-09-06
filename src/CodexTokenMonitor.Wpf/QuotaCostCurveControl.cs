@@ -196,10 +196,10 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
         plot.DataBackground.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(248, 251, 254));
         plot.Grid.MajorLineColor = PlotColor.FromSDColor(DrawingColor.FromArgb(222, 229, 238));
         plot.Grid.MinorLineColor = PlotColor.FromSDColor(DrawingColor.FromArgb(238, 243, 248));
-        var symbol = PriceProfiles.PrimaryCodex.CurrencySymbol;
+        var symbol = "$";
         plot.Axes.Left.Label.Text = string.Equals(symbol, "Credits", StringComparison.OrdinalIgnoreCase)
             ? "累计等价费用 (Credits)"
-            : $"累计等价费用 ({symbol})";
+            : $"订阅基准折算 · 含 Fast ({symbol})";
         plot.Axes.Bottom.Label.Text = "7d 已用额度 (%)";
         plot.Axes.Left.Label.FontName = "Microsoft YaHei UI";
         plot.Axes.Bottom.Label.FontName = "Microsoft YaHei UI";

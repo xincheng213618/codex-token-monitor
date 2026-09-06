@@ -18,10 +18,18 @@ internal static class CodexAppServerQuotaReader
     private static CodexQuotaSnapshot? cachedSnapshot;
     private static CodexCliCommand? selectedCommand;
 
-    public static CodexQuotaSnapshot? ReadCurrent()
+    public static CodexQuotaSnapshot? ReadCurrent(CancellationToken cancellationToken = default)
     {
-        lock (SyncRoot)
+        cancellationToken.ThrowIfCancellationRequested();
+        var lockTaken = false;
+        try
         {
+            while (!(lockTaken = Monitor.TryEnter(SyncRoot, millisecondsTimeout: 100)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             var nowUtc = DateTimeOffset.UtcNow;
             var cacheDuration = cachedSnapshot is null ? FailureCacheDuration : SuccessCacheDuration;
             if (nowUtc - lastAttemptUtc < cacheDuration)
@@ -32,7 +40,11 @@ internal static class CodexAppServerQuotaReader
             lastAttemptUtc = nowUtc;
             try
             {
-                cachedSnapshot = ReadCurrentAsync().GetAwaiter().GetResult();
+                cachedSnapshot = ReadCurrentAsync(cancellationToken).GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch
             {
@@ -40,6 +52,13 @@ internal static class CodexAppServerQuotaReader
             }
 
             return cachedSnapshot;
+        }
+        finally
+        {
+            if (lockTaken)
+            {
+                Monitor.Exit(SyncRoot);
+            }
         }
     }
 
@@ -89,12 +108,12 @@ internal static class CodexAppServerQuotaReader
         }
     }
 
-    private static async Task<CodexQuotaSnapshot?> ReadCurrentAsync()
+    private static async Task<CodexQuotaSnapshot?> ReadCurrentAsync(CancellationToken cancellationToken)
     {
         var failedCommand = selectedCommand;
         if (failedCommand is not null)
         {
-            var cachedPathSnapshot = await TryReadCurrentAsync(failedCommand);
+            var cachedPathSnapshot = await TryReadCurrentAsync(failedCommand, cancellationToken);
             if (cachedPathSnapshot is not null)
             {
                 return cachedPathSnapshot;
@@ -105,12 +124,13 @@ internal static class CodexAppServerQuotaReader
 
         foreach (var command in CodexCliLocator.FindAll())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (command == failedCommand)
             {
                 continue;
             }
 
-            var snapshot = await TryReadCurrentAsync(command);
+            var snapshot = await TryReadCurrentAsync(command, cancellationToken);
             if (snapshot is not null)
             {
                 selectedCommand = command;
@@ -121,11 +141,17 @@ internal static class CodexAppServerQuotaReader
         return null;
     }
 
-    private static async Task<CodexQuotaSnapshot?> TryReadCurrentAsync(CodexCliCommand command)
+    private static async Task<CodexQuotaSnapshot?> TryReadCurrentAsync(
+        CodexCliCommand command,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return await ReadCurrentAsync(command);
+            return await ReadCurrentAsync(command, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -136,8 +162,54 @@ internal static class CodexAppServerQuotaReader
         }
     }
 
-    private static async Task<CodexQuotaSnapshot?> ReadCurrentAsync(CodexCliCommand command)
+    private static async Task<CodexQuotaSnapshot?> ReadCurrentAsync(
+        CodexCliCommand command,
+        CancellationToken cancellationToken)
     {
+        var response = await ReadAccountResponseAsync(command, "account/rateLimits/read", null, cancellationToken);
+        return response is null ? null : ParseRateLimitsResponse(response, BeijingClock.Now);
+    }
+
+    public static async Task<string?> ReadPlanTypeAsync(CancellationToken cancellationToken = default)
+    {
+        foreach (var command in CodexCliLocator.FindAll())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var response = await ReadAccountResponseAsync(command, "account/read", new { refreshToken = false }, cancellationToken);
+                var plan = ParsePlanTypeResponse(response);
+                if (plan is not null) return plan;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch { /* Try another installed CLI, as with quota discovery. */ }
+        }
+        return null;
+    }
+
+    internal static string? ParsePlanTypeResponse(string? response)
+    {
+        if (response is null) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(response);
+            if (document.RootElement.TryGetProperty("result", out var result) &&
+                result.ValueKind == JsonValueKind.Object && result.TryGetProperty("account", out var account) &&
+                account.ValueKind == JsonValueKind.Object && account.TryGetProperty("type", out var type) &&
+                type.GetString() == "chatgpt" && account.TryGetProperty("planType", out var plan) &&
+                plan.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(plan.GetString()))
+                return plan.GetString();
+        }
+        catch (JsonException) { }
+        catch (InvalidOperationException) { }
+        return null;
+    }
+
+    private static async Task<string?> ReadAccountResponseAsync(
+        CodexCliCommand command, string method, object? parameters,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         using var process = new Process
         {
             StartInfo = CreateStartInfo(command)
@@ -147,27 +219,35 @@ internal static class CodexAppServerQuotaReader
             return null;
         }
 
-        _ = process.StandardError.ReadToEndAsync();
+        // Drain stderr while the protocol is active so diagnostics cannot
+        // fill the pipe and block the app-server. Keep the task so its final
+        // completion/exception is observed after the exact process tree is
+        // stopped below.
+        var standardErrorTask = process.StandardError.ReadToEndAsync();
         try
         {
             await WriteLineAsync(
                 process.StandardInput,
-                "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"codex-token-monitor\",\"version\":\"1.0.0\"},\"capabilities\":{\"experimentalApi\":true}}}");
+                "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"codex-token-monitor\",\"version\":\"1.0.0\"},\"capabilities\":{\"experimentalApi\":true}}}",
+                cancellationToken);
 
-            using (var initializeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            using (var initializeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
+                initializeTimeout.CancelAfter(TimeSpan.FromSeconds(5));
                 if (await ReadResponseLineAsync(process.StandardOutput, InitializeRequestId, initializeTimeout.Token) is null)
                 {
                     return null;
                 }
             }
 
-            await WriteLineAsync(process.StandardInput, "{\"method\":\"initialized\"}");
+            await WriteLineAsync(process.StandardInput, "{\"method\":\"initialized\"}", cancellationToken);
             await WriteLineAsync(
                 process.StandardInput,
-                "{\"id\":2,\"method\":\"account/rateLimits/read\",\"params\":null}");
+                JsonSerializer.Serialize(new { id = RateLimitsRequestId, method, @params = parameters }),
+                cancellationToken);
 
-            using var rateLimitsTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var rateLimitsTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            rateLimitsTimeout.CancelAfter(TimeSpan.FromSeconds(10));
             var response = await ReadResponseLineAsync(
                 process.StandardOutput,
                 RateLimitsRequestId,
@@ -177,12 +257,20 @@ internal static class CodexAppServerQuotaReader
                 return null;
             }
 
-            var snapshotLocal = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-            return ParseRateLimitsResponse(response, snapshotLocal);
+            return response;
         }
         finally
         {
             StopProcess(process);
+            try
+            {
+                await standardErrorTask;
+            }
+            catch
+            {
+                // stderr is diagnostic-only; process cleanup has already
+                // completed and the protocol result remains authoritative.
+            }
         }
     }
 
@@ -222,10 +310,13 @@ internal static class CodexAppServerQuotaReader
         return startInfo;
     }
 
-    private static async Task WriteLineAsync(StreamWriter writer, string line)
+    private static async Task WriteLineAsync(
+        StreamWriter writer,
+        string line,
+        CancellationToken cancellationToken)
     {
-        await writer.WriteLineAsync(line);
-        await writer.FlushAsync();
+        await writer.WriteLineAsync(line.AsMemory(), cancellationToken);
+        await writer.FlushAsync(cancellationToken);
     }
 
     private static async Task<string?> ReadResponseLineAsync(
@@ -264,18 +355,39 @@ internal static class CodexAppServerQuotaReader
         try
         {
             process.StandardInput.Close();
+        }
+        catch
+        {
+            // The short-lived helper may already have exited. Continue to
+            // the termination check even when closing stdin fails.
+        }
+
+        try
+        {
             if (!process.HasExited && !process.WaitForExit(1_000))
             {
-                // Only terminate the exact helper shell created above. Its
-                // stdin has already been closed, so the app-server child also
-                // receives EOF and exits without being left resident.
-                process.Kill();
+                // The app-server may be a child of the cmd.exe helper. Kill
+                // the exact temporary process tree so a timed-out quota read
+                // cannot accumulate orphaned app-server processes.
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+            // The process may have exited between the checks. A final bounded
+            // wait below still gives the OS time to reap it when possible.
+        }
+
+        try
+        {
+            if (!process.HasExited)
+            {
                 process.WaitForExit(1_000);
             }
         }
         catch
         {
-            // The short-lived helper may already have exited.
+            // Best-effort cleanup for a short-lived helper process.
         }
     }
 
@@ -320,7 +432,7 @@ internal static class CodexAppServerQuotaReader
         }
 
         var usedPercent = GetDecimal(window, "usedPercent");
-        if (usedPercent is null)
+        if (!QuotaPercentRules.IsValid(usedPercent))
         {
             return null;
         }
@@ -335,7 +447,7 @@ internal static class CodexAppServerQuotaReader
         }
 
         return new AppServerWindow(
-            usedPercent.Value,
+            usedPercent!.Value,
             windowMinutes is > 0 and <= int.MaxValue ? (int)windowMinutes.Value : null,
             resetAt);
     }

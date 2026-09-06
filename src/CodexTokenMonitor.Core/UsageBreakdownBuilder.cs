@@ -2,6 +2,46 @@ namespace CodexTokenMonitor;
 
 internal static class UsageBreakdownBuilder
 {
+    public static long CountEvents(IEnumerable<TokenUsageBucket> rows)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        var count = 0L;
+        foreach (var row in rows)
+        {
+            count = TokenCountMath.AddNonNegative(count, row.Events);
+        }
+
+        return count;
+    }
+
+    internal static IReadOnlyList<TokenUsageBucket> ReadDetailRowsForRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        Func<DateTimeOffset, DateTimeOffset, IReadOnlyList<TokenUsageBucket>> readDay)
+    {
+        ArgumentNullException.ThrowIfNull(readDay);
+        if (startLocal >= endLocal)
+        {
+            return Array.Empty<TokenUsageBucket>();
+        }
+
+        var rows = new List<TokenUsageBucket>();
+        for (var dayStart = StartOfDay(startLocal); dayStart < endLocal; dayStart = dayStart.AddDays(1))
+        {
+            var dayEnd = dayStart.AddDays(1);
+            var clippedStart = dayStart > startLocal ? dayStart : startLocal;
+            var clippedEnd = dayEnd < endLocal ? dayEnd : endLocal;
+            if (clippedStart < clippedEnd)
+            {
+                rows.AddRange(readDay(clippedStart, clippedEnd));
+            }
+        }
+
+        return rows
+            .OrderBy(row => row.StartLocal)
+            .ToList();
+    }
+
     public static IReadOnlyList<TokenUsageBucket> Build(
         SelectedRange range,
         TokenUsageSummary summary,
@@ -27,7 +67,8 @@ internal static class UsageBreakdownBuilder
         IReadOnlyList<TokenUsageBucket> breakdownRows,
         IReadOnlyList<TokenUsageBucket> detailRows,
         bool includeLiveToday,
-        bool cacheOnly)
+        bool cacheOnly,
+        CancellationToken cancellationToken = default)
     {
         if (range.Mode == RangeMode.Day || range.IsCustomStart)
         {
@@ -47,9 +88,14 @@ internal static class UsageBreakdownBuilder
         var total = TimeSpan.Zero;
         for (var segmentStart = range.Start; segmentStart < range.End;)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var nextDay = StartOfDay(segmentStart).AddDays(1);
             var segmentEnd = nextDay < range.End ? nextDay : range.End;
-            total += EstimateCodingTime(reader.ReadDetailRows(segmentStart, segmentEnd, includeLiveToday));
+            total += EstimateCodingTime(reader.ReadDetailRows(
+                segmentStart,
+                segmentEnd,
+                includeLiveToday,
+                cancellationToken));
             segmentStart = segmentEnd;
         }
 
@@ -135,6 +181,7 @@ internal static class UsageBreakdownBuilder
 
     private static DateTimeOffset StartOfDay(DateTimeOffset value)
     {
-        return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, value.Offset);
+        var local = value.ToOffset(CodexUsageReader.BeijingOffset);
+        return new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
     }
 }

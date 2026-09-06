@@ -5,9 +5,10 @@ using WpfBinding = System.Windows.Data.Binding;
 
 namespace CodexTokenMonitor;
 
-internal sealed class BreakdownGridAdapter
+internal sealed class BreakdownGridAdapter : IDisposable
 {
     private readonly DataGrid grid;
+    private bool disposed;
 
     public BreakdownGridAdapter(DataGrid grid)
     {
@@ -49,6 +50,11 @@ internal sealed class BreakdownGridAdapter
         bool includeQuota,
         IReadOnlyList<BreakdownRow> rows)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         var anchor = CaptureAnchor();
         ApplyColumns(range, eventBreakdown, tablePresets, includeQuota);
         grid.ItemsSource = rows;
@@ -98,19 +104,20 @@ internal sealed class BreakdownGridAdapter
             new("Total", nameof(BreakdownRow.Total), 78, true),
             new("Input", nameof(BreakdownRow.Input), 78, true),
             new("Cached", nameof(BreakdownRow.Cached), 82, true),
+            new("Cache Write", nameof(BreakdownRow.CacheWrite), 92, true),
             new("Uncached", nameof(BreakdownRow.Uncached), 88, true),
             new("Output", nameof(BreakdownRow.Output), 72, true)
         };
 
+        if (includeQuota)
+        {
+            columns.Insert(1, new("实际模型", nameof(BreakdownRow.Model), 132, false));
+            columns.Add(new("模型费用 ($)", nameof(BreakdownRow.ActualCost), 132, true));
+        }
         for (var i = 0; i < tablePresets.Count; i++)
         {
-            var bindingPath = i switch
-            {
-                0 => nameof(BreakdownRow.Price1),
-                1 => nameof(BreakdownRow.Price2),
-                _ => nameof(BreakdownRow.Price3)
-            };
-            columns.Add(new BreakdownColumnDefinition(FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}"), bindingPath, 92, true));
+            var bindingPath = $"{nameof(BreakdownRow.Prices)}[{i}]";
+            columns.Add(new BreakdownColumnDefinition((includeQuota ? "换用 " : "") + FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}"), bindingPath, 92, true));
         }
 
         if (includeQuota)
@@ -149,7 +156,7 @@ internal sealed class BreakdownGridAdapter
 
     private void RestoreAnchor(BreakdownScrollAnchor? anchor)
     {
-        if (anchor is null || grid.Items.Count == 0)
+        if (disposed || anchor is null || grid.Items.Count == 0)
         {
             return;
         }
@@ -162,11 +169,16 @@ internal sealed class BreakdownGridAdapter
 
         grid.Dispatcher.BeginInvoke(() =>
         {
-            if (index >= 0 && index < grid.Items.Count)
+            if (!disposed && grid.IsLoaded && index >= 0 && index < grid.Items.Count)
             {
                 grid.ScrollIntoView(grid.Items[index]);
             }
         });
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
     }
 
     private int FindAnchorIndex(BreakdownScrollAnchor anchor)

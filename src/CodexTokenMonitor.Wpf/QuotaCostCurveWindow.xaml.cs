@@ -6,16 +6,19 @@ public partial class QuotaCostCurveWindow : Window
 {
     private readonly CodexQuotaEstimate currentQuota;
     private readonly IReadOnlyList<CodexQuotaCycle> knownPeriods;
+    private readonly SemaphoreSlim? usageReadGate;
     private readonly QuotaCostCurveControl curveControl = new();
     private QuotaCostCurveResult? loadedResult;
     private CancellationTokenSource? loadCancellation;
 
     internal QuotaCostCurveWindow(
         CodexQuotaEstimate currentQuota,
-        IReadOnlyList<CodexQuotaCycle> knownPeriods)
+        IReadOnlyList<CodexQuotaCycle> knownPeriods,
+        SemaphoreSlim? usageReadGate = null)
     {
         this.currentQuota = currentQuota;
         this.knownPeriods = knownPeriods;
+        this.usageReadGate = usageReadGate;
         InitializeComponent();
         CurveHost.Content = curveControl;
         Loaded += async (_, _) => await LoadAsync();
@@ -23,6 +26,7 @@ public partial class QuotaCostCurveWindow : Window
         {
             loadCancellation?.Cancel();
             loadCancellation?.Dispose();
+            loadCancellation = null;
         };
     }
 
@@ -36,7 +40,11 @@ public partial class QuotaCostCurveWindow : Window
         {
             StatusText.Text = "正在读取数据库...";
             var result = await Task.Run(
-                () => QuotaCostCurveCalculator.Build(currentQuota, knownPeriods, token),
+                () => QuotaCostCurveCalculator.Build(
+                    currentQuota,
+                    knownPeriods,
+                    token,
+                    usageReadGate),
                 token);
             token.ThrowIfCancellationRequested();
             loadedResult = result;
@@ -53,10 +61,18 @@ public partial class QuotaCostCurveWindow : Window
         }
         catch (OperationCanceledException)
         {
-            StatusText.Text = "已取消";
+            if (IsLoaded)
+            {
+                StatusText.Text = "已取消";
+            }
         }
         catch (Exception ex)
         {
+            if (!IsLoaded)
+            {
+                return;
+            }
+
             StatusText.Text = "加载失败";
             System.Windows.MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }

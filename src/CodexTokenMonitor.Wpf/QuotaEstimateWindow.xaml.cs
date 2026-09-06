@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 
 namespace CodexTokenMonitor;
@@ -8,14 +9,19 @@ public partial class QuotaEstimateWindow : Window
 {
     private readonly CodexQuotaEstimate currentQuota;
     private readonly IReadOnlyList<CodexQuotaCycle> knownWeeklyPeriods;
+    private readonly SemaphoreSlim? usageReadGate;
     private readonly QuotaCostCurveControl embeddedCurveControl = new();
     private QuotaCostCurveResult? loadedCurveResult;
     private CancellationTokenSource? loadCancellation;
 
-    internal QuotaEstimateWindow(CodexQuotaEstimate currentQuota, IReadOnlyList<CodexQuotaCycle>? knownWeeklyPeriods = null)
+    internal QuotaEstimateWindow(
+        CodexQuotaEstimate currentQuota,
+        IReadOnlyList<CodexQuotaCycle>? knownWeeklyPeriods = null,
+        SemaphoreSlim? usageReadGate = null)
     {
         this.currentQuota = currentQuota;
         this.knownWeeklyPeriods = knownWeeklyPeriods ?? Array.Empty<CodexQuotaCycle>();
+        this.usageReadGate = usageReadGate;
         InitializeComponent();
         EmbeddedCurveHost.Content = embeddedCurveControl;
         ApplyResetOpportunityPanel();
@@ -35,6 +41,8 @@ public partial class QuotaEstimateWindow : Window
         loadCancellation?.Dispose();
         loadCancellation = new CancellationTokenSource();
         var cancellationToken = loadCancellation.Token;
+        Task<QuotaEstimateLoadResult>? estimateTask = null;
+        Task<QuotaCostCurveResult>? curveTask = null;
 
         try
         {
@@ -42,18 +50,19 @@ public partial class QuotaEstimateWindow : Window
             WeeklyGrid.ItemsSource = null;
 
             var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-            var estimateTask = Task.Run(
+            estimateTask = Task.Run(
                 () => QuotaEstimateCalculator.BuildLoadResult(
                     currentQuota,
                     now,
                     knownWeeklyPeriods,
                     cancellationToken),
                 cancellationToken);
-            var curveTask = Task.Run(
+            curveTask = Task.Run(
                 () => QuotaCostCurveCalculator.Build(
                     currentQuota,
                     knownWeeklyPeriods,
-                    cancellationToken),
+                    cancellationToken,
+                    usageReadGate),
                 cancellationToken);
             var result = await estimateTask;
             cancellationToken.ThrowIfCancellationRequested();
@@ -92,8 +101,49 @@ public partial class QuotaEstimateWindow : Window
         }
         catch (Exception ex)
         {
+            loadCancellation?.Cancel();
+            if (!IsLoaded)
+            {
+                return;
+            }
+
             StatusText.Text = "加载失败";
             System.Windows.MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            await ObserveBackgroundTasksAsync(estimateTask, curveTask);
+        }
+    }
+
+    private static async Task ObserveBackgroundTasksAsync(
+        Task<QuotaEstimateLoadResult>? estimateTask,
+        Task<QuotaCostCurveResult>? curveTask)
+    {
+        if (estimateTask is not null)
+        {
+            try
+            {
+                await estimateTask;
+            }
+            catch
+            {
+                // The foreground load path reports the first failure. This await
+                // observes any later exception so the parallel curve task cannot
+                // become an unobserved fault after the window has handled an error.
+            }
+        }
+
+        if (curveTask is not null)
+        {
+            try
+            {
+                await curveTask;
+            }
+            catch
+            {
+                // See the estimate task comment above.
+            }
         }
     }
 
@@ -120,6 +170,74 @@ public partial class QuotaEstimateWindow : Window
         ApplyEmbeddedCurvePlan();
     }
 
+    private void WeeklyGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindVisualParent<DataGridRow>(e.OriginalSource as DependencyObject) is not { } row)
+        {
+            return;
+        }
+
+        row.IsSelected = true;
+        row.Focus();
+    }
+
+    private async void AnalyzeCycleMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (WeeklyGrid.SelectedItem is not QuotaWeeklyCycleRow selectedRow)
+        {
+            return;
+        }
+
+        var period = knownWeeklyPeriods.FirstOrDefault(item => item.PeriodStart == selectedRow.PeriodStart);
+        if (period is null)
+        {
+            var cancellationToken = loadCancellation?.Token ?? CancellationToken.None;
+            StatusText.Text = "正在定位所选周期...";
+            var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+            try
+            {
+                var periods = await Task.Run(
+                    () => CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now, cancellationToken),
+                    cancellationToken);
+                period = periods.FirstOrDefault(item => item.PeriodStart == selectedRow.PeriodStart);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+
+        if (period is null || !IsLoaded)
+        {
+            if (IsLoaded)
+            {
+                StatusText.Text = "无法定位所选周期";
+            }
+            return;
+        }
+
+        var window = new QuotaCycleAnalysisWindow(period)
+        {
+            Owner = this
+        };
+        window.Show();
+    }
+
+    private static T? FindVisualParent<T>(DependencyObject? child) where T : DependencyObject
+    {
+        while (child is not null)
+        {
+            if (child is T match)
+            {
+                return match;
+            }
+
+            child = VisualTreeHelper.GetParent(child);
+        }
+
+        return null;
+    }
+
     private void ApplyEmbeddedCurvePlan()
     {
         if (loadedCurveResult is null || CurvePlanComboBox.SelectedItem is not string selectedPlan)
@@ -142,6 +260,7 @@ public partial class QuotaEstimateWindow : Window
             {
                 FiveHourValue.Text = row.RemainingText;
                 FiveHourDetail.Text = row.DetailText;
+                FiveHourDetail.ToolTip = row.CostDetail;
                 FiveHourPlan.Text = row.PlanText;
                 FiveHourStable.Text = row.StableText;
             }
@@ -149,6 +268,7 @@ public partial class QuotaEstimateWindow : Window
             {
                 WeekValue.Text = row.RemainingText;
                 WeekDetail.Text = row.DetailText;
+                WeekDetail.ToolTip = row.CostDetail;
                 WeekPlan.Text = row.PlanText;
                 WeekStable.Text = row.StableText;
             }
@@ -196,6 +316,7 @@ public partial class QuotaEstimateWindow : Window
     {
         ManualEstimateButton.IsEnabled = false;
         ManualResultText.Text = "正在估算...";
+        var cancellationToken = loadCancellation?.Token ?? CancellationToken.None;
 
         try
         {
@@ -205,22 +326,41 @@ public partial class QuotaEstimateWindow : Window
                 () => QuotaEstimateCalculator.BuildManualWeekEstimate(
                     currentQuota,
                     fromRemaining,
-                    toRemaining));
+                    toRemaining,
+                    cancellationToken),
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IsLoaded)
+            {
+                return;
+            }
+
             ManualResultText.Text = result;
+        }
+        catch (OperationCanceledException)
+        {
+            // Closing the window cancels the shared load token. Do not write
+            // status text back into a window that is already being torn down.
         }
         catch (Exception ex)
         {
-            ManualResultText.Text = $"估算失败：{ex.Message}";
+            if (IsLoaded)
+            {
+                ManualResultText.Text = $"估算失败：{ex.Message}";
+            }
         }
         finally
         {
-            ManualEstimateButton.IsEnabled = true;
+            if (IsLoaded)
+            {
+                ManualEstimateButton.IsEnabled = true;
+            }
         }
     }
 
     private void QuotaCurveButton_Click(object sender, RoutedEventArgs e)
     {
-        var window = new QuotaCostCurveWindow(currentQuota, knownWeeklyPeriods)
+        var window = new QuotaCostCurveWindow(currentQuota, knownWeeklyPeriods, usageReadGate)
         {
             Owner = this
         };

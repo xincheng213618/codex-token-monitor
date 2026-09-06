@@ -24,39 +24,80 @@ internal sealed class CodexDataSharingClient : IDisposable
         using var response = await client.GetAsync("api/health", cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
         var peer = await response.Content.ReadFromJsonAsync<CodexDataSharingPeer>(cancellationToken).ConfigureAwait(false);
-        if (peer is null || peer.Format != CodexDataSharingProtocol.Format || peer.Version != 1)
+        if (peer is null || peer.Format != CodexDataSharingProtocol.Format || peer.Version != CodexDataSharingProtocol.Version)
         {
-            throw new InvalidDataException("对方不是兼容的 Codex 数据共享服务器。");
+            throw new InvalidDataException("两台电脑都需要使用同一新版共享协议，请更新程序后重试。");
         }
 
         return peer;
     }
 
     public async Task<CodexDataImportResult> UploadAsync(string filePath, CancellationToken cancellationToken)
+        => await UploadToAsync("api/week", filePath, cancellationToken).ConfigureAwait(false);
+
+    private async Task<CodexDataImportResult> UploadToAsync(string endpoint, string filePath, CancellationToken cancellationToken)
     {
         await using var stream = File.OpenRead(filePath);
         CodexDataSharingProtocol.CheckPackageSize(stream.Length);
         using var content = new StreamContent(stream);
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-        using var response = await client.PostAsync("api/week", content, cancellationToken).ConfigureAwait(false);
+        using var response = await client.PostAsync(endpoint, content, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<CodexDataImportResult>(cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("服务器没有返回合并结果。");
     }
 
     public async Task DownloadAsync(string filePath, CancellationToken cancellationToken)
+        => await DownloadFromAsync("api/week", filePath, cancellationToken).ConfigureAwait(false);
+
+    private async Task DownloadFromAsync(string endpoint, string filePath, CancellationToken cancellationToken)
     {
         // ResponseHeadersRead does not time out body streaming; own that timeout
         // through EOF as well, so an interrupted peer cannot hang the window.
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(CodexDataSharingProtocol.TransferTimeout);
-        using var response = await client.GetAsync("api/week", HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        using var response = await client.GetAsync(endpoint, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
         await EnsureSuccessAsync(response, timeout.Token).ConfigureAwait(false);
         CodexDataSharingProtocol.CheckPackageSize(response.Content.Headers.ContentLength ?? 0);
         await using var source = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
         await using var destination = new FileStream(filePath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         await CodexDataSharingProtocol.CopyPackageAsync(source, destination, timeout.Token).ConfigureAwait(false);
     }
+
+    public async Task<CodexHistorySyncResult> SyncHistoryAsync(CodexHistorySharingStore localStore,
+        Action<string>? progress, CancellationToken cancellationToken)
+    {
+        var peer = await TestConnectionAsync(cancellationToken).ConfigureAwait(false);
+        if (!peer.SupportsHistory) throw new InvalidDataException("服务器不支持全部历史同步，请更新另一台电脑的程序。");
+        progress?.Invoke("正在读取两台电脑已缓存的历史日期…");
+        using var response = await client.GetAsync("api/history/dates", cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+        var remoteDates = await response.Content.ReadFromJsonAsync<DateOnly[]>(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("服务器没有返回历史日期。");
+        var localDates = await localStore.GetDatesAsync(cancellationToken).ConfigureAwait(false);
+        var batches = CodexHistorySharingStore.BatchDates(localDates.Concat(remoteDates));
+        var uploaded = new CodexDataImportResult(0, 0, 0, 0, 0, 0);
+        var downloaded = uploaded;
+        for (var i = 0; i < batches.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var range = batches[i];
+            var endpoint = FormattableString.Invariant($"api/history?start={range.Start:yyyy-MM-dd}&end={range.End:yyyy-MM-dd}");
+            progress?.Invoke($"全部历史 {i + 1}/{batches.Count} 批 · {range.Start:yyyy-MM-dd} 至 {range.End.AddDays(-1):yyyy-MM-dd}");
+            using var upload = new CodexSharingTemporaryFile();
+            await localStore.ExportAsync(upload.FilePath, range, cancellationToken).ConfigureAwait(false);
+            uploaded = Add(uploaded, await UploadToAsync(endpoint, upload.FilePath, cancellationToken).ConfigureAwait(false));
+            using var download = new CodexSharingTemporaryFile();
+            await DownloadFromAsync(endpoint, download.FilePath, cancellationToken).ConfigureAwait(false);
+            downloaded = Add(downloaded, await localStore.ImportAsync(download.FilePath, range, cancellationToken).ConfigureAwait(false));
+        }
+        return new(batches.Count, uploaded, downloaded);
+    }
+
+    private static CodexDataImportResult Add(CodexDataImportResult left, CodexDataImportResult right) => new(
+        left.FileCount + right.FileCount, Math.Max(left.DeviceCount, right.DeviceCount),
+        left.AddedUsageEventCount + right.AddedUsageEventCount, left.ExistingUsageEventCount + right.ExistingUsageEventCount,
+        left.AddedQuotaSnapshotCount + right.AddedQuotaSnapshotCount, left.ExistingQuotaSnapshotCount + right.ExistingQuotaSnapshotCount);
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {

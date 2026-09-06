@@ -35,10 +35,7 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         startLocal = start;
         endLocal = end;
         fixedBucketInterval = bucketInterval;
-        lastRows = sourceRows
-            .Where(row => row.Events > 0)
-            .OrderBy(row => row.StartLocal)
-            .ToList();
+        lastRows = UsageTimelineBuilder.Build(start, end, sourceRows, bucketInterval);
 
         Render(lastRows);
     }
@@ -211,8 +208,8 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
             index = Math.Clamp(index, 0, bucketCount - 1);
             values[index] = values[index] with
             {
-                TotalTokens = values[index].TotalTokens + row.TotalTokens,
-                CachedInputTokens = values[index].CachedInputTokens + row.CachedInputTokens
+                TotalTokens = TokenCountMath.AddNonNegative(values[index].TotalTokens, row.TotalTokens),
+                CachedInputTokens = TokenCountMath.AddNonNegative(values[index].CachedInputTokens, row.CachedInputTokens)
             };
         }
 

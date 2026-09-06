@@ -54,6 +54,36 @@ public sealed class UsageSourceModuleTests
         Assert.Same(updated, cached);
     }
 
+    [Fact]
+    public void DisplayStorage_DoesNotRetainLargeDetailRows()
+    {
+        var module = new CodexUsageModule();
+        var range = CycleRange(0);
+        var result = Result(42) with
+        {
+            DetailRows = new[]
+            {
+                new TokenUsageBucket
+                {
+                    StartLocal = range.Start,
+                    Events = 1,
+                    TotalTokens = 42
+                }
+            }
+        };
+
+        module.StoreDisplay(range, result);
+        module.CacheDisplay(range, result);
+
+        Assert.True(module.TryGetDisplay(out _, out var display));
+        Assert.Empty(display.DetailRows);
+        Assert.True(module.TryGetCachedDisplay(range, out var cached));
+        Assert.Empty(cached.DetailRows);
+        Assert.Same(result.BreakdownRows, display.BreakdownRows);
+        Assert.NotSame(result, display);
+        Assert.NotSame(result, cached);
+    }
+
     private static SelectedRange CycleRange(int weekOffset)
     {
         var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.FromHours(8)).AddDays(weekOffset * 7);

@@ -1,4 +1,4 @@
-namespace CodexTokenMonitor;
+﻿namespace CodexTokenMonitor;
 
 internal static class QuotaCostCurveCalculator
 {
@@ -7,12 +7,13 @@ internal static class QuotaCostCurveCalculator
     public static QuotaCostCurveResult Build(
         CodexQuotaEstimate currentQuota,
         IReadOnlyList<CodexQuotaCycle> knownPeriods,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        SemaphoreSlim? usageReadGate = null)
     {
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var periods = knownPeriods.Count > 0
             ? knownPeriods
-            : CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now);
+            : CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now, cancellationToken);
         var curves = new List<QuotaCostCurveSeries>();
 
         foreach (var period in periods.OrderBy(item => item.PeriodStart))
@@ -24,7 +25,12 @@ internal static class QuotaCostCurveCalculator
                 continue;
             }
 
-            var usageRows = CodexUsageReader.ReadCachedDetailRows(period.PeriodStart, end)
+            // The estimate window visualizes the statistics already shown by the
+            // main window. It must not wait behind or restart raw-log backfill.
+            var usageRows = CodexUsageReader.ReadCachedDetailRows(
+                period.PeriodStart, end, cancellationToken);
+
+            usageRows = usageRows
                 .Where(item => item.StartLocal >= period.PeriodStart && item.StartLocal < end)
                 .OrderBy(item => item.StartLocal)
                 .ToList();
@@ -34,7 +40,8 @@ internal static class QuotaCostCurveCalculator
             }
 
             var timeline = CodexUsageReader.ReadMaterializedQuotaTimeline(
-                    usageRows.Select(item => item.StartLocal))
+                    usageRows.Select(item => item.StartLocal),
+                    cancellationToken: cancellationToken)
                 .Where(item =>
                     item.WeekUsedPercent is not null &&
                     !item.IsAnomaly &&
@@ -50,7 +57,12 @@ internal static class QuotaCostCurveCalculator
             var points = new List<QuotaCostCurvePoint>();
             foreach (var row in usageRows)
             {
-                cumulativeCost += row.EstimateCost(PriceProfiles.PrimaryCodex);
+                var cost = CodexModelCost.Estimate(row).QuotaEquivalentCost;
+                if (cumulativeCost > decimal.MaxValue - cost)
+                {
+                    break;
+                }
+                cumulativeCost += cost;
                 if (!timeline.TryGetValue(row.StartLocal, out var snapshot) ||
                     snapshot.WeekUsedPercent is not { } usedPercent)
                 {
@@ -96,15 +108,18 @@ internal static class QuotaCostCurveCalculator
 
     internal static IReadOnlyList<QuotaCostCurveBand> BuildBands(IReadOnlyList<QuotaCostCurveSeries> curves)
     {
+        var interpolationPoints = curves
+            .Select(curve => BuildInterpolationPoints(curve.Points))
+            .ToList();
         var result = new List<QuotaCostCurveBand>();
         for (var lower = 0; lower < 100; lower += 10)
         {
             var upper = lower + 10;
             var costs = new List<decimal>();
-            foreach (var curve in curves)
+            foreach (var points in interpolationPoints)
             {
-                var lowerCost = InterpolateCost(curve.Points, lower);
-                var upperCost = InterpolateCost(curve.Points, upper);
+                var lowerCost = InterpolateCost(points, lower);
+                var upperCost = InterpolateCost(points, upper);
                 if (lowerCost is null || upperCost is null || upperCost < lowerCost)
                 {
                     continue;
@@ -156,7 +171,8 @@ internal static class QuotaCostCurveCalculator
         return dominant?.PlanName ?? "未设置套餐";
     }
 
-    private static decimal? InterpolateCost(IReadOnlyList<QuotaCostCurvePoint> source, double targetPercent)
+    private static IReadOnlyList<InterpolationPoint> BuildInterpolationPoints(
+        IReadOnlyList<QuotaCostCurvePoint> source)
     {
         var points = source
             .GroupBy(item => Math.Round(item.UsedPercent, 3))
@@ -167,25 +183,40 @@ internal static class QuotaCostCurveCalculator
             })
             .OrderBy(item => item.UsedPercent)
             .ToList();
-        if (points.Count == 0 || targetPercent < points[0].UsedPercent || targetPercent > points[^1].UsedPercent)
+        return points
+            .Select(item => new InterpolationPoint(item.UsedPercent, item.Cost))
+            .ToArray();
+    }
+
+    private static decimal? InterpolateCost(
+        IReadOnlyList<InterpolationPoint> source,
+        double targetPercent)
+    {
+        if (source.Count == 0 || targetPercent < source[0].UsedPercent || targetPercent > source[^1].UsedPercent)
         {
             return null;
         }
 
-        var exact = points.FirstOrDefault(item => Math.Abs(item.UsedPercent - targetPercent) < 0.001);
-        if (exact is not null)
+        var afterIndex = LowerBound(source, targetPercent);
+        if (afterIndex < source.Count &&
+            Math.Abs(source[afterIndex].UsedPercent - targetPercent) < 0.001)
         {
-            return exact.Cost;
+            return source[afterIndex].Cost;
         }
 
-        var afterIndex = points.FindIndex(item => item.UsedPercent > targetPercent);
-        if (afterIndex <= 0)
+        if (afterIndex > 0 &&
+            Math.Abs(source[afterIndex - 1].UsedPercent - targetPercent) < 0.001)
+        {
+            return source[afterIndex - 1].Cost;
+        }
+
+        if (afterIndex <= 0 || afterIndex >= source.Count)
         {
             return null;
         }
 
-        var before = points[afterIndex - 1];
-        var after = points[afterIndex];
+        var before = source[afterIndex - 1];
+        var after = source[afterIndex];
         var span = after.UsedPercent - before.UsedPercent;
         if (span <= 0)
         {
@@ -194,6 +225,28 @@ internal static class QuotaCostCurveCalculator
 
         var ratio = (decimal)((targetPercent - before.UsedPercent) / span);
         return before.Cost + (after.Cost - before.Cost) * ratio;
+    }
+
+    private static int LowerBound(
+        IReadOnlyList<InterpolationPoint> points,
+        double targetPercent)
+    {
+        var low = 0;
+        var high = points.Count;
+        while (low < high)
+        {
+            var middle = low + (high - low) / 2;
+            if (points[middle].UsedPercent < targetPercent)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                high = middle;
+            }
+        }
+
+        return low;
     }
 
     private static IReadOnlyList<QuotaCostCurvePoint> Downsample(
@@ -247,7 +300,7 @@ internal static class QuotaCostCurveCalculator
 
     private static string FormatMoney(decimal value)
     {
-        var symbol = PriceProfiles.PrimaryCodex.CurrencySymbol;
+        var symbol = "$";
         var prefix = string.Equals(symbol, "Credits", StringComparison.OrdinalIgnoreCase)
             ? "Credits "
             : symbol;
@@ -259,6 +312,8 @@ internal static class QuotaCostCurveCalculator
             _ => $"{prefix}{value:N4}"
         };
     }
+
+    private sealed record InterpolationPoint(double UsedPercent, decimal Cost);
 }
 
 internal sealed record QuotaCostCurveResult(

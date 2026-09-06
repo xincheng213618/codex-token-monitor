@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using ZstdSharp;
 
@@ -8,11 +9,17 @@ internal sealed record DshUsageEntry(
     DateTimeOffset Timestamp,
     long Input,
     long Cached,
+    long CacheWrite,
     long Output,
     long Reasoning)
 {
-    public long Total => Input + Output;
-    public long CompletenessScore => Input + Cached + Output + Reasoning;
+    public long Total => TokenCountMath.AddNonNegative(Input, Output);
+    public decimal CompletenessScore =>
+        (decimal)TokenCountMath.NonNegative(Input) +
+        TokenCountMath.NonNegative(Cached) +
+        TokenCountMath.NonNegative(CacheWrite) +
+        TokenCountMath.NonNegative(Output) +
+        TokenCountMath.NonNegative(Reasoning);
 }
 
 /// <summary>
@@ -56,25 +63,48 @@ internal static class DshUsageReader
 
     public static IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.GetIncompleteDays(CacheFolder, startInclusive, endInclusive);
+        return UsageCacheStore.GetIncompleteDays(CacheFolder, startInclusive, endInclusive, cancellationToken);
     }
 
-    public static TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    public static TokenUsageSummary ReadCachedRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal);
+        return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal, cancellationToken);
     }
 
     public static IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal);
+        return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal, cancellationToken);
     }
 
-    public static TokenUsageSummary ReadRange(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday = true)
+    public static void WarmHistoricalDays(
+        IEnumerable<DateTimeOffset> daysLocal,
+        CancellationToken cancellationToken = default,
+        Action<DateTimeOffset>? dayCompleted = null,
+        Action<int, int>? fileProgress = null)
     {
+        HistoricalUsageBatchWarmer.WarmDays(CacheFolder, daysLocal,
+            (start, end, token) => ReadEventsUncached(start, end, token, fileProgress),
+            cancellationToken, dayCompleted);
+    }
+
+    public static TokenUsageSummary ReadRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var summary = new TokenUsageSummary
         {
             StartLocal = startLocal,
@@ -90,6 +120,7 @@ internal static class DshUsageReader
 
         for (var dayStart = StartOfDay(startLocal); dayStart < endLocal; dayStart = dayStart.AddDays(1))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var dayEnd = dayStart.AddDays(1);
             var clippedStart = Max(dayStart, startLocal);
             var clippedEnd = Min(dayEnd, endLocal);
@@ -110,15 +141,16 @@ internal static class DshUsageReader
 
             if (fullHistoricalDay)
             {
-                if (cache.TryGetRecord(date, out var record) && record.IsComplete)
+                if (cache.TryGetRecord(date, out var record) &&
+                    record.IsComplete &&
+                    record.DetailEventCount == record.Events)
                 {
                     continue;
                 }
 
-                var scanStart = cache.TryGetRecord(date, out record) && record.ScannedThroughLocal is not null
-                    ? record.ScannedThroughLocal.Value.AddTicks(1)
-                    : dayStart;
-                AddScanRange(scanRanges, Max(scanStart, clippedStart), dayEnd, cacheHistoricalDays: true);
+                // Invalidated historical records can retain a watermark at the
+                // end of the day. Re-scan the full day to restore completion.
+                AddScanRange(scanRanges, dayStart, dayEnd, cacheHistoricalDays: true);
             }
             else if (liveToday)
             {
@@ -140,14 +172,16 @@ internal static class DshUsageReader
 
         foreach (var scanRange in scanRanges)
         {
-            var scanned = ReadRangeUncached(scanRange.StartLocal, scanRange.EndLocal);
-            foreach (var bucket in scanned.DailyBuckets)
+            cancellationToken.ThrowIfCancellationRequested();
+            var scanned = ReadRangeUncached(scanRange.StartLocal, scanRange.EndLocal, cancellationToken);
+            foreach (var bucket in scanned.Summary.DailyBuckets)
             {
                 AddBucketToSummary(summary, dailyBuckets, bucket);
             }
 
             for (var dayStart = StartOfDay(scanRange.StartLocal); dayStart < scanRange.EndLocal; dayStart = dayStart.AddDays(1))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var date = DateOnly.FromDateTime(dayStart.DateTime);
                 var isToday = dayStart == todayStart;
                 if (!scanRange.CacheHistoricalDays && !isToday)
@@ -155,7 +189,7 @@ internal static class DshUsageReader
                     continue;
                 }
 
-                var scannedBucket = scanned.DailyBuckets.FirstOrDefault(item =>
+                var scannedBucket = scanned.Summary.DailyBuckets.FirstOrDefault(item =>
                     DateOnly.FromDateTime(item.StartLocal.DateTime) == date) ?? new TokenUsageBucket
                     {
                         StartLocal = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset)
@@ -169,28 +203,56 @@ internal static class DshUsageReader
 
                 AddBucketValues(mergedBucket, scannedBucket);
                 var scannedThrough = Min(dayStart.AddDays(1), scanRange.EndLocal).AddTicks(-1);
-                var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart;
+                var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart && scanned.IsComplete;
                 IReadOnlyList<TokenUsageEvent>? detailEvents = null;
                 var replaceDetailEvents = true;
-                if (cache.HasDetailEvents(date))
+                var hasDetailEvents = cache.HasDetailEvents(date, cancellationToken);
+                if (hasDetailEvents)
                 {
-                    var detailStart = Max(dayStart, scanRange.StartLocal);
+                    var cachedDetailEvents = cache.GetDetailEvents(date, cancellationToken);
+                    var detailsAreComplete = !cache.TryGetRecord(date, out var detailRecord) ||
+                                             cachedDetailEvents.Count == detailRecord.Events;
+                    var detailStart = detailsAreComplete
+                        ? Max(dayStart, scanRange.StartLocal)
+                        : dayStart;
                     var detailEnd = Min(dayStart.AddDays(1), scanRange.EndLocal);
-                    var newEvents = ReadEventsUncached(detailStart, detailEnd);
-                    detailEvents = newEvents
+                    var newEventsResult = ReadEventsUncached(detailStart, detailEnd, cancellationToken);
+                    detailEvents = UsageEventMerger.Merge(cachedDetailEvents.Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1))
-                        .ToList();
-                    replaceDetailEvents = false;
+                        .ToList());
+                    mergedBucket = CreateBucketFromEvents(dayStart, detailEvents);
+                    isComplete &= newEventsResult.IsComplete;
+                }
+                else if (scanRange.CacheHistoricalDays && scannedBucket.Events > 0)
+                {
+                    mergedBucket = scannedBucket;
                 }
 
-                cache.Put(mergedBucket, isComplete, scannedThrough, detailEvents, replaceDetailEvents);
+                cache.Put(
+                    mergedBucket,
+                    isComplete,
+                    scannedThrough,
+                    detailEvents,
+                    replaceDetailEvents,
+                    cancellationToken);
+                dailyBuckets[date] = mergedBucket;
                 cacheChanged = true;
             }
         }
 
         if (cacheChanged)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
+            summary = new TokenUsageSummary
+            {
+                StartLocal = startLocal,
+                EndLocal = endLocal
+            };
+            foreach (var bucket in dailyBuckets.Values)
+            {
+                AddBucketValues(summary, bucket);
+            }
         }
 
         summary.DailyBuckets.AddRange(
@@ -204,15 +266,19 @@ internal static class DshUsageReader
     public static IReadOnlyList<TokenUsageBucket> ReadDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        bool includeLiveToday = true)
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var dayStart = StartOfDay(startLocal);
         var date = DateOnly.FromDateTime(dayStart.DateTime);
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var todayStart = StartOfDay(now);
         var dayEnd = dayStart.AddDays(1);
         var cache = UsageCacheStore.Load(CacheFolder);
-        var cachedEvents = cache.GetDetailEvents(date).ToList();
+        var cachedEvents = cache.GetDetailEvents(date, cancellationToken).ToList();
 
         if (dayStart == todayStart && !includeLiveToday)
         {
@@ -221,28 +287,38 @@ internal static class DshUsageReader
 
         if (cache.TryGetRecord(date, out var record) && (cachedEvents.Count > 0 || record.Events == 0))
         {
-            var hasCompleteCoverage = record.IsComplete ||
-                                      record.ScannedThroughLocal is not null &&
-                                      record.ScannedThroughLocal.Value >= endLocal.AddTicks(-1);
+            var hasCompleteDetails = cachedEvents.Count == record.Events;
+            var hasCompleteCoverage = hasCompleteDetails && (record.IsComplete ||
+                                      dayStart >= todayStart && record.ScannedThroughLocal is not null &&
+                                      record.ScannedThroughLocal.Value >= endLocal.AddTicks(-1));
             if (hasCompleteCoverage)
             {
                 return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
             }
 
-            if (includeLiveToday)
+            if (dayStart < todayStart || includeLiveToday)
             {
-                var scanStart = record.ScannedThroughLocal is null
-                    ? startLocal
+                var replaceDetails = !hasCompleteDetails || dayStart < todayStart && !record.IsComplete;
+                var scanStart = replaceDetails || record.ScannedThroughLocal is null
+                    ? replaceDetails ? dayStart : startLocal
                     : Max(startLocal, record.ScannedThroughLocal.Value.AddTicks(1));
-                if (scanStart < endLocal)
+                var scanEnd = dayStart < todayStart ? dayEnd : endLocal;
+                if (scanStart < scanEnd)
                 {
-                    var newEvents = ReadEventsUncached(scanStart, endLocal);
+                    var newEventsResult = ReadEventsUncached(scanStart, scanEnd, cancellationToken);
                     var mergedEvents = UsageEventMerger.Merge(cachedEvents
-                        .Concat(newEvents)
+                        .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
                     var mergedBucket = CreateBucketFromEvents(dayStart, mergedEvents);
-                    var isComplete = dayStart < todayStart && endLocal >= dayEnd;
-                    cache.Put(mergedBucket, isComplete, endLocal.AddTicks(-1), newEvents, replaceDetailEvents: false);
+                    var isComplete = dayStart < todayStart && scanEnd >= dayEnd && newEventsResult.IsComplete;
+                    cache.Put(
+                        mergedBucket,
+                        isComplete,
+                        scanEnd.AddTicks(-1),
+                        replaceDetails ? mergedEvents : newEventsResult.Events,
+                        replaceDetailEvents: replaceDetails,
+                        cancellationToken: cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                     cache.Save();
                     cachedEvents = mergedEvents.ToList();
                 }
@@ -251,12 +327,19 @@ internal static class DshUsageReader
             return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
         }
 
-        var fullEvents = ReadEventsUncached(startLocal, endLocal);
+        var fullEventsResult = ReadEventsUncached(startLocal, endLocal, cancellationToken);
+        var fullEvents = fullEventsResult.Events;
         var fullBucket = CreateBucketFromEvents(dayStart, fullEvents);
-        var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd;
+        var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd && fullEventsResult.IsComplete;
         if (startLocal == dayStart)
         {
-            cache.Put(fullBucket, completeHistoricalDay, endLocal.AddTicks(-1), fullEvents);
+            cache.Put(
+                fullBucket,
+                completeHistoricalDay,
+                endLocal.AddTicks(-1),
+                fullEvents,
+                cancellationToken: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
         }
 
@@ -265,12 +348,19 @@ internal static class DshUsageReader
 
     public static IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal));
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal, cancellationToken).Events);
     }
 
-    private static TokenUsageSummary ReadRangeUncached(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private static UsageRangeScanResult ReadRangeUncached(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken)
     {
         var summary = new TokenUsageSummary
         {
@@ -279,12 +369,15 @@ internal static class DshUsageReader
         };
         var dailyBuckets = new Dictionary<DateOnly, TokenUsageBucket>();
 
-        foreach (var usageEvent in ReadEventsUncached(startLocal, endLocal))
+        var eventsResult = ReadEventsUncached(startLocal, endLocal, cancellationToken);
+        foreach (var usageEvent in eventsResult.Events)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             summary.Add(
                 usageEvent.Timestamp,
                 usageEvent.InputTokens,
                 usageEvent.CachedInputTokens,
+                usageEvent.CacheWriteInputTokens,
                 usageEvent.OutputTokens,
                 usageEvent.ReasoningOutputTokens,
                 usageEvent.TotalTokens);
@@ -303,6 +396,7 @@ internal static class DshUsageReader
                 usageEvent.Timestamp,
                 usageEvent.InputTokens,
                 usageEvent.CachedInputTokens,
+                usageEvent.CacheWriteInputTokens,
                 usageEvent.OutputTokens,
                 usageEvent.ReasoningOutputTokens,
                 usageEvent.TotalTokens);
@@ -313,19 +407,31 @@ internal static class DshUsageReader
                 .OrderBy(bucket => bucket.StartLocal)
                 .Where(bucket => bucket.Events > 0));
 
-        return summary;
+        return new UsageRangeScanResult(summary, eventsResult.IsComplete);
     }
 
-    private static List<TokenUsageEvent> ReadEventsUncached(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private static UsageEventScanResult ReadEventsUncached(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken,
+        Action<int, int>? fileProgress = null)
     {
         var entries = new Dictionary<string, DshUsageEntry>(StringComparer.Ordinal);
+        var isComplete = true;
 
-        foreach (var file in EnumerateTranscriptFiles(startLocal))
+        var files = EnumerateTranscriptFiles(startLocal).ToList();
+        fileProgress?.Invoke(0, files.Count);
+        for (var index = 0; index < files.Count; index++)
         {
-            ReadFile(file, startLocal, endLocal, entries);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!ReadFile(files[index], startLocal, endLocal, entries, cancellationToken))
+            {
+                isComplete = false;
+            }
+            fileProgress?.Invoke(index + 1, files.Count);
         }
 
-        return entries.Values
+        var events = entries.Values
             .OrderBy(item => item.Timestamp)
             .Select(item => new TokenUsageEvent(
                 item.Timestamp,
@@ -334,13 +440,15 @@ internal static class DshUsageReader
                 item.Output,
                 item.Reasoning,
                 item.Total,
-                $"dsh:{item.Key}"))
+                $"dsh:{item.Key}",
+                item.CacheWrite))
             .ToList();
+        return new UsageEventScanResult(events, isComplete);
     }
 
     private static IEnumerable<string> EnumerateTranscriptFiles(DateTimeOffset startLocal)
     {
-        var sessionsRoot = OverrideSessionsRoot ??
+        var sessionsRoot = UsageLogPaths.GetOverrideRoot(UsageSource.Dsh) ?? OverrideSessionsRoot ??
                            Path.Combine(
                                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                                SessionsRootName,
@@ -379,50 +487,106 @@ internal static class DshUsageReader
         }
     }
 
-    private static void ReadFile(
+    private static bool ReadFile(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        Dictionary<string, DshUsageEntry> entries)
+        Dictionary<string, DshUsageEntry> entries,
+        CancellationToken cancellationToken)
     {
-        string decoded;
         try
         {
-            decoded = ReadDecodedTranscript(file);
+            // Keep only one decoded frame and the current compressed frame in
+            // memory.  A long-lived session can grow very large; materializing
+            // the complete compressed file and complete decoded transcript at
+            // once creates two avoidable large-object allocations.
+            var sessionId = Path.GetFileName(Path.GetDirectoryName(file)) ?? file;
+            var pendingLine = "";
+            var decodedCompletely = ReadDecodedTranscript(file, decoded =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (decoded.Length == 0)
+                {
+                    return;
+                }
+
+                var text = pendingLine + decoded;
+                var lastNewLine = text.LastIndexOf('\n');
+                if (lastNewLine < 0)
+                {
+                    pendingLine = text;
+                    return;
+                }
+
+                ConsumeLines(
+                    text[..(lastNewLine + 1)],
+                    sessionId,
+                    startLocal,
+                    endLocal,
+                    entries,
+                    cancellationToken);
+                pendingLine = text[(lastNewLine + 1)..];
+            }, cancellationToken);
+
+            if (pendingLine.Length > 0)
+            {
+                ConsumeLine(pendingLine, sessionId, startLocal, endLocal, entries, cancellationToken);
+            }
+
+            return decodedCompletely;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
-            return;
+            return false;
         }
+    }
 
-        if (decoded.Length == 0)
-        {
-            return;
-        }
-
-        // The session directory name is the session id, which is part of the
-        // stable (session id, seq) key.
-        var sessionId = Path.GetFileName(Path.GetDirectoryName(file)) ?? file;
-
-        using var reader = new StringReader(decoded);
+    private static void ConsumeLines(
+        string text,
+        string sessionId,
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        Dictionary<string, DshUsageEntry> entries,
+        CancellationToken cancellationToken)
+    {
+        using var reader = new StringReader(text);
         while (reader.ReadLine() is { } line)
         {
-            if (!line.Contains("\"usage\"", StringComparison.Ordinal))
-            {
-                continue;
-            }
+            cancellationToken.ThrowIfCancellationRequested();
+            ConsumeLine(line, sessionId, startLocal, endLocal, entries, cancellationToken);
+        }
+    }
 
-            var entry = TryReadUsageLine(line, sessionId, startLocal, endLocal);
-            if (entry is null)
-            {
-                continue;
-            }
+    private static void ConsumeLine(
+        string line,
+        string sessionId,
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        Dictionary<string, DshUsageEntry> entries,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!line.Contains("\"usage\"", StringComparison.Ordinal))
+        {
+            return;
+        }
 
-            if (!entries.TryGetValue(entry.Key, out var existing) ||
-                entry.CompletenessScore > existing.CompletenessScore)
-            {
-                entries[entry.Key] = entry;
-            }
+        var entry = TryReadUsageLine(line, sessionId, startLocal, endLocal);
+        if (entry is null)
+        {
+            return;
+        }
+
+        // Keep event deduplication local to a day during historical batches.
+        var dayKey = $"{entry.Timestamp:yyyy-MM-dd}|{entry.Key}";
+        if (!entries.TryGetValue(dayKey, out var existing) ||
+            entry.CompletenessScore > existing.CompletenessScore)
+        {
+            entries[dayKey] = entry;
         }
     }
 
@@ -432,76 +596,158 @@ internal static class DshUsageReader
     /// truncated tail frame (a live append in progress) is tolerated and the
     /// completed prefix is still returned.
     /// </summary>
-    private static string ReadDecodedTranscript(string file)
+    private static bool ReadDecodedTranscript(
+        string file,
+        Action<string> consumeDecoded,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(consumeDecoded);
         using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        var buffer = new byte[stream.Length];
-        var read = 0;
-        while (read < buffer.Length)
+        var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        var frame = new MemoryStream();
+        var magicCandidate = new byte[4];
+        var magicCandidateLength = 0;
+        var frameStarted = false;
+        try
         {
-            var count = stream.Read(buffer, read, buffer.Length - read);
-            if (count <= 0)
+            while (true)
             {
-                break;
+                cancellationToken.ThrowIfCancellationRequested();
+                var bytesRead = stream.Read(buffer, 0, buffer.Length);
+                if (bytesRead <= 0)
+                {
+                    break;
+                }
+
+                for (var index = 0; index < bytesRead; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var value = buffer[index];
+                    if (!frameStarted)
+                    {
+                        if (value == ZstdMagicAt(magicCandidateLength))
+                        {
+                            magicCandidate[magicCandidateLength++] = value;
+                        }
+                        else
+                        {
+                            magicCandidateLength = value == ZstdMagic0 ? 1 : 0;
+                            if (magicCandidateLength == 1)
+                            {
+                                magicCandidate[0] = value;
+                            }
+                        }
+
+                        if (magicCandidateLength == 4)
+                        {
+                            frame.Write(magicCandidate, 0, magicCandidateLength);
+                            magicCandidateLength = 0;
+                            frameStarted = true;
+                        }
+
+                        continue;
+                    }
+
+                    if (value == ZstdMagicAt(magicCandidateLength))
+                    {
+                        magicCandidate[magicCandidateLength++] = value;
+                        if (magicCandidateLength == 4)
+                        {
+                            if (!TryConsumeFrame(frame, consumeDecoded, cancellationToken))
+                            {
+                                return false;
+                            }
+
+                            frame.Dispose();
+                            frame = new MemoryStream();
+                            frame.Write(magicCandidate, 0, magicCandidateLength);
+                            magicCandidateLength = 0;
+                        }
+
+                        continue;
+                    }
+
+                    if (magicCandidateLength > 0)
+                    {
+                        frame.Write(magicCandidate, 0, magicCandidateLength);
+                        magicCandidateLength = 0;
+                    }
+
+                    if (value == ZstdMagic0)
+                    {
+                        magicCandidate[0] = value;
+                        magicCandidateLength = 1;
+                    }
+                    else
+                    {
+                        frame.WriteByte(value);
+                    }
+                }
             }
 
-            read += count;
-        }
-
-        if (read == 0)
-        {
-            return "";
-        }
-
-        if (read < buffer.Length)
-        {
-            Array.Resize(ref buffer, read);
-        }
-
-        var builder = new StringBuilder();
-        var positions = FindFrameStarts(buffer);
-        for (var index = 0; index < positions.Count; index++)
-        {
-            var frameStart = positions[index];
-            var frameEnd = index + 1 < positions.Count ? positions[index + 1] : buffer.Length;
-            if (frameEnd <= frameStart)
+            if (!frameStarted)
             {
-                continue;
+                return false;
             }
 
-            try
+            if (magicCandidateLength > 0)
             {
-                using var decompressor = new Decompressor();
-                var unwrapped = decompressor.Unwrap(buffer.AsSpan(frameStart, frameEnd - frameStart));
-                builder.Append(Encoding.UTF8.GetString(unwrapped.ToArray()));
+                frame.Write(magicCandidate, 0, magicCandidateLength);
             }
-            catch
-            {
-                // Incomplete or corrupt frame: keep the successfully decoded
-                // prefix. Dsh appends frames atomically, so a partial frame
-                // only appears while a write is in flight.
-                break;
-            }
-        }
 
-        return builder.ToString();
+            // A truncated final frame throws here; all previous complete
+            // frames have already been consumed and remain usable.
+            return TryConsumeFrame(frame, consumeDecoded, cancellationToken);
+        }
+        finally
+        {
+            frame.Dispose();
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
-    private static List<int> FindFrameStarts(byte[] buffer)
+    private static bool TryConsumeFrame(
+        MemoryStream frame,
+        Action<string> consumeDecoded,
+        CancellationToken cancellationToken)
     {
-        var positions = new List<int>();
-        for (var index = 0; index <= buffer.Length - 4; index++)
+        try
         {
-            if (buffer[index] == ZstdMagic0 &&
-                buffer[index + 1] == ZstdMagic1 &&
-                buffer[index + 2] == ZstdMagic2 &&
-                buffer[index + 3] == ZstdMagic3)
+            cancellationToken.ThrowIfCancellationRequested();
+            using var decompressor = new Decompressor();
+            var unwrapped = decompressor.Unwrap(
+                frame.GetBuffer().AsSpan(0, checked((int)frame.Length)));
+            if (unwrapped.Length > 0)
             {
-                positions.Add(index);
+                cancellationToken.ThrowIfCancellationRequested();
+                consumeDecoded(Encoding.UTF8.GetString(unwrapped.ToArray()));
             }
-        }
 
-        return positions;
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Incomplete or corrupt frame: keep the successfully decoded
+            // prefix. Dsh appends frames atomically, so a partial frame
+            // only appears while a write is in flight.
+            return false;
+        }
+    }
+
+    private static byte ZstdMagicAt(int index)
+    {
+        return index switch
+        {
+            0 => ZstdMagic0,
+            1 => ZstdMagic1,
+            2 => ZstdMagic2,
+            3 => ZstdMagic3,
+            _ => 0
+        };
     }
 
     private static DshUsageEntry? TryReadUsageLine(
@@ -542,15 +788,24 @@ internal static class DshUsageReader
             var output = GetInt64(usage, "outputTokens");
             var reasoning = GetInt64(usage, "reasoningTokens");
 
-            // The bucket pipeline computes Uncached = input - cached, so the
+            // The bucket pipeline computes Uncached = input - cached - cacheWrite, so the
             // input figure must include every billed input component (same
             // convention as ClaudeUsageReader). cacheWrite is usually 0 for
             // DeepSeek, but keep it inside input for forward compatibility.
-            var input = inputTokens + cacheRead + cacheWrite;
+            var input = TokenCountMath.AddNonNegative(
+                TokenCountMath.AddNonNegative(inputTokens, cacheRead),
+                cacheWrite);
 
             // (session id, seq) is the stable per-session event identity; seq
             // is contiguous within a transcript, so re-scans never duplicate.
-            return new DshUsageEntry($"{sessionId}:{seq}", timestamp, input, cacheRead, output, reasoning);
+            return new DshUsageEntry(
+                $"{sessionId}:{seq}",
+                timestamp,
+                input,
+                cacheRead,
+                cacheWrite,
+                output,
+                reasoning);
         }
         catch
         {
@@ -568,6 +823,7 @@ internal static class DshUsageReader
                     item.Timestamp,
                     item.InputTokens,
                     item.CachedInputTokens,
+                    item.CacheWriteInputTokens,
                     item.OutputTokens,
                     item.ReasoningOutputTokens,
                     item.TotalTokens);
@@ -587,6 +843,7 @@ internal static class DshUsageReader
                 item.Timestamp,
                 item.InputTokens,
                 item.CachedInputTokens,
+                item.CacheWriteInputTokens,
                 item.OutputTokens,
                 item.ReasoningOutputTokens,
                 item.TotalTokens);

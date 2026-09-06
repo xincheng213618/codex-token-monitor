@@ -42,9 +42,10 @@ internal sealed class PriceSettings
 {
     public int DisplayOrderVersion { get; set; } = 17;
     public string GptName { get; set; } = "GPT-5.6 Sol";
-    public decimal GptUncachedInputPerMillion { get; set; } = 5.00m;
-    public decimal GptCachedInputPerMillion { get; set; } = 0.50m;
-    public decimal GptOutputPerMillion { get; set; } = 30.00m;
+    public decimal GptUncachedInputPerMillion { get; set; } = 4.00m;
+    public decimal GptCachedInputPerMillion { get; set; } = 0.40m;
+    public decimal? GptCacheWriteInputPerMillion { get; set; } = 5.00m;
+    public decimal GptOutputPerMillion { get; set; } = 20.00m;
 
     public decimal DeepSeekUncachedInputPerMillion { get; set; } = 4.50m;
     public decimal DeepSeekCachedInputPerMillion { get; set; } = 0.15m;
@@ -68,7 +69,8 @@ internal sealed class PriceSettings
             GptUncachedInputPerMillion,
             GptCachedInputPerMillion,
             GptOutputPerMillion,
-            1_000_000m);
+            1_000_000m,
+            CacheWriteInputPerMillion: GptCacheWriteInputPerMillion);
     }
 
     public PriceProfile ToDeepSeekProfile()
@@ -102,6 +104,7 @@ internal sealed class PriceSettings
             GptName = GptName,
             GptUncachedInputPerMillion = GptUncachedInputPerMillion,
             GptCachedInputPerMillion = GptCachedInputPerMillion,
+            GptCacheWriteInputPerMillion = GptCacheWriteInputPerMillion,
             GptOutputPerMillion = GptOutputPerMillion,
             DeepSeekUncachedInputPerMillion = DeepSeekUncachedInputPerMillion,
             DeepSeekCachedInputPerMillion = DeepSeekCachedInputPerMillion,
@@ -155,20 +158,24 @@ internal sealed class PriceSettings
 
 internal sealed class PricePreset
 {
+    public const string OpenAiPriceSource = "OpenAI 标准价（2026-09-05）：https://developers.openai.com/api/docs/pricing";
     public string Group { get; set; } = "";
     public string Provider { get; set; } = "";
     public string Model { get; set; } = "";
+    public string ModelId { get; set; } = "";
     public string CurrencySymbol { get; set; } = "$";
     public string UnitLabel { get; set; } = "1M tokens";
     public decimal Divisor { get; set; } = 1_000_000m;
     public decimal UncachedInput { get; set; }
     public decimal CachedInput { get; set; }
+    public decimal? CacheWriteInput { get; set; }
     public decimal Output { get; set; }
     public string Source { get; set; } = "";
     public PriceSchedule Schedule { get; set; }
 
     public string DisplayName => string.IsNullOrWhiteSpace(Provider) ? Model : $"{Provider} {Model}".Trim();
     public string ScheduleLabel => Schedule == PriceSchedule.DeepSeekBeijingPeakDouble ? "峰谷自动" : "固定价";
+    public decimal EffectiveCacheWriteInput => CacheWriteInput ?? UncachedInput;
 
     public PriceProfile ToProfile()
     {
@@ -179,7 +186,8 @@ internal sealed class PricePreset
             CachedInput,
             Output,
             Divisor <= 0 ? 1_000_000m : Divisor,
-            Schedule);
+            Schedule,
+            CacheWriteInput);
     }
 
     public PricePreset Clone()
@@ -189,11 +197,13 @@ internal sealed class PricePreset
             Group = Group,
             Provider = Provider,
             Model = Model,
+            ModelId = ModelId,
             CurrencySymbol = CurrencySymbol,
             UnitLabel = UnitLabel,
             Divisor = Divisor,
             UncachedInput = UncachedInput,
             CachedInput = CachedInput,
+            CacheWriteInput = CacheWriteInput,
             Output = Output,
             Source = Source,
             Schedule = Schedule
@@ -208,13 +218,15 @@ internal sealed class PricePreset
             Preset("DeepSeek", "V4 Flash", "¥", "CNY / 1M tokens", 1_000_000m, 1.50m, 0.05m, 4.50m, "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）", schedule: PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）", schedule: PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
-            Preset("OpenAI", "GPT-5.6 Sol", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI Help Center GPT-5.6 preview"),
-            Preset("OpenAI", "GPT-5.6 Terra", "$", "USD / 1M tokens", 1_000_000m, 2.50m, 0.25m, 15.00m, "OpenAI Help Center GPT-5.6 preview"),
-            Preset("OpenAI", "GPT-5.6 Luna", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 6.00m, "OpenAI Help Center GPT-5.6 preview"),
+            Preset("OpenAI", "GPT-6 Astra", "$", "USD / 1M tokens", 1_000_000m, 10m, 1m, 50m, "https://developers.openai.com/api/docs/models/gpt-6-astra (Standard)", cacheWrite: 12.5m),
+            Preset("OpenAI", "codex-auto-review", "$", "USD / 1M tokens", 1_000_000m, 0.20m, 0.02m, 1.20m, "用户截图参考价（2026-09-05）；未核实为 OpenAI 官方报价，可编辑"),
+            Preset("OpenAI", "GPT-5.6 Sol", "$", "USD / 1M tokens", 1_000_000m, 4.00m, 0.40m, 20.00m, OpenAiPriceSource, cacheWrite: 5.00m),
+            Preset("OpenAI", "GPT-5.6 Terra", "$", "USD / 1M tokens", 1_000_000m, 2.00m, 0.20m, 12.00m, OpenAiPriceSource, cacheWrite: 2.50m),
+            Preset("OpenAI", "GPT-5.6 Luna", "$", "USD / 1M tokens", 1_000_000m, 0.20m, 0.02m, 1.20m, OpenAiPriceSource, cacheWrite: 0.25m),
             Preset("OpenAI", "GPT-5.5 Standard Long", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 45.00m, "历史长上下文对比档"),
             Preset("OpenAI", "GPT-5.5 Priority Short", "$", "USD / 1M tokens", 1_000_000m, 12.50m, 1.25m, 75.00m, "OpenAI priority short context"),
-            Preset("OpenAI", "GPT-5.4 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 30.00m, "OpenAI API Pricing"),
-            Preset("OpenAI", "GPT-5.4 mini Short", "$", "USD / 1M tokens", 1_000_000m, 1.50m, 0.15m, 9.00m, "OpenAI API Pricing"),
+            Preset("OpenAI", "GPT-5.4 Standard Short", "$", "USD / 1M tokens", 1_000_000m, 2.50m, 0.25m, 15.00m, OpenAiPriceSource),
+            Preset("OpenAI", "GPT-5.4 mini Short", "$", "USD / 1M tokens", 1_000_000m, 0.75m, 0.075m, 4.50m, OpenAiPriceSource),
             Preset("OpenAI", "GPT-5.2 Reference", "$", "USD / 1M tokens", 1_000_000m, 1.75m, 0.175m, 14.00m, "价格库参考档"),
             Preset("Xiaomi", "MiMo V2.5 Pro API", "$", "USD / 1M tokens", 1_000_000m, 0.435m, 0.0036m, 0.87m, "MiMo pay-as-you-go"),
             Preset("Xiaomi", "Token Plan ¥99 / 110亿", "¥", "CNY / 1M tokens", 1_000_000m, 0.0090m, 0.0090m, 0.0090m, "99元=110亿 token 折算"),
@@ -250,17 +262,17 @@ internal sealed class PricePreset
             Preset("腾讯混元", "Hunyuan Turbo S", "¥", "CNY / 1M tokens", 1_000_000m, 0.80m, 0.08m, 2.00m, "腾讯混元官方参考"),
             Preset("腾讯混元", "Hunyuan Turbo", "¥", "CNY / 1M tokens", 1_000_000m, 0.70m, 0.07m, 1.40m, "腾讯混元官方参考"),
             Preset("腾讯混元", "Hy3", "¥", "CNY / 1M tokens", 1_000_000m, 1.00m, 0.25m, 4.00m, "腾讯云 TokenHub 官方价格"),
-            Preset("Claude", "Fable 5 API", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 50.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Opus 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read"),
+            Preset("Claude", "Fable 5 API", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 50.00m, "Anthropic pricing/cache read/write", cacheWrite: 12.50m),
+            Preset("Claude", "Opus 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read/write", cacheWrite: 6.25m),
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）", "Claude Code", PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan", "Claude Code"),
-            Preset("Claude", "Sonnet 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Haiku 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Sonnet 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Sonnet 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Opus 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Haiku 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read"),
-            Preset("Claude", "Opus 4.6 Fast", "$", "USD / 1M tokens", 1_000_000m, 30.00m, 3.00m, 150.00m, "Anthropic fast mode reference"),
+            Preset("Claude", "Sonnet 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read/write", cacheWrite: 3.75m),
+            Preset("Claude", "Haiku 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read/write", cacheWrite: 1.25m),
+            Preset("Claude", "Sonnet 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read/write", cacheWrite: 3.75m),
+            Preset("Claude", "Sonnet 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.30m, 15.00m, "Anthropic pricing/cache read/write", cacheWrite: 3.75m),
+            Preset("Claude", "Opus 4.6 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read/write", cacheWrite: 6.25m),
+            Preset("Claude", "Haiku 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read/write", cacheWrite: 1.25m),
+            Preset("Claude", "Opus 4.6 Fast", "$", "USD / 1M tokens", 1_000_000m, 30.00m, 3.00m, 150.00m, "Anthropic fast mode reference", cacheWrite: 37.50m),
             Preset("xAI", "Grok 4.3", "$", "USD / 1M tokens", 1_000_000m, 1.25m, 0.25m, 2.50m, "xAI model pricing"),
             Preset("xAI", "Grok Build 0.1", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.00m, 2.00m, "xAI coding reference")
         };
@@ -333,18 +345,21 @@ internal sealed class PricePreset
         decimal output,
         string source,
         string group = "",
-        PriceSchedule schedule = PriceSchedule.Flat)
+        PriceSchedule schedule = PriceSchedule.Flat,
+        decimal? cacheWrite = null)
     {
         return new PricePreset
         {
             Group = group,
             Provider = provider,
             Model = model,
+            ModelId = CodexModelCost.DefaultModelId(provider, model),
             CurrencySymbol = currency,
             UnitLabel = unit,
             Divisor = divisor,
             UncachedInput = input,
             CachedInput = cached,
+            CacheWriteInput = cacheWrite,
             Output = output,
             Source = source,
             Schedule = schedule
@@ -400,7 +415,7 @@ internal static class PriceSettingsStore
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(path, JsonSerializer.Serialize(normalized, JsonOptions));
+        WriteAtomically(path, JsonSerializer.Serialize(normalized, JsonOptions));
         Current = normalized;
     }
 
@@ -460,7 +475,7 @@ internal static class PriceSettingsStore
                     var normalizedJson = JsonSerializer.Serialize(normalized, JsonOptions);
                     if (!string.Equals(json.Trim(), normalizedJson.Trim(), StringComparison.Ordinal))
                     {
-                        File.WriteAllText(path, normalizedJson);
+                        WriteAtomically(path, normalizedJson);
                     }
 
                     return normalized;
@@ -475,7 +490,24 @@ internal static class PriceSettingsStore
         return Defaults();
     }
 
-    private static PriceSettings Normalize(PriceSettings settings)
+    private static void WriteAtomically(string path, string contents)
+    {
+        var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temporaryPath, contents);
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
+    }
+
+    internal static PriceSettings Normalize(PriceSettings settings)
     {
         var defaults = Defaults();
         var codexPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Codex), PricePresetGroups.Codex);
@@ -502,13 +534,20 @@ internal static class PriceSettingsStore
             gptName = defaults.GptName;
         }
 
+        var oldGptDefault = gptName == "GPT-5.6 Sol" && settings.GptUncachedInputPerMillion == 5m &&
+            settings.GptCachedInputPerMillion == .5m && settings.GptOutputPerMillion == 30m &&
+            settings.GptCacheWriteInputPerMillion is null or 6.25m;
+
         return new PriceSettings
         {
             DisplayOrderVersion = defaults.DisplayOrderVersion,
             GptName = gptName,
-            GptUncachedInputPerMillion = PositiveOrDefault(settings.GptUncachedInputPerMillion, defaults.GptUncachedInputPerMillion),
-            GptCachedInputPerMillion = PositiveOrDefault(settings.GptCachedInputPerMillion, defaults.GptCachedInputPerMillion),
-            GptOutputPerMillion = PositiveOrDefault(settings.GptOutputPerMillion, defaults.GptOutputPerMillion),
+            GptUncachedInputPerMillion = oldGptDefault ? defaults.GptUncachedInputPerMillion : PositiveOrDefault(settings.GptUncachedInputPerMillion, defaults.GptUncachedInputPerMillion),
+            GptCachedInputPerMillion = oldGptDefault ? defaults.GptCachedInputPerMillion : PositiveOrDefault(settings.GptCachedInputPerMillion, defaults.GptCachedInputPerMillion),
+            GptCacheWriteInputPerMillion = !oldGptDefault && settings.GptCacheWriteInputPerMillion is >= 0m
+                ? settings.GptCacheWriteInputPerMillion
+                : defaults.GptCacheWriteInputPerMillion,
+            GptOutputPerMillion = oldGptDefault ? defaults.GptOutputPerMillion : PositiveOrDefault(settings.GptOutputPerMillion, defaults.GptOutputPerMillion),
             DeepSeekUncachedInputPerMillion = shouldRefreshDefaults
                 ? defaults.DeepSeekUncachedInputPerMillion
                 : PositiveOrDefault(settings.DeepSeekUncachedInputPerMillion, defaults.DeepSeekUncachedInputPerMillion),
@@ -642,15 +681,32 @@ internal static class PriceSettingsStore
             Group = PricePresetGroups.Normalize(group),
             Provider = item.Provider.Trim(),
             Model = item.Model.Trim(),
+            ModelId = string.IsNullOrWhiteSpace(item.ModelId)
+                ? CodexModelCost.DefaultModelId(item.Provider, item.Model)
+                : item.ModelId.Trim(),
             CurrencySymbol = string.IsNullOrWhiteSpace(item.CurrencySymbol) ? "$" : item.CurrencySymbol.Trim(),
             UnitLabel = string.IsNullOrWhiteSpace(item.UnitLabel) ? "1M tokens" : item.UnitLabel.Trim(),
             Divisor = item.Divisor <= 0 ? 1_000_000m : item.Divisor,
             UncachedInput = PositiveOrDefault(item.UncachedInput, 0),
             CachedInput = PositiveOrDefault(item.CachedInput, 0),
+            CacheWriteInput = item.CacheWriteInput is >= 0m ? item.CacheWriteInput : null,
             Output = PositiveOrDefault(item.Output, 0),
             Source = item.Source.Trim(),
             Schedule = item.Schedule
         };
+
+        RefreshOldOpenAiDefault(normalized);
+        if (TryGetKnownCacheWritePrice(normalized, out var knownCacheWritePrice) &&
+            normalized.CacheWriteInput is null)
+        {
+            normalized.CacheWriteInput = knownCacheWritePrice;
+        }
+
+        if (CodexModelCost.HasNoPublicPrice(normalized.ModelId) &&
+            normalized.Source == CodexModelCost.PlaceholderPriceSource &&
+            normalized.UncachedInput == 0 && normalized.CachedInput == 0 && normalized.Output == 0 &&
+            (normalized.CacheWriteInput ?? 0) == 0)
+            normalized.Source = CodexModelCost.NoPublicPriceSource;
 
         if (IsOfficialDeepSeekModel(normalized, "V4 Flash"))
         {
@@ -670,6 +726,57 @@ internal static class PriceSettingsStore
         }
 
         return normalized;
+    }
+
+    private static void RefreshOldOpenAiDefault(PricePreset preset)
+    {
+        var expectedId = CodexModelCost.DefaultModelId(preset.Provider, preset.Model);
+        if (string.IsNullOrEmpty(expectedId)) expectedId = CodexModelCost.NormalizeModelId(preset.Model);
+        if (preset.Provider != "OpenAI" || preset.CurrencySymbol != "$" || preset.Divisor != 1_000_000m ||
+            preset.Source is not ("OpenAI API Pricing" or "OpenAI Help Center GPT-5.6 preview") ||
+            !string.IsNullOrEmpty(preset.ModelId) && CodexModelCost.NormalizeModelId(preset.ModelId) != expectedId) return;
+        (decimal Input, decimal Cached, decimal Output, decimal? Write) previous = preset.Model switch
+        {
+            "GPT-5.6 Sol" => (5m, .5m, 30m, (decimal?)6.25m),
+            "GPT-5.6 Terra" => (2.5m, .25m, 15m, (decimal?)3.125m),
+            "GPT-5.6 Luna" => (1m, .1m, 6m, (decimal?)1.25m),
+            "GPT-5.4 Standard Short" => (5m, .5m, 30m, (decimal?)null),
+            "GPT-5.4 mini Short" => (1.5m, .15m, 9m, (decimal?)null),
+            _ => (0m, 0m, 0m, (decimal?)null)
+        };
+        if (previous.Input == 0 || preset.UncachedInput != previous.Input || preset.CachedInput != previous.Cached ||
+            preset.Output != previous.Output || (preset.CacheWriteInput is not null && preset.CacheWriteInput != previous.Write)) return;
+        var current = PricePreset.Defaults().First(p => p.Provider == preset.Provider && p.Model == preset.Model);
+        preset.UncachedInput = current.UncachedInput;
+        preset.CachedInput = current.CachedInput;
+        preset.CacheWriteInput = current.CacheWriteInput;
+        preset.Output = current.Output;
+        preset.Source = current.Source;
+    }
+
+    private static bool TryGetKnownCacheWritePrice(PricePreset preset, out decimal price)
+    {
+        price = 0m;
+        if (preset.Provider.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+        {
+            price = preset.Model switch
+            {
+                "GPT-5.6 Sol" => 5m,
+                "GPT-5.6 Terra" => 2.5m,
+                "GPT-5.6 Luna" => .25m,
+                _ => 0m
+            };
+            return price > 0m;
+        }
+
+        if (!preset.Provider.Equals("Claude", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Claude's standard 5-minute prompt-cache write rate is 1.25x input.
+        price = preset.UncachedInput * 1.25m;
+        return true;
     }
 
     private static bool IsRetiredPreset(PricePreset preset)
@@ -748,7 +855,6 @@ internal static class PriceSettingsStore
 
     private static string GetPath()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, FolderName, FileName);
+        return Path.Combine(MonitorCachePaths.LocalAppData, FolderName, FileName);
     }
 }

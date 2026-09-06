@@ -5,6 +5,30 @@ namespace CodexTokenMonitor.Tests;
 public sealed class PriceSettingsTests
 {
     [Fact]
+    public void OfficialRefreshUpdatesOldBuiltInsAndPreservesEditedPrices()
+    {
+        var settings = new PriceSettings();
+        var sol = settings.CodexPresets.Single(p => p.Model == "GPT-5.6 Sol");
+        sol.UncachedInput = 5m; sol.CachedInput = .5m; sol.Output = 30m; sol.CacheWriteInput = 6.25m;
+        sol.Source = "OpenAI API Pricing";
+        var refreshed = PriceSettingsStore.Normalize(settings).CodexPresets.Single(p => p.Model == sol.Model);
+        Assert.Equal(4m, refreshed.UncachedInput);
+        Assert.Equal(.4m, refreshed.CachedInput);
+        Assert.Equal(20m, refreshed.Output);
+        Assert.Equal(5m, refreshed.CacheWriteInput);
+        sol.Source = "OpenAI Help Center GPT-5.6 preview";
+        sol.ModelId = "gpt-5.6-sol";
+        Assert.Equal(4m, PriceSettingsStore.Normalize(settings).CodexPresets.Single(p => p.Model == sol.Model).UncachedInput);
+        sol.Source = "OpenAI API Pricing"; sol.ModelId = "";
+        sol.Output = 29m;
+        Assert.Equal(29m, PriceSettingsStore.Normalize(settings).CodexPresets.Single(p => p.Model == sol.Model).Output);
+        sol.Output = 30m; sol.Source = "用户报价";
+        Assert.Equal(30m, PriceSettingsStore.Normalize(settings).CodexPresets.Single(p => p.Model == sol.Model).Output);
+        sol.Source = "OpenAI API Pricing"; sol.ModelId = "custom-sol";
+        Assert.Equal(30m, PriceSettingsStore.Normalize(settings).CodexPresets.Single(p => p.Model == sol.Model).Output);
+    }
+
+    [Fact]
     public void Defaults_IncludeKimiK3OfficialPricing()
     {
         var preset = Assert.Single(PricePreset.Defaults(), item => item.Provider.Contains("Kimi") && item.Model == "K3");
@@ -24,8 +48,22 @@ public sealed class PriceSettingsTests
         Assert.Equal("$", preset.CurrencySymbol);
         Assert.Equal(10.00m, preset.UncachedInput);
         Assert.Equal(1.00m, preset.CachedInput);
+        Assert.Equal(12.50m, preset.CacheWriteInput);
         Assert.Equal(50.00m, preset.Output);
         Assert.Equal(1_000_000m, preset.Divisor);
+    }
+
+    [Theory]
+    [InlineData("GPT-5.6 Sol", 5)]
+    [InlineData("GPT-5.6 Terra", 2.5)]
+    [InlineData("GPT-5.6 Luna", .25)]
+    public void Defaults_IncludeOpenAiCacheWritePricing(string model, double cacheWrite)
+    {
+        var preset = Assert.Single(
+            PricePreset.Defaults(),
+            item => item.Provider == "OpenAI" && item.Model == model);
+
+        Assert.Equal((decimal)cacheWrite, preset.CacheWriteInput);
     }
 
     [Fact]

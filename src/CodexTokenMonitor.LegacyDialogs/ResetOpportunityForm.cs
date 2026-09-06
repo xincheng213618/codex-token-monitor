@@ -6,11 +6,18 @@ internal sealed class ResetOpportunityForm : Form
 {
     private readonly DataGridView resetGrid = new();
     private readonly Label statusLabel = new();
+    private readonly CancellationTokenSource lifetimeCancellation = new();
+    private bool isClosed;
 
     public ResetOpportunityForm()
     {
         BuildUi();
         LoadRows(ResetOpportunityStore.Load());
+        FormClosed += (_, _) =>
+        {
+            isClosed = true;
+            lifetimeCancellation.Cancel();
+        };
     }
 
     private void BuildUi()
@@ -161,7 +168,12 @@ internal sealed class ResetOpportunityForm : Form
         statusLabel.Text = "正在从 Codex 同步...";
         try
         {
-            var result = await ResetOpportunityStore.SyncFromCodexAsync();
+            var result = await ResetOpportunityStore.SyncFromCodexAsync(lifetimeCancellation.Token);
+            if (isClosed)
+            {
+                return;
+            }
+
             statusLabel.Text = result.Message;
             if (result.Success)
             {
@@ -172,9 +184,25 @@ internal sealed class ResetOpportunityForm : Form
                 MessageBox.Show(this, result.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || isClosed)
+        {
+            // Closing the modal form cancels the network request and should
+            // not surface as an unhandled async-void event exception.
+        }
+        catch (Exception ex)
+        {
+            if (!isClosed)
+            {
+                statusLabel.Text = "同步失败";
+                MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
         finally
         {
-            syncButton.Enabled = true;
+            if (!isClosed)
+            {
+                syncButton.Enabled = true;
+            }
         }
     }
 

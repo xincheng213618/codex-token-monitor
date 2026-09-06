@@ -1,9 +1,10 @@
 namespace CodexTokenMonitor;
 
-internal sealed record CodexDataSharingPeer(string Format, int Version, string DeviceName);
+internal sealed record CodexDataSharingPeer(string Format, int Version, string DeviceName, bool SupportsHistory = false);
 
 internal static class CodexDataSharingProtocol
 {
+    public const int Version = 4;
     public const string Format = "codex-token-monitor-sharing";
     public const string KeyHeader = "X-Codex-Sharing-Key";
     public const long MaxPackageBytes = 256L * 1024 * 1024;

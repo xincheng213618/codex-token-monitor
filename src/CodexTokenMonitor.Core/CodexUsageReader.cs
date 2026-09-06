@@ -3,6 +3,7 @@ namespace CodexTokenMonitor;
 internal sealed class UsageCacheStore
 {
     private const string CacheFileName = "token-cache-v3.sqlite3";
+    private const string CurrentQuotaHistoryFileName = "quota-history-v2.jsonl";
     private static readonly string[] LegacyDerivedFileNames =
     {
         "token-cache-v2.sqlite3",
@@ -18,32 +19,33 @@ internal sealed class UsageCacheStore
     private readonly string cachePath;
     private readonly bool available;
 
-    private UsageCacheStore(string folderName)
+    private UsageCacheStore(string cachePath)
     {
-        cachePath = GetCachePath(folderName);
+        this.cachePath = cachePath;
         available = InitializeDatabase();
         if (available)
         {
-            DeleteLegacyDerivedFiles(folderName);
+            DeleteLegacyDerivedFiles(cachePath);
         }
     }
 
     public static string GetCachePath(string folderName)
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, folderName, CacheFileName);
+        return Path.Combine(MonitorCachePaths.LocalAppData, folderName,
+            folderName == "CodexTokenMonitor" ? "token-cache-v4.sqlite3" : CacheFileName);
     }
 
     public static bool Delete(string folderName)
     {
-        Stores.TryRemove(folderName, out _);
+        var cachePath = GetCachePath(folderName);
+        Stores.TryRemove(cachePath, out _);
         QuotaSnapshotCacheStore.Forget(folderName);
         SqliteConnection.ClearAllPools();
-        var cachePath = GetCachePath(folderName);
         var deleted = false;
         var directory = Path.GetDirectoryName(cachePath) ?? "";
         foreach (var path in new[] { cachePath, cachePath + "-wal", cachePath + "-shm" }
-                     .Concat(LegacyDerivedFileNames.Select(name => Path.Combine(directory, name))))
+                     .Concat(LegacyDerivedFileNames.Select(name => Path.Combine(directory, name)))
+                     .Append(Path.Combine(directory, CurrentQuotaHistoryFileName)))
         {
             try
             {
@@ -62,9 +64,9 @@ internal sealed class UsageCacheStore
         return deleted;
     }
 
-    private static void DeleteLegacyDerivedFiles(string folderName)
+    private static void DeleteLegacyDerivedFiles(string cachePath)
     {
-        var directory = Path.GetDirectoryName(GetCachePath(folderName)) ?? "";
+        var directory = Path.GetDirectoryName(cachePath) ?? "";
         foreach (var fileName in LegacyDerivedFileNames)
         {
             try
@@ -90,22 +92,104 @@ internal sealed class UsageCacheStore
     public static IReadOnlyList<DateTimeOffset> GetIncompleteDays(
         string folderName,
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Load(folderName).ReadIncompleteDays(startInclusive, endInclusive, cancellationToken);
+    }
+
+    private IReadOnlyList<DateTimeOffset> ReadIncompleteDays(
+        DateTimeOffset startInclusive,
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = new List<DateTimeOffset>();
-        var cache = Load(folderName);
         var start = StartOfDay(startInclusive);
         var end = StartOfDay(endInclusive);
+        if (start > end)
+        {
+            return result;
+        }
 
+        if (!available)
+        {
+            return EnumerateDaysDescending(start, end, cancellationToken);
+        }
+
+        try
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT date, is_complete, events, input_tokens, cached_input_tokens,
+                       uncached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
+                       long_context_events, long_context_input_tokens, long_context_cached_input_tokens,
+                       long_context_output_tokens, peak_input_tokens, peak_cached_input_tokens, peak_output_tokens,
+                       cache_write_input_tokens, long_context_cache_write_input_tokens,
+                       peak_cache_write_input_tokens,
+                       (
+                           SELECT COUNT(*)
+                           FROM usage_events detail
+                           WHERE detail.date = usage_days.date
+                       ) AS detail_event_count, model_usage_json
+                FROM usage_days
+                WHERE date >= $start_date AND date <= $end_date
+                """;
+            command.Parameters.AddWithValue("$start_date", DateKey(DateOnly.FromDateTime(start.DateTime)));
+            command.Parameters.AddWithValue("$end_date", DateKey(DateOnly.FromDateTime(end.DateTime)));
+
+            var records = new Dictionary<string, (bool IsComplete, bool IsValid, long Events, long DetailEventCount)>(
+                StringComparer.Ordinal);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var cachedBucket = ReadCachedBucketCounters(reader, 2);
+                records[reader.GetString(0)] = (
+                    reader.GetInt64(1) != 0,
+                    IsNormalizedBucket(cachedBucket),
+                    cachedBucket.Events,
+                    reader.GetInt64(19));
+            }
+
+            for (var day = end; day >= start; day = day.AddDays(-1))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var dateKey = DateKey(DateOnly.FromDateTime(day.DateTime));
+                if (!records.TryGetValue(dateKey, out var record) ||
+                    !record.IsComplete ||
+                    !record.IsValid ||
+                    record.DetailEventCount != record.Events)
+                {
+                    result.Add(day);
+                }
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Preserve the previous fail-safe behavior: an unreadable cache is incomplete.
+            return EnumerateDaysDescending(start, end, cancellationToken);
+        }
+    }
+
+    private static List<DateTimeOffset> EnumerateDaysDescending(
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new List<DateTimeOffset>();
         for (var day = end; day >= start; day = day.AddDays(-1))
         {
-            var date = DateOnly.FromDateTime(day.DateTime);
-            if (!cache.TryGetRecord(date, out var record) ||
-                !record.IsComplete ||
-                record.Events > 0 && record.DetailEventCount == 0)
-            {
-                result.Add(day);
-            }
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Add(day);
         }
 
         return result;
@@ -113,7 +197,8 @@ internal sealed class UsageCacheStore
 
     private static DateTimeOffset StartOfDay(DateTimeOffset value)
     {
-        return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, value.Offset);
+        var local = value.ToOffset(CodexUsageReader.BeijingOffset);
+        return new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
     }
 
     public static UsageCacheStore Load()
@@ -123,10 +208,11 @@ internal sealed class UsageCacheStore
 
     public static UsageCacheStore Load(string folderName)
     {
+        var cachePath = GetCachePath(folderName);
         return Stores.GetOrAdd(
-            folderName,
-            static name => new Lazy<UsageCacheStore>(
-                () => new UsageCacheStore(name),
+            cachePath,
+            static path => new Lazy<UsageCacheStore>(
+                () => new UsageCacheStore(path),
                 LazyThreadSafetyMode.ExecutionAndPublication)).Value;
     }
 
@@ -137,14 +223,16 @@ internal sealed class UsageCacheStore
             StartLocal = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset)
         };
 
-        if (!TryGetRecord(date, out var record))
+        if (!TryGetRecord(date, out var record) || !record.IsValid)
         {
             return false;
         }
 
+        bucket.ModelUsage = record.ModelUsage;
         bucket.Events = record.Events;
         bucket.InputTokens = record.InputTokens;
         bucket.CachedInputTokens = record.CachedInputTokens;
+        bucket.CacheWriteInputTokens = record.CacheWriteInputTokens;
         bucket.UncachedInputTokens = record.UncachedInputTokens;
         bucket.OutputTokens = record.OutputTokens;
         bucket.ReasoningOutputTokens = record.ReasoningOutputTokens;
@@ -152,16 +240,37 @@ internal sealed class UsageCacheStore
         bucket.LongContextEvents = record.LongContextEvents;
         bucket.LongContextInputTokens = record.LongContextInputTokens;
         bucket.LongContextCachedInputTokens = record.LongContextCachedInputTokens;
+        bucket.LongContextCacheWriteInputTokens = record.LongContextCacheWriteInputTokens;
         bucket.LongContextOutputTokens = record.LongContextOutputTokens;
         bucket.PeakInputTokens = record.PeakInputTokens;
         bucket.PeakCachedInputTokens = record.PeakCachedInputTokens;
+        bucket.PeakCacheWriteInputTokens = record.PeakCacheWriteInputTokens;
         bucket.PeakOutputTokens = record.PeakOutputTokens;
         bucket.LastTokenEventLocal = record.LastTokenEventLocal;
+        bucket.NormalizeInPlace();
         return true;
     }
 
-    public TokenUsageSummary ReadRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    public IReadOnlyList<string> GetModelIds()
     {
+        if (!available) return Array.Empty<string>();
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT DISTINCT model_id FROM usage_events WHERE model_id IS NOT NULL AND model_id <> '' ORDER BY model_id";
+        using var reader = command.ExecuteReader();
+        var result = new List<string>();
+        while (reader.Read()) result.Add(reader.GetString(0));
+        return result;
+    }
+
+    public TokenUsageSummary ReadRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var summary = new TokenUsageSummary
         {
             StartLocal = startLocal,
@@ -179,6 +288,7 @@ internal sealed class UsageCacheStore
             using var connection = OpenConnection();
             for (var dayStart = StartOfDay(startLocal); dayStart < endLocal; dayStart = dayStart.AddDays(1))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var dayEnd = dayStart.AddDays(1);
                 var clippedStart = Max(dayStart, startLocal);
                 var clippedEnd = Min(dayEnd, endLocal);
@@ -190,19 +300,23 @@ internal sealed class UsageCacheStore
                 var date = DateOnly.FromDateTime(dayStart.DateTime);
                 if (clippedStart == dayStart && clippedEnd == dayEnd)
                 {
-                    if (TryGet(connection, date, out var cachedBucket))
+                    if (TryGetComplete(connection, date, out var cachedBucket))
                     {
                         AddBucketToSummary(summary, dailyBuckets, cachedBucket);
+                        continue;
                     }
-
-                    continue;
                 }
 
-                foreach (var usageEvent in ReadDetailEvents(connection, clippedStart, clippedEnd))
+                foreach (var usageEvent in ReadDetailEvents(connection, clippedStart, clippedEnd, cancellationToken))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     AddEventToSummary(summary, dailyBuckets, usageEvent);
                 }
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -216,7 +330,7 @@ internal sealed class UsageCacheStore
         return summary;
     }
 
-    private static bool TryGet(SqliteConnection connection, DateOnly date, out TokenUsageBucket bucket)
+    private static bool TryGetComplete(SqliteConnection connection, DateOnly date, out TokenUsageBucket bucket)
     {
         bucket = new TokenUsageBucket
         {
@@ -224,41 +338,47 @@ internal sealed class UsageCacheStore
         };
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT events, input_tokens, cached_input_tokens, uncached_input_tokens,
-                   output_tokens, reasoning_output_tokens, total_tokens, last_token_event_local,
+            SELECT is_complete, events, input_tokens, cached_input_tokens, uncached_input_tokens,
+                   output_tokens, reasoning_output_tokens, total_tokens,
                    long_context_events, long_context_input_tokens,
                    long_context_cached_input_tokens, long_context_output_tokens,
-                   peak_input_tokens, peak_cached_input_tokens, peak_output_tokens
+                   peak_input_tokens, peak_cached_input_tokens, peak_output_tokens,
+                   cache_write_input_tokens, long_context_cache_write_input_tokens,
+                   peak_cache_write_input_tokens,
+                   last_token_event_local,
+                   (SELECT COUNT(*) FROM usage_events WHERE usage_events.date = usage_days.date), model_usage_json
             FROM usage_days
             WHERE date = $date
             """;
         command.Parameters.AddWithValue("$date", DateKey(date));
         using var reader = command.ExecuteReader();
-        if (!reader.Read())
+        if (!reader.Read() || reader.GetInt64(0) == 0)
         {
             return false;
         }
 
-        bucket.Events = reader.GetInt64(0);
-        bucket.InputTokens = reader.GetInt64(1);
-        bucket.CachedInputTokens = reader.GetInt64(2);
-        bucket.UncachedInputTokens = reader.GetInt64(3);
-        bucket.OutputTokens = reader.GetInt64(4);
-        bucket.ReasoningOutputTokens = reader.GetInt64(5);
-        bucket.TotalTokens = reader.GetInt64(6);
-        bucket.LastTokenEventLocal = ReadDateTimeOffset(reader, 7);
-        bucket.LongContextEvents = reader.GetInt64(8);
-        bucket.LongContextInputTokens = reader.GetInt64(9);
-        bucket.LongContextCachedInputTokens = reader.GetInt64(10);
-        bucket.LongContextOutputTokens = reader.GetInt64(11);
-        bucket.PeakInputTokens = reader.GetInt64(12);
-        bucket.PeakCachedInputTokens = reader.GetInt64(13);
-        bucket.PeakOutputTokens = reader.GetInt64(14);
+        bucket = ReadCachedBucketCounters(reader, 1, bucket.StartLocal);
+        bucket.LastTokenEventLocal = ReadDateTimeOffset(reader, 18);
+        var detailEventCount = reader.GetInt64(19);
+        bucket.ModelUsage = ReadModelUsage(reader, 20);
+        if (!IsNormalizedBucket(bucket) ||
+            detailEventCount != bucket.Events)
+        {
+            return false;
+        }
+
+        bucket.NormalizeInPlace();
         return true;
     }
 
-    public IReadOnlyList<TokenUsageBucket> ReadDetailRows(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         if (!available || startLocal >= endLocal)
         {
             return Array.Empty<TokenUsageBucket>();
@@ -267,7 +387,11 @@ internal sealed class UsageCacheStore
         try
         {
             using var connection = OpenConnection();
-            return ToDetailBuckets(ReadDetailEvents(connection, startLocal, endLocal));
+            return ToDetailBuckets(ReadDetailEvents(connection, startLocal, endLocal, cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -292,7 +416,9 @@ internal sealed class UsageCacheStore
                        uncached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, last_token_event_local,
                        long_context_events, long_context_input_tokens, long_context_cached_input_tokens,
                        long_context_output_tokens, peak_input_tokens, peak_cached_input_tokens, peak_output_tokens,
-                       (SELECT COUNT(*) FROM usage_events WHERE usage_events.date = usage_days.date) AS detail_event_count
+                       cache_write_input_tokens, long_context_cache_write_input_tokens,
+                       peak_cache_write_input_tokens,
+                       (SELECT COUNT(*) FROM usage_events WHERE usage_events.date = usage_days.date) AS detail_event_count, model_usage_json
                 FROM usage_days
                 WHERE date = $date
                 """;
@@ -324,8 +450,20 @@ internal sealed class UsageCacheStore
                 PeakInputTokens = reader.GetInt64(15),
                 PeakCachedInputTokens = reader.GetInt64(16),
                 PeakOutputTokens = reader.GetInt64(17),
-                DetailEventCount = reader.GetInt32(18)
+                CacheWriteInputTokens = reader.GetInt64(18),
+                LongContextCacheWriteInputTokens = reader.GetInt64(19),
+                PeakCacheWriteInputTokens = reader.GetInt64(20),
+                DetailEventCount = reader.GetInt32(21),
+                ModelUsage = ReadModelUsage(reader, 22)
             };
+            var bucket = ToBucket(record);
+            record.IsValid = IsNormalizedBucket(bucket);
+            bucket.NormalizeInPlace();
+            CopyBucketCounters(bucket, record);
+            if (!record.IsValid)
+            {
+                record.IsComplete = false;
+            }
             return true;
         }
         catch
@@ -334,8 +472,11 @@ internal sealed class UsageCacheStore
         }
     }
 
-    public IReadOnlyList<TokenUsageEvent> GetDetailEvents(DateOnly date)
+    public IReadOnlyList<TokenUsageEvent> GetDetailEvents(
+        DateOnly date,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!available)
         {
             return Array.Empty<TokenUsageEvent>();
@@ -344,7 +485,75 @@ internal sealed class UsageCacheStore
         try
         {
             using var connection = OpenConnection();
-            return ReadDetailEvents(connection, date);
+            return ReadDetailEvents(connection, date, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return Array.Empty<TokenUsageEvent>();
+        }
+    }
+
+    public IReadOnlyList<TokenUsageEvent> GetDetailEvents(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        if (!available || startLocal >= endLocal)
+        {
+            return Array.Empty<TokenUsageEvent>();
+        }
+
+        try
+        {
+            var queryStart = StartOfDay(startLocal).AddDays(-1);
+            var queryEnd = StartOfDay(endLocal).AddDays(1);
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT timestamp_local, input_tokens, cached_input_tokens, output_tokens,
+                       reasoning_output_tokens, total_tokens, event_key, cache_write_input_tokens, model_id, service_tier
+                FROM usage_events
+                WHERE date >= $start_date AND date <= $end_date
+                ORDER BY timestamp_local
+                """;
+            command.Parameters.AddWithValue("$start_date", DateKey(DateOnly.FromDateTime(queryStart.DateTime)));
+            command.Parameters.AddWithValue("$end_date", DateKey(DateOnly.FromDateTime(queryEnd.DateTime)));
+
+            var result = new List<TokenUsageEvent>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var timestampLocal = ParseDateTimeOffset(reader.GetString(0))
+                    .ToOffset(CodexUsageReader.BeijingOffset);
+                if (timestampLocal < startLocal || timestampLocal >= endLocal)
+                {
+                    continue;
+                }
+
+                result.Add(new TokenUsageEvent(
+                    timestampLocal,
+                    reader.GetInt64(1),
+                    reader.GetInt64(2),
+                    reader.GetInt64(3),
+                    reader.GetInt64(4),
+                    reader.GetInt64(5),
+                    reader.GetString(6),
+                    reader.GetInt64(7), reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9)));
+            }
+
+            return UsageEventMerger.Merge(result);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -365,7 +574,7 @@ internal sealed class UsageCacheStore
             using var command = connection.CreateCommand();
             command.CommandText = """
                 SELECT event_key, timestamp_local, input_tokens, cached_input_tokens,
-                       output_tokens, reasoning_output_tokens, total_tokens
+                       output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier
                 FROM usage_events
                 ORDER BY timestamp_local
                 """;
@@ -381,7 +590,8 @@ internal sealed class UsageCacheStore
                     reader.GetInt64(4),
                     reader.GetInt64(5),
                     reader.GetInt64(6),
-                    reader.GetString(0)));
+                    reader.GetString(0),
+                    reader.GetInt64(7), reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9)));
             }
 
             return UsageEventMerger.Merge(result);
@@ -389,6 +599,84 @@ internal sealed class UsageCacheStore
         catch
         {
             return Array.Empty<TokenUsageEvent>();
+        }
+    }
+
+    /// <summary>
+    /// Streams detail events directly from SQLite for transfer/export paths.
+    /// Unlike <see cref="GetAllDetailEvents"/>, this does not materialize the
+    /// complete event table in memory first.
+    /// </summary>
+    public IEnumerable<TokenUsageEvent> EnumerateDetailEvents(
+        DateTimeOffset? startInclusive,
+        DateTimeOffset? endExclusive,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!available ||
+            (startInclusive is null) != (endExclusive is null) ||
+            startInclusive >= endExclusive)
+        {
+            yield break;
+        }
+
+        var normalizedStart = startInclusive?.ToOffset(CodexUsageReader.BeijingOffset);
+        var normalizedEnd = endExclusive?.ToOffset(CodexUsageReader.BeijingOffset);
+        DateTimeOffset? queryStart = normalizedStart is null
+            ? null
+            : StartOfDay(normalizedStart.Value).AddDays(-1);
+        DateTimeOffset? queryEnd = normalizedEnd is null
+            ? null
+            : StartOfDay(normalizedEnd.Value).AddDays(1);
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = normalizedStart is null
+            ? """
+                SELECT event_key, timestamp_local, input_tokens, cached_input_tokens,
+                       output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier
+                FROM usage_events
+                ORDER BY timestamp_local
+                """
+            : """
+                SELECT event_key, timestamp_local, input_tokens, cached_input_tokens,
+                       output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier
+                FROM usage_events
+                WHERE date >= $start_date AND date <= $end_date
+                ORDER BY timestamp_local
+                """;
+        if (queryStart is not null && queryEnd is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            command.Parameters.AddWithValue(
+                "$start_date",
+                DateKey(DateOnly.FromDateTime(queryStart.Value.DateTime)));
+            command.Parameters.AddWithValue(
+                "$end_date",
+                DateKey(DateOnly.FromDateTime(queryEnd.Value.DateTime)));
+        }
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var timestampLocal = ParseDateTimeOffset(reader.GetString(1))
+                .ToOffset(CodexUsageReader.BeijingOffset);
+            if (normalizedStart is not null &&
+                (timestampLocal < normalizedStart.Value || timestampLocal >= normalizedEnd!.Value))
+            {
+                continue;
+            }
+
+            yield return new TokenUsageEvent(
+                timestampLocal,
+                reader.GetInt64(2),
+                reader.GetInt64(3),
+                reader.GetInt64(4),
+                reader.GetInt64(5),
+                reader.GetInt64(6),
+                reader.GetString(0),
+                reader.GetInt64(7), reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9));
         }
     }
 
@@ -431,14 +719,18 @@ internal sealed class UsageCacheStore
                 hasRecord && record.IsComplete,
                 hasRecord ? record.ScannedThroughLocal : null,
                 merged,
-                replaceDetailEvents: true);
+                replaceDetailEvents: true,
+                propagateErrors: true);
         }
 
         return added;
     }
 
-    public bool HasDetailEvents(DateOnly date)
+    public bool HasDetailEvents(
+        DateOnly date,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!available)
         {
             return false;
@@ -450,7 +742,12 @@ internal sealed class UsageCacheStore
             using var command = connection.CreateCommand();
             command.CommandText = "SELECT 1 FROM usage_events WHERE date = $date LIMIT 1";
             command.Parameters.AddWithValue("$date", DateKey(date));
+            cancellationToken.ThrowIfCancellationRequested();
             return command.ExecuteScalar() is not null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -506,7 +803,9 @@ internal sealed class UsageCacheStore
         bool isComplete = true,
         DateTimeOffset? scannedThroughLocal = null,
         IReadOnlyList<TokenUsageEvent>? detailEvents = null,
-        bool replaceDetailEvents = true)
+        bool replaceDetailEvents = true,
+        CancellationToken cancellationToken = default,
+        bool propagateErrors = false)
     {
         if (!available)
         {
@@ -515,6 +814,8 @@ internal sealed class UsageCacheStore
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            bucket.NormalizeInPlace();
             var date = DateOnly.FromDateTime(bucket.StartLocal.DateTime);
             var key = DateKey(date);
             using var connection = OpenConnection();
@@ -527,13 +828,15 @@ internal sealed class UsageCacheStore
                         date, is_complete, scanned_through_local, events, input_tokens, cached_input_tokens,
                         uncached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, last_token_event_local,
                         long_context_events, long_context_input_tokens, long_context_cached_input_tokens,
-                        long_context_output_tokens, peak_input_tokens, peak_cached_input_tokens, peak_output_tokens
+                        long_context_output_tokens, peak_input_tokens, peak_cached_input_tokens, peak_output_tokens,
+                        cache_write_input_tokens, long_context_cache_write_input_tokens, peak_cache_write_input_tokens, model_usage_json
                     )
                     VALUES (
                         $date, $is_complete, $scanned_through_local, $events, $input_tokens, $cached_input_tokens,
                         $uncached_input_tokens, $output_tokens, $reasoning_output_tokens, $total_tokens, $last_token_event_local,
                         $long_context_events, $long_context_input_tokens, $long_context_cached_input_tokens,
-                        $long_context_output_tokens, $peak_input_tokens, $peak_cached_input_tokens, $peak_output_tokens
+                        $long_context_output_tokens, $peak_input_tokens, $peak_cached_input_tokens, $peak_output_tokens,
+                        $cache_write_input_tokens, $long_context_cache_write_input_tokens, $peak_cache_write_input_tokens, $model_usage_json
                     )
                     ON CONFLICT(date) DO UPDATE SET
                         is_complete = excluded.is_complete,
@@ -552,14 +855,20 @@ internal sealed class UsageCacheStore
                         long_context_output_tokens = excluded.long_context_output_tokens,
                         peak_input_tokens = excluded.peak_input_tokens,
                         peak_cached_input_tokens = excluded.peak_cached_input_tokens,
-                        peak_output_tokens = excluded.peak_output_tokens
+                        peak_output_tokens = excluded.peak_output_tokens,
+                        cache_write_input_tokens = excluded.cache_write_input_tokens,
+                        long_context_cache_write_input_tokens = excluded.long_context_cache_write_input_tokens,
+                        peak_cache_write_input_tokens = excluded.peak_cache_write_input_tokens,
+                        model_usage_json = excluded.model_usage_json
                     """;
                 command.Parameters.AddWithValue("$date", key);
                 command.Parameters.AddWithValue("$is_complete", isComplete ? 1 : 0);
+                command.Parameters.AddWithValue("$model_usage_json", JsonSerializer.Serialize(bucket.ModelUsage));
                 command.Parameters.AddWithValue("$scanned_through_local", ToDbValue(scannedThroughLocal));
                 command.Parameters.AddWithValue("$events", bucket.Events);
                 command.Parameters.AddWithValue("$input_tokens", bucket.InputTokens);
                 command.Parameters.AddWithValue("$cached_input_tokens", bucket.CachedInputTokens);
+                command.Parameters.AddWithValue("$cache_write_input_tokens", bucket.CacheWriteInputTokens);
                 command.Parameters.AddWithValue("$uncached_input_tokens", bucket.UncachedInputTokens);
                 command.Parameters.AddWithValue("$output_tokens", bucket.OutputTokens);
                 command.Parameters.AddWithValue("$reasoning_output_tokens", bucket.ReasoningOutputTokens);
@@ -568,9 +877,13 @@ internal sealed class UsageCacheStore
                 command.Parameters.AddWithValue("$long_context_events", bucket.LongContextEvents);
                 command.Parameters.AddWithValue("$long_context_input_tokens", bucket.LongContextInputTokens);
                 command.Parameters.AddWithValue("$long_context_cached_input_tokens", bucket.LongContextCachedInputTokens);
+                command.Parameters.AddWithValue(
+                    "$long_context_cache_write_input_tokens",
+                    bucket.LongContextCacheWriteInputTokens);
                 command.Parameters.AddWithValue("$long_context_output_tokens", bucket.LongContextOutputTokens);
                 command.Parameters.AddWithValue("$peak_input_tokens", bucket.PeakInputTokens);
                 command.Parameters.AddWithValue("$peak_cached_input_tokens", bucket.PeakCachedInputTokens);
+                command.Parameters.AddWithValue("$peak_cache_write_input_tokens", bucket.PeakCacheWriteInputTokens);
                 command.Parameters.AddWithValue("$peak_output_tokens", bucket.PeakOutputTokens);
                 command.ExecuteNonQuery();
             }
@@ -590,35 +903,53 @@ internal sealed class UsageCacheStore
                     deleteCommand.ExecuteNonQuery();
                 }
 
+                using var insertCommand = connection.CreateCommand();
+                insertCommand.Transaction = transaction;
+                insertCommand.CommandText = """
+                    INSERT OR REPLACE INTO usage_events (
+                        date, event_key, timestamp_local, input_tokens, cached_input_tokens,
+                        output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier
+                    )
+                    VALUES (
+                        $date, $event_key, $timestamp_local, $input_tokens, $cached_input_tokens,
+                        $output_tokens, $reasoning_output_tokens, $total_tokens, $cache_write_input_tokens, $model_id, $service_tier
+                    )
+                    """;
+                insertCommand.Parameters.AddWithValue("$date", key);
+                insertCommand.Parameters.AddWithValue("$event_key", "");
+                insertCommand.Parameters.AddWithValue("$model_id", DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$service_tier", DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$timestamp_local", "");
+                insertCommand.Parameters.AddWithValue("$input_tokens", 0L);
+                insertCommand.Parameters.AddWithValue("$cached_input_tokens", 0L);
+                insertCommand.Parameters.AddWithValue("$cache_write_input_tokens", 0L);
+                insertCommand.Parameters.AddWithValue("$output_tokens", 0L);
+                insertCommand.Parameters.AddWithValue("$reasoning_output_tokens", 0L);
+                insertCommand.Parameters.AddWithValue("$total_tokens", 0L);
                 foreach (var item in UsageEventMerger.Merge(detailEvents))
                 {
-                    using var insertCommand = connection.CreateCommand();
-                    insertCommand.Transaction = transaction;
-                    insertCommand.CommandText = """
-                        INSERT OR REPLACE INTO usage_events (
-                            date, event_key, timestamp_local, input_tokens, cached_input_tokens,
-                            output_tokens, reasoning_output_tokens, total_tokens
-                        )
-                        VALUES (
-                            $date, $event_key, $timestamp_local, $input_tokens, $cached_input_tokens,
-                            $output_tokens, $reasoning_output_tokens, $total_tokens
-                        )
-                        """;
-                    insertCommand.Parameters.AddWithValue("$date", key);
-                    insertCommand.Parameters.AddWithValue("$event_key", BuildUsageEventKey(item));
-                    insertCommand.Parameters.AddWithValue("$timestamp_local", FormatDateTimeOffset(item.Timestamp));
-                    insertCommand.Parameters.AddWithValue("$input_tokens", item.InputTokens);
-                    insertCommand.Parameters.AddWithValue("$cached_input_tokens", item.CachedInputTokens);
-                    insertCommand.Parameters.AddWithValue("$output_tokens", item.OutputTokens);
-                    insertCommand.Parameters.AddWithValue("$reasoning_output_tokens", item.ReasoningOutputTokens);
-                    insertCommand.Parameters.AddWithValue("$total_tokens", item.TotalTokens);
+                    insertCommand.Parameters["$event_key"].Value = BuildUsageEventKey(item);
+                    insertCommand.Parameters["$model_id"].Value = (object?)item.ModelId ?? DBNull.Value;
+                    insertCommand.Parameters["$service_tier"].Value = (object?)item.ServiceTier ?? DBNull.Value;
+                    insertCommand.Parameters["$timestamp_local"].Value = FormatDateTimeOffset(item.Timestamp);
+                    insertCommand.Parameters["$input_tokens"].Value = item.InputTokens;
+                    insertCommand.Parameters["$cached_input_tokens"].Value = item.CachedInputTokens;
+                    insertCommand.Parameters["$cache_write_input_tokens"].Value = item.CacheWriteInputTokens;
+                    insertCommand.Parameters["$output_tokens"].Value = item.OutputTokens;
+                    insertCommand.Parameters["$reasoning_output_tokens"].Value = item.ReasoningOutputTokens;
+                    insertCommand.Parameters["$total_tokens"].Value = item.TotalTokens;
                     insertCommand.ExecuteNonQuery();
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             transaction.Commit();
         }
-        catch
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception) when (!propagateErrors)
         {
             // Cache writes are best-effort; usage calculation should keep working without them.
         }
@@ -661,7 +992,11 @@ internal sealed class UsageCacheStore
                     long_context_output_tokens INTEGER NOT NULL DEFAULT 0,
                     peak_input_tokens INTEGER NOT NULL DEFAULT 0,
                     peak_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
-                    peak_output_tokens INTEGER NOT NULL DEFAULT 0
+                    peak_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    long_context_cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    peak_cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    model_usage_json TEXT NOT NULL DEFAULT '{}'
                 )
                 """);
             ExecuteNonQuery(connection, """
@@ -674,6 +1009,9 @@ internal sealed class UsageCacheStore
                     output_tokens INTEGER NOT NULL,
                     reasoning_output_tokens INTEGER NOT NULL,
                     total_tokens INTEGER NOT NULL,
+                    cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    model_id TEXT NULL,
+                    service_tier TEXT NULL,
                     PRIMARY KEY (date, event_key)
                 )
                 """);
@@ -685,12 +1023,50 @@ internal sealed class UsageCacheStore
                 """);
             EnsureLongContextColumns(connection);
             EnsurePeakPricingColumns(connection);
+            EnsureCacheWriteColumns(connection);
+            EnsureModelColumns(connection);
+            if (Path.GetFileName(cachePath) == "token-cache-v4.sqlite3")
+            {
+                // Re-read only affected days once after fixing repeated session_meta.
+                // Keep imported events; the normal merge enriches matching keys.
+                ExecuteNonQuery(connection, """
+                    CREATE TABLE IF NOT EXISTS cache_maintenance (name TEXT PRIMARY KEY);
+                    UPDATE usage_days SET is_complete = 0
+                    WHERE date IN (SELECT date FROM usage_events WHERE model_id IS NULL OR model_id = '')
+                      AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'model-context-v2');
+                    INSERT OR IGNORE INTO cache_maintenance VALUES ('model-context-v2');
+                    UPDATE usage_days SET is_complete = 0
+                    WHERE events > 0 AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'service-tier-v1');
+                    INSERT OR IGNORE INTO cache_maintenance VALUES ('service-tier-v1');
+                    """);
+            }
             return true;
         }
         catch
         {
             return false;
         }
+    }
+
+    private static void EnsureModelColumns(SqliteConnection connection)
+    {
+        var eventColumns = ReadTableColumns(connection, "usage_events");
+        if (!eventColumns.Contains("model_id"))
+            ExecuteNonQuery(connection, "ALTER TABLE usage_events ADD COLUMN model_id TEXT NULL");
+        if (!eventColumns.Contains("service_tier"))
+            ExecuteNonQuery(connection, "ALTER TABLE usage_events ADD COLUMN service_tier TEXT NULL");
+        var dayColumns = ReadTableColumns(connection, "usage_days");
+        if (!dayColumns.Contains("model_usage_json"))
+            ExecuteNonQuery(connection, "ALTER TABLE usage_days ADD COLUMN model_usage_json TEXT NOT NULL DEFAULT '{}'");
+    }
+
+    private static Dictionary<string, TokenUsageBucket> ReadModelUsage(SqliteDataReader reader, int ordinal)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, TokenUsageBucket>>(reader.GetString(ordinal)) ?? new();
+        }
+        catch (JsonException) { return new(); }
     }
 
     private static void EnsureLongContextColumns(SqliteConnection connection)
@@ -798,6 +1174,59 @@ internal sealed class UsageCacheStore
             """);
     }
 
+    private static void EnsureCacheWriteColumns(SqliteConnection connection)
+    {
+        var dayColumns = ReadTableColumns(connection, "usage_days");
+        var eventColumns = ReadTableColumns(connection, "usage_events");
+        var addedColumn = false;
+
+        foreach (var column in new[]
+                 {
+                     "cache_write_input_tokens",
+                     "long_context_cache_write_input_tokens",
+                     "peak_cache_write_input_tokens"
+                 })
+        {
+            if (dayColumns.Contains(column))
+            {
+                continue;
+            }
+
+            ExecuteNonQuery(connection, $"ALTER TABLE usage_days ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0");
+            addedColumn = true;
+        }
+
+        if (!eventColumns.Contains("cache_write_input_tokens"))
+        {
+            ExecuteNonQuery(
+                connection,
+                "ALTER TABLE usage_events ADD COLUMN cache_write_input_tokens INTEGER NOT NULL DEFAULT 0");
+            addedColumn = true;
+        }
+
+        if (addedColumn)
+        {
+            // Existing cache rows were produced before cache-write telemetry
+            // was parsed. Mark them incomplete so the normal background scan
+            // can rebuild accurate counters from retained source logs.
+            ExecuteNonQuery(connection, "UPDATE usage_days SET is_complete = 0");
+        }
+    }
+
+    private static HashSet<string> ReadTableColumns(SqliteConnection connection, string tableName)
+    {
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({tableName})";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            columns.Add(reader.GetString(1));
+        }
+
+        return columns;
+    }
+
     private SqliteConnection OpenConnection()
     {
         var builder = new SqliteConnectionStringBuilder
@@ -812,12 +1241,16 @@ internal sealed class UsageCacheStore
         return connection;
     }
 
-    private static IReadOnlyList<TokenUsageEvent> ReadDetailEvents(SqliteConnection connection, DateOnly date)
+    private static IReadOnlyList<TokenUsageEvent> ReadDetailEvents(
+        SqliteConnection connection,
+        DateOnly date,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT event_key, timestamp_local, input_tokens, cached_input_tokens,
-                   output_tokens, reasoning_output_tokens, total_tokens
+                   output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier
             FROM usage_events
             WHERE date = $date
             ORDER BY timestamp_local
@@ -828,6 +1261,7 @@ internal sealed class UsageCacheStore
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             result.Add(new TokenUsageEvent(
                 ParseDateTimeOffset(reader.GetString(1)),
                 reader.GetInt64(2),
@@ -835,7 +1269,8 @@ internal sealed class UsageCacheStore
                 reader.GetInt64(4),
                 reader.GetInt64(5),
                 reader.GetInt64(6),
-                reader.GetString(0)));
+                reader.GetString(0),
+                reader.GetInt64(7), reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9)));
         }
 
         return UsageEventMerger.Merge(result);
@@ -844,12 +1279,13 @@ internal sealed class UsageCacheStore
     private static IReadOnlyList<TokenUsageEvent> ReadDetailEvents(
         SqliteConnection connection,
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT timestamp_local, input_tokens, cached_input_tokens, output_tokens,
-                   reasoning_output_tokens, total_tokens, event_key
+                   reasoning_output_tokens, total_tokens, event_key, cache_write_input_tokens, model_id, service_tier
             FROM usage_events
             WHERE timestamp_local >= $start AND timestamp_local < $end
             ORDER BY timestamp_local
@@ -861,6 +1297,7 @@ internal sealed class UsageCacheStore
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             result.Add(new TokenUsageEvent(
                 ParseDateTimeOffset(reader.GetString(0)),
                 reader.GetInt64(1),
@@ -868,7 +1305,8 @@ internal sealed class UsageCacheStore
                 reader.GetInt64(3),
                 reader.GetInt64(4),
                 reader.GetInt64(5),
-                reader.GetString(6)));
+                reader.GetString(6),
+                reader.GetInt64(7), reader.IsDBNull(8) ? null : reader.GetString(8), reader.IsDBNull(9) ? null : reader.GetString(9)));
         }
 
         return UsageEventMerger.Merge(result);
@@ -905,13 +1343,7 @@ internal sealed class UsageCacheStore
         Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
         TokenUsageEvent usageEvent)
     {
-        summary.Add(
-            usageEvent.Timestamp,
-            usageEvent.InputTokens,
-            usageEvent.CachedInputTokens,
-            usageEvent.OutputTokens,
-            usageEvent.ReasoningOutputTokens,
-            usageEvent.TotalTokens);
+        summary.Add(usageEvent);
 
         var date = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
         if (!dailyBuckets.TryGetValue(date, out var dailyBucket))
@@ -923,13 +1355,7 @@ internal sealed class UsageCacheStore
             dailyBuckets[date] = dailyBucket;
         }
 
-        dailyBucket.Add(
-            usageEvent.Timestamp,
-            usageEvent.InputTokens,
-            usageEvent.CachedInputTokens,
-            usageEvent.OutputTokens,
-            usageEvent.ReasoningOutputTokens,
-            usageEvent.TotalTokens);
+        dailyBucket.Add(usageEvent);
     }
 
     private static void AddBucketValues(TokenUsageBucket target, TokenUsageBucket source)
@@ -944,13 +1370,7 @@ internal sealed class UsageCacheStore
             .Select(item =>
             {
                 var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
-                bucket.Add(
-                    item.Timestamp,
-                    item.InputTokens,
-                    item.CachedInputTokens,
-                    item.OutputTokens,
-                    item.ReasoningOutputTokens,
-                    item.TotalTokens);
+                bucket.Add(item);
                 return bucket;
             })
             .ToList();
@@ -963,13 +1383,7 @@ internal sealed class UsageCacheStore
         var bucket = new TokenUsageBucket { StartLocal = dayStart };
         foreach (var item in events)
         {
-            bucket.Add(
-                item.Timestamp,
-                item.InputTokens,
-                item.CachedInputTokens,
-                item.OutputTokens,
-                item.ReasoningOutputTokens,
-                item.TotalTokens);
+            bucket.Add(item);
         }
 
         return bucket;
@@ -979,14 +1393,15 @@ internal sealed class UsageCacheStore
     {
         using var connection = OpenConnection();
         using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT OR IGNORE INTO imported_usage_event_keys (event_key) VALUES ($event_key)";
+        command.Parameters.AddWithValue("$event_key", "");
         foreach (var key in events
                      .Select(UsageEventMerger.GetStableKey)
                      .Distinct(StringComparer.Ordinal))
         {
-            using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = "INSERT OR IGNORE INTO imported_usage_event_keys (event_key) VALUES ($event_key)";
-            command.Parameters.AddWithValue("$event_key", key);
+            command.Parameters["$event_key"].Value = key;
             command.ExecuteNonQuery();
         }
 
@@ -998,6 +1413,123 @@ internal sealed class UsageCacheStore
         using var command = connection.CreateCommand();
         command.CommandText = commandText;
         command.ExecuteNonQuery();
+    }
+
+    private static TokenUsageBucket ReadCachedBucketCounters(
+        SqliteDataReader reader,
+        int startOrdinal,
+        DateTimeOffset startLocal = default)
+    {
+        return new TokenUsageBucket
+        {
+            StartLocal = startLocal,
+            Events = reader.GetInt64(startOrdinal),
+            InputTokens = reader.GetInt64(startOrdinal + 1),
+            CachedInputTokens = reader.GetInt64(startOrdinal + 2),
+            UncachedInputTokens = reader.GetInt64(startOrdinal + 3),
+            OutputTokens = reader.GetInt64(startOrdinal + 4),
+            ReasoningOutputTokens = reader.GetInt64(startOrdinal + 5),
+            TotalTokens = reader.GetInt64(startOrdinal + 6),
+            LongContextEvents = reader.GetInt64(startOrdinal + 7),
+            LongContextInputTokens = reader.GetInt64(startOrdinal + 8),
+            LongContextCachedInputTokens = reader.GetInt64(startOrdinal + 9),
+            LongContextOutputTokens = reader.GetInt64(startOrdinal + 10),
+            PeakInputTokens = reader.GetInt64(startOrdinal + 11),
+            PeakCachedInputTokens = reader.GetInt64(startOrdinal + 12),
+            PeakOutputTokens = reader.GetInt64(startOrdinal + 13),
+            CacheWriteInputTokens = reader.GetInt64(startOrdinal + 14),
+            LongContextCacheWriteInputTokens = reader.GetInt64(startOrdinal + 15),
+            PeakCacheWriteInputTokens = reader.GetInt64(startOrdinal + 16)
+        };
+    }
+
+    private static TokenUsageBucket ToBucket(CachedDayRecord record)
+    {
+        return new TokenUsageBucket
+        {
+            ModelUsage = record.ModelUsage,
+            Events = record.Events,
+            InputTokens = record.InputTokens,
+            CachedInputTokens = record.CachedInputTokens,
+            CacheWriteInputTokens = record.CacheWriteInputTokens,
+            UncachedInputTokens = record.UncachedInputTokens,
+            OutputTokens = record.OutputTokens,
+            ReasoningOutputTokens = record.ReasoningOutputTokens,
+            TotalTokens = record.TotalTokens,
+            LongContextEvents = record.LongContextEvents,
+            LongContextInputTokens = record.LongContextInputTokens,
+            LongContextCachedInputTokens = record.LongContextCachedInputTokens,
+            LongContextCacheWriteInputTokens = record.LongContextCacheWriteInputTokens,
+            LongContextOutputTokens = record.LongContextOutputTokens,
+            PeakInputTokens = record.PeakInputTokens,
+            PeakCachedInputTokens = record.PeakCachedInputTokens,
+            PeakCacheWriteInputTokens = record.PeakCacheWriteInputTokens,
+            PeakOutputTokens = record.PeakOutputTokens
+        };
+    }
+
+    private static void CopyBucketCounters(TokenUsageBucket source, CachedDayRecord target)
+    {
+        target.ModelUsage = source.ModelUsage;
+        target.Events = source.Events;
+        target.InputTokens = source.InputTokens;
+        target.CachedInputTokens = source.CachedInputTokens;
+        target.CacheWriteInputTokens = source.CacheWriteInputTokens;
+        target.UncachedInputTokens = source.UncachedInputTokens;
+        target.OutputTokens = source.OutputTokens;
+        target.ReasoningOutputTokens = source.ReasoningOutputTokens;
+        target.TotalTokens = source.TotalTokens;
+        target.LongContextEvents = source.LongContextEvents;
+        target.LongContextInputTokens = source.LongContextInputTokens;
+        target.LongContextCachedInputTokens = source.LongContextCachedInputTokens;
+        target.LongContextCacheWriteInputTokens = source.LongContextCacheWriteInputTokens;
+        target.LongContextOutputTokens = source.LongContextOutputTokens;
+        target.PeakInputTokens = source.PeakInputTokens;
+        target.PeakCachedInputTokens = source.PeakCachedInputTokens;
+        target.PeakCacheWriteInputTokens = source.PeakCacheWriteInputTokens;
+        target.PeakOutputTokens = source.PeakOutputTokens;
+    }
+
+    private static bool IsNormalizedBucket(TokenUsageBucket bucket)
+    {
+        var normalized = new TokenUsageBucket
+        {
+            Events = bucket.Events,
+            InputTokens = bucket.InputTokens,
+            CachedInputTokens = bucket.CachedInputTokens,
+            CacheWriteInputTokens = bucket.CacheWriteInputTokens,
+            UncachedInputTokens = bucket.UncachedInputTokens,
+            OutputTokens = bucket.OutputTokens,
+            ReasoningOutputTokens = bucket.ReasoningOutputTokens,
+            TotalTokens = bucket.TotalTokens,
+            LongContextEvents = bucket.LongContextEvents,
+            LongContextInputTokens = bucket.LongContextInputTokens,
+            LongContextCachedInputTokens = bucket.LongContextCachedInputTokens,
+            LongContextCacheWriteInputTokens = bucket.LongContextCacheWriteInputTokens,
+            LongContextOutputTokens = bucket.LongContextOutputTokens,
+            PeakInputTokens = bucket.PeakInputTokens,
+            PeakCachedInputTokens = bucket.PeakCachedInputTokens,
+            PeakCacheWriteInputTokens = bucket.PeakCacheWriteInputTokens,
+            PeakOutputTokens = bucket.PeakOutputTokens
+        };
+        normalized.NormalizeInPlace();
+        return bucket.Events == normalized.Events &&
+               bucket.InputTokens == normalized.InputTokens &&
+               bucket.CachedInputTokens == normalized.CachedInputTokens &&
+               bucket.CacheWriteInputTokens == normalized.CacheWriteInputTokens &&
+               bucket.UncachedInputTokens == normalized.UncachedInputTokens &&
+               bucket.OutputTokens == normalized.OutputTokens &&
+               bucket.ReasoningOutputTokens == normalized.ReasoningOutputTokens &&
+               bucket.TotalTokens == normalized.TotalTokens &&
+               bucket.LongContextEvents == normalized.LongContextEvents &&
+               bucket.LongContextInputTokens == normalized.LongContextInputTokens &&
+               bucket.LongContextCachedInputTokens == normalized.LongContextCachedInputTokens &&
+               bucket.LongContextCacheWriteInputTokens == normalized.LongContextCacheWriteInputTokens &&
+               bucket.LongContextOutputTokens == normalized.LongContextOutputTokens &&
+               bucket.PeakInputTokens == normalized.PeakInputTokens &&
+               bucket.PeakCachedInputTokens == normalized.PeakCachedInputTokens &&
+               bucket.PeakCacheWriteInputTokens == normalized.PeakCacheWriteInputTokens &&
+               bucket.PeakOutputTokens == normalized.PeakOutputTokens;
     }
 
     private static string DateKey(DateOnly date)
@@ -1027,9 +1559,7 @@ internal sealed class UsageCacheStore
 
     private static string BuildUsageEventKey(TokenUsageEvent item)
     {
-        return !string.IsNullOrWhiteSpace(item.Key)
-            ? item.Key
-            : $"{item.Timestamp:O}|{item.InputTokens}|{item.CachedInputTokens}|{item.OutputTokens}|{item.ReasoningOutputTokens}|{item.TotalTokens}";
+        return UsageEventMerger.GetStableKey(item);
     }
 }
 
@@ -1047,6 +1577,10 @@ internal sealed class CachedQuotaSnapshot
 internal sealed class CachedQuotaDayRecord
 {
     public string Date { get; set; } = "";
+    // False means persisted snapshot rows existed but none contained a usable
+    // normalized quota window. An empty day is valid because some days have no
+    // quota observations at all.
+    public bool IsValid { get; set; } = true;
     public bool IsComplete { get; set; }
     public DateTimeOffset? ScannedThroughLocal { get; set; }
     public List<CachedQuotaSnapshot> Snapshots { get; set; } = new();
@@ -1059,9 +1593,9 @@ internal sealed class QuotaSnapshotCacheStore
     private readonly string cachePath;
     private readonly bool available;
 
-    private QuotaSnapshotCacheStore(string folderName)
+    private QuotaSnapshotCacheStore(string cachePath)
     {
-        cachePath = GetCachePath(folderName);
+        this.cachePath = cachePath;
         available = InitializeDatabase();
     }
 
@@ -1073,21 +1607,100 @@ internal sealed class QuotaSnapshotCacheStore
     public static IReadOnlyList<DateTimeOffset> GetIncompleteDays(
         string folderName,
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Load(folderName).ReadIncompleteDays(startInclusive, endInclusive, cancellationToken);
+    }
+
+    private IReadOnlyList<DateTimeOffset> ReadIncompleteDays(
+        DateTimeOffset startInclusive,
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         var result = new List<DateTimeOffset>();
-        var cache = Load(folderName);
         var start = StartOfDay(startInclusive);
         var end = StartOfDay(endInclusive);
+        if (start > end)
+        {
+            return result;
+        }
 
+        if (!available)
+        {
+            return EnumerateDaysDescending(start, end, cancellationToken);
+        }
+
+        try
+        {
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT date, is_complete
+                FROM quota_days
+                WHERE date >= $start_date AND date <= $end_date
+                """;
+            command.Parameters.AddWithValue("$start_date", DateKey(DateOnly.FromDateTime(start.DateTime)));
+            command.Parameters.AddWithValue("$end_date", DateKey(DateOnly.FromDateTime(end.DateTime)));
+
+            var completeByDate = new Dictionary<string, bool>(StringComparer.Ordinal);
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    completeByDate[reader.GetString(0)] = reader.GetInt64(1) != 0;
+                }
+            }
+
+            var snapshotValidityByDate = ReadSnapshotValidityByDate(
+                connection,
+                DateOnly.FromDateTime(start.DateTime),
+                DateOnly.FromDateTime(end.DateTime),
+                cancellationToken);
+
+            for (var day = end; day >= start; day = day.AddDays(-1))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var dateKey = DateKey(DateOnly.FromDateTime(day.DateTime));
+                var hasInvalidSnapshots = snapshotValidityByDate.TryGetValue(dateKey, out var validity) &&
+                                          validity.HasRows &&
+                                          !validity.HasUsableWindow;
+                if (!completeByDate.TryGetValue(dateKey, out var isComplete) || !isComplete)
+                {
+                    result.Add(day);
+                }
+                else if (hasInvalidSnapshots)
+                {
+                    result.Add(day);
+                }
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Preserve the previous fail-safe behavior: an unreadable cache is incomplete.
+            return EnumerateDaysDescending(start, end, cancellationToken);
+        }
+    }
+
+    private static List<DateTimeOffset> EnumerateDaysDescending(
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new List<DateTimeOffset>();
         for (var day = end; day >= start; day = day.AddDays(-1))
         {
-            var date = DateOnly.FromDateTime(day.DateTime);
-            if (!cache.TryGetRecord(date, out var record) ||
-                !record.IsComplete)
-            {
-                result.Add(day);
-            }
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Add(day);
         }
 
         return result;
@@ -1095,7 +1708,8 @@ internal sealed class QuotaSnapshotCacheStore
 
     private static DateTimeOffset StartOfDay(DateTimeOffset value)
     {
-        return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, value.Offset);
+        var local = value.ToOffset(CodexUsageReader.BeijingOffset);
+        return new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
     }
 
     private static DateTimeOffset Max(DateTimeOffset first, DateTimeOffset second)
@@ -1129,13 +1743,7 @@ internal sealed class QuotaSnapshotCacheStore
         Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
         TokenUsageEvent usageEvent)
     {
-        summary.Add(
-            usageEvent.Timestamp,
-            usageEvent.InputTokens,
-            usageEvent.CachedInputTokens,
-            usageEvent.OutputTokens,
-            usageEvent.ReasoningOutputTokens,
-            usageEvent.TotalTokens);
+        summary.Add(usageEvent);
 
         var date = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
         if (!dailyBuckets.TryGetValue(date, out var dailyBucket))
@@ -1147,13 +1755,7 @@ internal sealed class QuotaSnapshotCacheStore
             dailyBuckets[date] = dailyBucket;
         }
 
-        dailyBucket.Add(
-            usageEvent.Timestamp,
-            usageEvent.InputTokens,
-            usageEvent.CachedInputTokens,
-            usageEvent.OutputTokens,
-            usageEvent.ReasoningOutputTokens,
-            usageEvent.TotalTokens);
+        dailyBucket.Add(usageEvent);
     }
 
     private static void AddBucketValues(TokenUsageBucket target, TokenUsageBucket source)
@@ -1168,13 +1770,7 @@ internal sealed class QuotaSnapshotCacheStore
             .Select(item =>
             {
                 var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
-                bucket.Add(
-                    item.Timestamp,
-                    item.InputTokens,
-                    item.CachedInputTokens,
-                    item.OutputTokens,
-                    item.ReasoningOutputTokens,
-                    item.TotalTokens);
+                bucket.Add(item);
                 return bucket;
             })
             .ToList();
@@ -1182,16 +1778,17 @@ internal sealed class QuotaSnapshotCacheStore
 
     public static QuotaSnapshotCacheStore Load(string folderName)
     {
+        var cachePath = GetCachePath(folderName);
         return Stores.GetOrAdd(
-            folderName,
-            static name => new Lazy<QuotaSnapshotCacheStore>(
-                () => new QuotaSnapshotCacheStore(name),
+            cachePath,
+            static path => new Lazy<QuotaSnapshotCacheStore>(
+                () => new QuotaSnapshotCacheStore(path),
                 LazyThreadSafetyMode.ExecutionAndPublication)).Value;
     }
 
     internal static void Forget(string folderName)
     {
-        Stores.TryRemove(folderName, out _);
+        Stores.TryRemove(GetCachePath(folderName), out _);
     }
 
     public static bool DeleteDay(string folderName, DateOnly date)
@@ -1231,9 +1828,17 @@ internal sealed class QuotaSnapshotCacheStore
             };
             reader.Close();
 
-            record.Snapshots = ReadSnapshots(connection, date)
+            var normalizedSnapshots = ReadSnapshots(connection, date);
+            record.IsValid = normalizedSnapshots.Count == 0 ||
+                             normalizedSnapshots.Any(HasUsableQuotaWindow);
+            record.Snapshots = normalizedSnapshots
+                .Where(HasUsableQuotaWindow)
                 .Select(ToCachedQuotaSnapshot)
                 .ToList();
+            if (!record.IsValid)
+            {
+                record.IsComplete = false;
+            }
             return true;
         }
         catch
@@ -1242,8 +1847,11 @@ internal sealed class QuotaSnapshotCacheStore
         }
     }
 
-    public IReadOnlyList<CodexQuotaSnapshot> GetSnapshots(DateOnly date)
+    public IReadOnlyList<CodexQuotaSnapshot> GetSnapshots(
+        DateOnly date,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!available)
         {
             return Array.Empty<CodexQuotaSnapshot>();
@@ -1252,7 +1860,13 @@ internal sealed class QuotaSnapshotCacheStore
         try
         {
             using var connection = OpenConnection();
-            return ReadSnapshots(connection, date);
+            return ReadSnapshots(connection, date, cancellationToken)
+                .Where(HasUsableQuotaWindow)
+                .ToList();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -1260,8 +1874,10 @@ internal sealed class QuotaSnapshotCacheStore
         }
     }
 
-    public IReadOnlyList<CodexQuotaSnapshot> GetAllSnapshots()
+    public IReadOnlyList<CodexQuotaSnapshot> GetAllSnapshots(
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!available)
         {
             return Array.Empty<CodexQuotaSnapshot>();
@@ -1283,21 +1899,113 @@ internal sealed class QuotaSnapshotCacheStore
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                result.Add(new CodexQuotaSnapshot(
+                cancellationToken.ThrowIfCancellationRequested();
+                result.Add(CodexUsageReader.NormalizeQuotaSnapshotWindows(new CodexQuotaSnapshot(
                     ParseDateTimeOffset(reader.GetString(0)),
                     ReadString(reader, 1),
                     ReadString(reader, 2),
                     ReadDecimal(reader, 3),
                     ReadDateTimeOffset(reader, 4),
                     ReadDecimal(reader, 5),
-                    ReadDateTimeOffset(reader, 6)));
+                    ReadDateTimeOffset(reader, 6))));
             }
 
             return MergeSnapshotValues(result);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
             return Array.Empty<CodexQuotaSnapshot>();
+        }
+    }
+
+    /// <summary>
+    /// Streams raw quota snapshots directly from SQLite for transfer/export
+    /// paths. Unlike <see cref="GetAllSnapshots"/>, this does not materialize
+    /// the complete quota history before the caller starts writing it.
+    /// </summary>
+    public IEnumerable<CodexQuotaSnapshot> EnumerateSnapshots(
+        DateTimeOffset? startInclusive,
+        DateTimeOffset? endExclusive,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!available ||
+            (startInclusive is null) != (endExclusive is null) ||
+            startInclusive >= endExclusive)
+        {
+            yield break;
+        }
+
+        var normalizedStart = startInclusive?.ToOffset(CodexUsageReader.BeijingOffset);
+        var normalizedEnd = endExclusive?.ToOffset(CodexUsageReader.BeijingOffset);
+        DateTimeOffset? queryStart = normalizedStart is null
+            ? null
+            : StartOfDay(normalizedStart.Value).AddDays(-1);
+        DateTimeOffset? queryEnd = normalizedEnd is null
+            ? null
+            : StartOfDay(normalizedEnd.Value).AddDays(1);
+
+        using var connection = OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = normalizedStart is null
+            ? """
+                SELECT snapshot_local, limit_id, limit_name,
+                       five_hour_used_percent, five_hour_reset_local,
+                       week_used_percent, week_reset_local
+                FROM quota_snapshots
+                ORDER BY snapshot_local
+                """
+            : """
+                SELECT snapshot_local, limit_id, limit_name,
+                       five_hour_used_percent, five_hour_reset_local,
+                       week_used_percent, week_reset_local
+                FROM quota_snapshots
+                WHERE date >= $start_date AND date <= $end_date
+                ORDER BY snapshot_local
+                """;
+        if (queryStart is not null && queryEnd is not null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            command.Parameters.AddWithValue(
+                "$start_date",
+                DateKey(DateOnly.FromDateTime(queryStart.Value.DateTime)));
+            command.Parameters.AddWithValue(
+                "$end_date",
+                DateKey(DateOnly.FromDateTime(queryEnd.Value.DateTime)));
+        }
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var snapshot = CodexUsageReader.NormalizeQuotaSnapshotWindows(new CodexQuotaSnapshot(
+                ParseDateTimeOffset(reader.GetString(0)),
+                ReadString(reader, 1),
+                ReadString(reader, 2),
+                ReadDecimal(reader, 3),
+                ReadDateTimeOffset(reader, 4),
+                ReadDecimal(reader, 5),
+                ReadDateTimeOffset(reader, 6)));
+            if (!HasUsableQuotaWindow(snapshot))
+            {
+                continue;
+            }
+            if (normalizedStart is not null)
+            {
+                var snapshotLocal = snapshot.SnapshotLocal.ToOffset(CodexUsageReader.BeijingOffset);
+                if (snapshotLocal < normalizedStart.Value || snapshotLocal >= normalizedEnd!.Value)
+                {
+                    continue;
+                }
+
+                snapshot = snapshot with { SnapshotLocal = snapshotLocal };
+            }
+
+            yield return snapshot;
         }
     }
 
@@ -1309,13 +2017,18 @@ internal sealed class QuotaSnapshotCacheStore
         }
 
         var normalizedImports = importedSnapshots
-            .Select(item => item with
+            .Select(item => CodexUsageReader.NormalizeQuotaSnapshotWindows(item with
             {
                 SnapshotLocal = item.SnapshotLocal.ToOffset(CodexUsageReader.BeijingOffset),
                 FiveHourResetAtLocal = item.FiveHourResetAtLocal?.ToOffset(CodexUsageReader.BeijingOffset),
                 WeekResetAtLocal = item.WeekResetAtLocal?.ToOffset(CodexUsageReader.BeijingOffset)
-            })
+            }))
+            .Where(HasUsableQuotaWindow)
             .ToList();
+        if (normalizedImports.Count == 0)
+        {
+            return 0;
+        }
         MarkImportedSnapshotKeys(normalizedImports);
 
         var added = 0;
@@ -1336,7 +2049,8 @@ internal sealed class QuotaSnapshotCacheStore
                 date,
                 merged,
                 hasRecord && record.IsComplete,
-                hasRecord ? record.ScannedThroughLocal : null);
+                hasRecord ? record.ScannedThroughLocal : null,
+                propagateErrors: true);
         }
 
         return added;
@@ -1346,6 +2060,8 @@ internal sealed class QuotaSnapshotCacheStore
         IEnumerable<CodexQuotaSnapshot> snapshots)
     {
         return snapshots
+            .Select(CodexUsageReader.NormalizeQuotaSnapshotWindows)
+            .Where(HasUsableQuotaWindow)
             .GroupBy(BuildSnapshotKey, StringComparer.OrdinalIgnoreCase)
             .Select(group => group
                 .OrderBy(item => item.IsAnomaly)
@@ -1363,35 +2079,79 @@ internal sealed class QuotaSnapshotCacheStore
                (snapshot.WeekResetAtLocal is null ? 0 : 1);
     }
 
-    public IReadOnlyList<CodexQuotaSnapshot> GetSnapshots(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    public IReadOnlyList<CodexQuotaSnapshot> GetSnapshots(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        var result = new List<CodexQuotaSnapshot>();
-        for (var dayStart = StartOfDay(startLocal); dayStart < endLocal; dayStart = dayStart.AddDays(1))
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        if (!available || startLocal >= endLocal)
         {
-            var dayEnd = dayStart.AddDays(1);
-            var clippedStart = Max(dayStart, startLocal);
-            var clippedEnd = Min(dayEnd, endLocal);
-            if (clippedStart >= clippedEnd)
-            {
-                continue;
-            }
-
-            var date = DateOnly.FromDateTime(dayStart.DateTime);
-            result.AddRange(GetSnapshots(date)
-                .Where(item => item.SnapshotLocal >= clippedStart && item.SnapshotLocal < clippedEnd));
+            return Array.Empty<CodexQuotaSnapshot>();
         }
 
-        return result
-            .GroupBy(item => $"{item.SnapshotLocal:O}|{item.LimitId ?? ""}", StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.OrderByDescending(item => item.SnapshotLocal).First())
-            .OrderBy(item => item.SnapshotLocal)
-            .ToList();
+        try
+        {
+            // Query a one-day buffer on both sides so older rows persisted with
+            // a non-Beijing offset are still found; filter by the normalized
+            // instant below.
+            var queryStart = StartOfDay(startLocal).AddDays(-1);
+            var queryEnd = StartOfDay(endLocal).AddDays(1);
+            using var connection = OpenConnection();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT snapshot_local, limit_id, limit_name,
+                       five_hour_used_percent, five_hour_reset_local,
+                       week_used_percent, week_reset_local
+                FROM quota_snapshots
+                WHERE date >= $start_date AND date <= $end_date
+                ORDER BY snapshot_local
+                """;
+            command.Parameters.AddWithValue("$start_date", DateKey(DateOnly.FromDateTime(queryStart.DateTime)));
+            command.Parameters.AddWithValue("$end_date", DateKey(DateOnly.FromDateTime(queryEnd.DateTime)));
+
+            var result = new List<CodexQuotaSnapshot>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var snapshot = CodexUsageReader.NormalizeQuotaSnapshotWindows(new CodexQuotaSnapshot(
+                    ParseDateTimeOffset(reader.GetString(0)),
+                    ReadString(reader, 1),
+                    ReadString(reader, 2),
+                    ReadDecimal(reader, 3),
+                    ReadDateTimeOffset(reader, 4),
+                    ReadDecimal(reader, 5),
+                    ReadDateTimeOffset(reader, 6)));
+                var snapshotLocal = snapshot.SnapshotLocal.ToOffset(CodexUsageReader.BeijingOffset);
+                if (snapshotLocal >= startLocal && snapshotLocal < endLocal)
+                {
+                    result.Add(snapshot with { SnapshotLocal = snapshotLocal });
+                }
+            }
+
+            return MergeSnapshotValues(result);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return Array.Empty<CodexQuotaSnapshot>();
+        }
     }
 
     public IReadOnlyList<CodexQuotaSnapshot> GetTimelineSnapshots(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         if (!available || startLocal >= endLocal)
         {
             return Array.Empty<CodexQuotaSnapshot>();
@@ -1416,6 +2176,7 @@ internal sealed class QuotaSnapshotCacheStore
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 result.Add(new CodexQuotaSnapshot(
                     ParseDateTimeOffset(reader.GetString(0)),
                     ReadString(reader, 1),
@@ -1428,6 +2189,10 @@ internal sealed class QuotaSnapshotCacheStore
 
             return result;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
             return Array.Empty<CodexQuotaSnapshot>();
@@ -1436,7 +2201,8 @@ internal sealed class QuotaSnapshotCacheStore
 
     public void PutTimelineSnapshots(
         IReadOnlyList<CodexQuotaSnapshot> snapshots,
-        IReadOnlyDictionary<DateTimeOffset, (DateTimeOffset? Before, DateTimeOffset? After)> sources)
+        IReadOnlyDictionary<DateTimeOffset, (DateTimeOffset? Before, DateTimeOffset? After)> sources,
+        CancellationToken cancellationToken = default)
     {
         if (!available || snapshots.Count == 0)
         {
@@ -1445,55 +2211,74 @@ internal sealed class QuotaSnapshotCacheStore
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using var connection = OpenConnection();
             using var transaction = connection.BeginTransaction();
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO quota_7d_timeline (
+                    date, anchor_local, limit_id, limit_name,
+                    five_hour_used_percent, five_hour_reset_local,
+                    week_used_percent, week_reset_local,
+                    is_interpolated, before_snapshot_local, after_snapshot_local, updated_local
+                )
+                VALUES (
+                    $date, $anchor_local, $limit_id, $limit_name,
+                    $five_hour_used_percent, $five_hour_reset_local,
+                    $week_used_percent, $week_reset_local,
+                    $is_interpolated, $before_snapshot_local, $after_snapshot_local, $updated_local
+                )
+                ON CONFLICT(anchor_local) DO UPDATE SET
+                    date = excluded.date,
+                    limit_id = excluded.limit_id,
+                    limit_name = excluded.limit_name,
+                    five_hour_used_percent = excluded.five_hour_used_percent,
+                    five_hour_reset_local = excluded.five_hour_reset_local,
+                    week_used_percent = excluded.week_used_percent,
+                    week_reset_local = excluded.week_reset_local,
+                    is_interpolated = excluded.is_interpolated,
+                    before_snapshot_local = excluded.before_snapshot_local,
+                    after_snapshot_local = excluded.after_snapshot_local,
+                    updated_local = excluded.updated_local
+                """;
+            command.Parameters.AddWithValue("$date", "");
+            command.Parameters.AddWithValue("$anchor_local", "");
+            command.Parameters.AddWithValue("$limit_id", DBNull.Value);
+            command.Parameters.AddWithValue("$limit_name", DBNull.Value);
+            command.Parameters.AddWithValue("$five_hour_used_percent", DBNull.Value);
+            command.Parameters.AddWithValue("$five_hour_reset_local", DBNull.Value);
+            command.Parameters.AddWithValue("$week_used_percent", DBNull.Value);
+            command.Parameters.AddWithValue("$week_reset_local", DBNull.Value);
+            command.Parameters.AddWithValue("$is_interpolated", 0);
+            command.Parameters.AddWithValue("$before_snapshot_local", DBNull.Value);
+            command.Parameters.AddWithValue("$after_snapshot_local", DBNull.Value);
+            command.Parameters.AddWithValue("$updated_local", "");
             foreach (var snapshot in snapshots.OrderBy(item => item.SnapshotLocal))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 sources.TryGetValue(snapshot.SnapshotLocal, out var source);
-                using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText = """
-                    INSERT INTO quota_7d_timeline (
-                        date, anchor_local, limit_id, limit_name,
-                        five_hour_used_percent, five_hour_reset_local,
-                        week_used_percent, week_reset_local,
-                        is_interpolated, before_snapshot_local, after_snapshot_local, updated_local
-                    )
-                    VALUES (
-                        $date, $anchor_local, $limit_id, $limit_name,
-                        $five_hour_used_percent, $five_hour_reset_local,
-                        $week_used_percent, $week_reset_local,
-                        $is_interpolated, $before_snapshot_local, $after_snapshot_local, $updated_local
-                    )
-                    ON CONFLICT(anchor_local) DO UPDATE SET
-                        date = excluded.date,
-                        limit_id = excluded.limit_id,
-                        limit_name = excluded.limit_name,
-                        five_hour_used_percent = excluded.five_hour_used_percent,
-                        five_hour_reset_local = excluded.five_hour_reset_local,
-                        week_used_percent = excluded.week_used_percent,
-                        week_reset_local = excluded.week_reset_local,
-                        is_interpolated = excluded.is_interpolated,
-                        before_snapshot_local = excluded.before_snapshot_local,
-                        after_snapshot_local = excluded.after_snapshot_local,
-                        updated_local = excluded.updated_local
-                    """;
-                command.Parameters.AddWithValue("$date", DateKey(DateOnly.FromDateTime(snapshot.SnapshotLocal.DateTime)));
-                command.Parameters.AddWithValue("$anchor_local", FormatDateTimeOffset(snapshot.SnapshotLocal));
-                command.Parameters.AddWithValue("$limit_id", ToDbValue(snapshot.LimitId));
-                command.Parameters.AddWithValue("$limit_name", ToDbValue(snapshot.LimitName));
-                command.Parameters.AddWithValue("$five_hour_used_percent", ToDbValue(snapshot.FiveHourUsedPercent));
-                command.Parameters.AddWithValue("$five_hour_reset_local", ToDbValue(snapshot.FiveHourResetAtLocal));
-                command.Parameters.AddWithValue("$week_used_percent", ToDbValue(snapshot.WeekUsedPercent));
-                command.Parameters.AddWithValue("$week_reset_local", ToDbValue(snapshot.WeekResetAtLocal));
-                command.Parameters.AddWithValue("$is_interpolated", source.Before != snapshot.SnapshotLocal || source.After != snapshot.SnapshotLocal ? 1 : 0);
-                command.Parameters.AddWithValue("$before_snapshot_local", ToDbValue(source.Before));
-                command.Parameters.AddWithValue("$after_snapshot_local", ToDbValue(source.After));
-                command.Parameters.AddWithValue("$updated_local", FormatDateTimeOffset(DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset)));
+                command.Parameters["$date"].Value = DateKey(DateOnly.FromDateTime(snapshot.SnapshotLocal.DateTime));
+                command.Parameters["$anchor_local"].Value = FormatDateTimeOffset(snapshot.SnapshotLocal);
+                command.Parameters["$limit_id"].Value = ToDbValue(snapshot.LimitId);
+                command.Parameters["$limit_name"].Value = ToDbValue(snapshot.LimitName);
+                command.Parameters["$five_hour_used_percent"].Value = ToDbValue(snapshot.FiveHourUsedPercent);
+                command.Parameters["$five_hour_reset_local"].Value = ToDbValue(snapshot.FiveHourResetAtLocal);
+                command.Parameters["$week_used_percent"].Value = ToDbValue(snapshot.WeekUsedPercent);
+                command.Parameters["$week_reset_local"].Value = ToDbValue(snapshot.WeekResetAtLocal);
+                command.Parameters["$is_interpolated"].Value = source.Before != snapshot.SnapshotLocal || source.After != snapshot.SnapshotLocal ? 1 : 0;
+                command.Parameters["$before_snapshot_local"].Value = ToDbValue(source.Before);
+                command.Parameters["$after_snapshot_local"].Value = ToDbValue(source.After);
+                command.Parameters["$updated_local"].Value = FormatDateTimeOffset(DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset));
                 command.ExecuteNonQuery();
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             transaction.Commit();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
@@ -1503,11 +2288,18 @@ internal sealed class QuotaSnapshotCacheStore
 
     public IReadOnlyList<DateTimeOffset> GetIncompleteTimelineDays(
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        startInclusive = startInclusive.ToOffset(CodexUsageReader.BeijingOffset);
+        endInclusive = endInclusive.ToOffset(CodexUsageReader.BeijingOffset);
         if (!available)
         {
-            return Array.Empty<DateTimeOffset>();
+            return EnumerateDaysDescending(
+                StartOfDay(startInclusive),
+                StartOfDay(endInclusive),
+                cancellationToken);
         }
 
         try
@@ -1538,15 +2330,26 @@ internal sealed class QuotaSnapshotCacheStore
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var date = DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture);
                 result.Add(new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset));
             }
 
             return result;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
-            return Array.Empty<DateTimeOffset>();
+            // A failed cache read must remain pending; otherwise the background
+            // warmer could report a timeline day as complete without persisting
+            // any materialized anchors.
+            return EnumerateDaysDescending(
+                StartOfDay(startInclusive),
+                StartOfDay(endInclusive),
+                cancellationToken);
         }
     }
 
@@ -1599,7 +2402,9 @@ internal sealed class QuotaSnapshotCacheStore
         DateOnly date,
         IReadOnlyList<CodexQuotaSnapshot> snapshots,
         bool isComplete,
-        DateTimeOffset? scannedThroughLocal)
+        DateTimeOffset? scannedThroughLocal,
+        CancellationToken cancellationToken = default,
+        bool propagateErrors = false)
     {
         if (!available)
         {
@@ -1608,6 +2413,17 @@ internal sealed class QuotaSnapshotCacheStore
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var normalizedSnapshots = snapshots
+                .Select(CodexUsageReader.NormalizeQuotaSnapshotWindows)
+                .ToList();
+            var hasInputSnapshots = normalizedSnapshots.Count > 0;
+            normalizedSnapshots = normalizedSnapshots
+                .Where(HasUsableQuotaWindow)
+                .ToList();
+            var effectiveComplete = isComplete &&
+                                    (!hasInputSnapshots ||
+                                     normalizedSnapshots.Any(HasUsableQuotaWindow));
             var key = DateKey(date);
             using var connection = OpenConnection();
             using var transaction = connection.BeginTransaction();
@@ -1622,7 +2438,7 @@ internal sealed class QuotaSnapshotCacheStore
                         scanned_through_local = excluded.scanned_through_local
                     """;
                 command.Parameters.AddWithValue("$date", key);
-                command.Parameters.AddWithValue("$is_complete", isComplete ? 1 : 0);
+                command.Parameters.AddWithValue("$is_complete", effectiveComplete ? 1 : 0);
                 command.Parameters.AddWithValue("$scanned_through_local", ToDbValue(scannedThroughLocal));
                 command.ExecuteNonQuery();
             }
@@ -1639,9 +2455,8 @@ internal sealed class QuotaSnapshotCacheStore
                 deleteCommand.ExecuteNonQuery();
             }
 
-            foreach (var snapshot in snapshots.OrderBy(item => item.SnapshotLocal))
+            using (var insertCommand = connection.CreateCommand())
             {
-                using var insertCommand = connection.CreateCommand();
                 insertCommand.Transaction = transaction;
                 insertCommand.CommandText = """
                     INSERT OR REPLACE INTO quota_snapshots (
@@ -1656,23 +2471,39 @@ internal sealed class QuotaSnapshotCacheStore
                     )
                     """;
                 insertCommand.Parameters.AddWithValue("$date", key);
-                insertCommand.Parameters.AddWithValue("$snapshot_key", BuildSnapshotKey(snapshot));
-                insertCommand.Parameters.AddWithValue("$snapshot_local", FormatDateTimeOffset(snapshot.SnapshotLocal));
-                insertCommand.Parameters.AddWithValue("$limit_id", ToDbValue(snapshot.LimitId));
-                insertCommand.Parameters.AddWithValue("$limit_name", ToDbValue(snapshot.LimitName));
-                insertCommand.Parameters.AddWithValue("$five_hour_used_percent", ToDbValue(snapshot.FiveHourUsedPercent));
-                insertCommand.Parameters.AddWithValue("$five_hour_reset_local", ToDbValue(snapshot.FiveHourResetAtLocal));
-                insertCommand.Parameters.AddWithValue("$week_used_percent", ToDbValue(snapshot.WeekUsedPercent));
-                insertCommand.Parameters.AddWithValue("$week_reset_local", ToDbValue(snapshot.WeekResetAtLocal));
-                insertCommand.ExecuteNonQuery();
+                insertCommand.Parameters.AddWithValue("$snapshot_key", "");
+                insertCommand.Parameters.AddWithValue("$snapshot_local", "");
+                insertCommand.Parameters.AddWithValue("$limit_id", DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$limit_name", DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$five_hour_used_percent", DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$five_hour_reset_local", DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$week_used_percent", DBNull.Value);
+                insertCommand.Parameters.AddWithValue("$week_reset_local", DBNull.Value);
+                foreach (var snapshot in normalizedSnapshots.OrderBy(item => item.SnapshotLocal))
+                {
+                    insertCommand.Parameters["$snapshot_key"].Value = BuildSnapshotKey(snapshot);
+                    insertCommand.Parameters["$snapshot_local"].Value = FormatDateTimeOffset(snapshot.SnapshotLocal);
+                    insertCommand.Parameters["$limit_id"].Value = ToDbValue(snapshot.LimitId);
+                    insertCommand.Parameters["$limit_name"].Value = ToDbValue(snapshot.LimitName);
+                    insertCommand.Parameters["$five_hour_used_percent"].Value = ToDbValue(snapshot.FiveHourUsedPercent);
+                    insertCommand.Parameters["$five_hour_reset_local"].Value = ToDbValue(snapshot.FiveHourResetAtLocal);
+                    insertCommand.Parameters["$week_used_percent"].Value = ToDbValue(snapshot.WeekUsedPercent);
+                    insertCommand.Parameters["$week_reset_local"].Value = ToDbValue(snapshot.WeekResetAtLocal);
+                    insertCommand.ExecuteNonQuery();
+                }
             }
 
             var dayStart = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
             DeleteTimelineRange(connection, transaction, dayStart.AddDays(-1), dayStart.AddDays(2));
 
+            cancellationToken.ThrowIfCancellationRequested();
             transaction.Commit();
         }
-        catch
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception) when (!propagateErrors)
         {
             // Quota snapshot cache is an optimization; live parsing can still work without it.
         }
@@ -1775,6 +2606,18 @@ internal sealed class QuotaSnapshotCacheStore
         };
     }
 
+    private static bool HasUsableQuotaWindow(CachedQuotaSnapshot snapshot)
+    {
+        return snapshot.FiveHourUsedPercent is not null ||
+               snapshot.WeekUsedPercent is not null;
+    }
+
+    private static bool HasUsableQuotaWindow(CodexQuotaSnapshot snapshot)
+    {
+        return snapshot.FiveHourUsedPercent is not null ||
+               snapshot.WeekUsedPercent is not null;
+    }
+
     private SqliteConnection OpenConnection()
     {
         var builder = new SqliteConnectionStringBuilder
@@ -1789,7 +2632,10 @@ internal sealed class QuotaSnapshotCacheStore
         return connection;
     }
 
-    private static IReadOnlyList<CodexQuotaSnapshot> ReadSnapshots(SqliteConnection connection, DateOnly date)
+    private static IReadOnlyList<CodexQuotaSnapshot> ReadSnapshots(
+        SqliteConnection connection,
+        DateOnly date,
+        CancellationToken cancellationToken = default)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -1806,14 +2652,56 @@ internal sealed class QuotaSnapshotCacheStore
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            result.Add(new CodexQuotaSnapshot(
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Add(CodexUsageReader.NormalizeQuotaSnapshotWindows(new CodexQuotaSnapshot(
                 ParseDateTimeOffset(reader.GetString(0)),
                 ReadString(reader, 1),
                 ReadString(reader, 2),
                 ReadDecimal(reader, 3),
                 ReadDateTimeOffset(reader, 4),
                 ReadDecimal(reader, 5),
-                ReadDateTimeOffset(reader, 6)));
+                ReadDateTimeOffset(reader, 6))));
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, (bool HasRows, bool HasUsableWindow)> ReadSnapshotValidityByDate(
+        SqliteConnection connection,
+        DateOnly startDate,
+        DateOnly endDate,
+        CancellationToken cancellationToken = default)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT date, snapshot_local, limit_id, limit_name,
+                   five_hour_used_percent, five_hour_reset_local,
+                   week_used_percent, week_reset_local
+            FROM quota_snapshots
+            WHERE date >= $start_date AND date <= $end_date
+            ORDER BY snapshot_local
+            """;
+        command.Parameters.AddWithValue("$start_date", DateKey(startDate));
+        command.Parameters.AddWithValue("$end_date", DateKey(endDate));
+
+        var result = new Dictionary<string, (bool HasRows, bool HasUsableWindow)>(StringComparer.Ordinal);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var dateKey = reader.GetString(0);
+            var snapshot = CodexUsageReader.NormalizeQuotaSnapshotWindows(new CodexQuotaSnapshot(
+                ParseDateTimeOffset(reader.GetString(1)),
+                ReadString(reader, 2),
+                ReadString(reader, 3),
+                ReadDecimal(reader, 4),
+                ReadDateTimeOffset(reader, 5),
+                ReadDecimal(reader, 6),
+                ReadDateTimeOffset(reader, 7)));
+            var hasUsableWindow = HasUsableQuotaWindow(snapshot);
+            result[dateKey] = result.TryGetValue(dateKey, out var existing)
+                ? (true, existing.HasUsableWindow || hasUsableWindow)
+                : (true, hasUsableWindow);
         }
 
         return result;
@@ -1847,14 +2735,15 @@ internal sealed class QuotaSnapshotCacheStore
     {
         using var connection = OpenConnection();
         using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT OR IGNORE INTO imported_quota_snapshot_keys (snapshot_key) VALUES ($snapshot_key)";
+        command.Parameters.AddWithValue("$snapshot_key", "");
         foreach (var key in snapshots
                      .Select(BuildSnapshotKey)
                      .Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = "INSERT OR IGNORE INTO imported_quota_snapshot_keys (snapshot_key) VALUES ($snapshot_key)";
-            command.Parameters.AddWithValue("$snapshot_key", key);
+            command.Parameters["$snapshot_key"].Value = key;
             command.ExecuteNonQuery();
         }
 
@@ -1922,6 +2811,9 @@ internal sealed record ScanRange(DateTimeOffset StartLocal, DateTimeOffset EndLo
 /// </summary>
 internal sealed class SubagentReplayFilter
 {
+    private readonly CodexModelContext modelContext = new();
+    public string? ModelId => modelContext.ModelId;
+    public string? ServiceTier => modelContext.ServiceTier;
     private const string CollaborationBootstrap =
         "You are an agent in a team of agents collaborating to complete a task.";
 
@@ -1933,6 +2825,7 @@ internal sealed class SubagentReplayFilter
 
     public bool ShouldReadTokenCount(string line)
     {
+        modelContext.Observe(line);
         var isTokenCount = line.Contains("\"type\":\"token_count\"", StringComparison.Ordinal);
 
         if (!metadataChecked && line.Contains("\"type\":\"session_meta\"", StringComparison.Ordinal))
@@ -2027,6 +2920,10 @@ internal static class CodexUsageReader
     private const string SparkLimitId = "codex_bengalfox";
     private const string SparkLimitName = "GPT-5.3-Codex-Spark";
     public static readonly TimeSpan BeijingOffset = TimeSpan.FromHours(8);
+
+    /// <summary>Test seam: overrides the Codex home instead of the user profile.</summary>
+    internal static string? OverrideCodexHome { get; set; }
+
     private static readonly LiveFileTailReader UsageTailReader = new();
     private static readonly LiveFileTailReader QuotaTailReader = new();
     private static readonly ConcurrentDictionary<string, SubagentReplayFilter> UsageReplayFilters =
@@ -2040,15 +2937,26 @@ internal static class CodexUsageReader
     private static long quotaHistoryCachedLength = -1;
     private static DateTime quotaHistoryCachedWriteTimeUtc;
 
-    private sealed record RateLimitWindowSnapshot(decimal UsedPercent, int WindowMinutes, DateTimeOffset? ResetAtLocal);
+    private readonly record struct RateLimitWindowSnapshot(
+        decimal UsedPercent,
+        int WindowMinutes,
+        DateTimeOffset? ResetAtLocal);
 
-    private sealed record RateLimitSnapshot(
+    private readonly record struct RateLimitSnapshot(
         DateTimeOffset TimestampLocal,
         string? LimitId,
         string? LimitName,
         RateLimitWindowSnapshot? FiveHour,
         RateLimitWindowSnapshot? Week,
         long ModelContextWindow);
+
+    private readonly record struct RateLimitScanResult(
+        IReadOnlyList<RateLimitSnapshot> Snapshots,
+        bool IsComplete);
+
+    private readonly record struct QuotaSnapshotScanResult(
+        IReadOnlyList<CodexQuotaSnapshot> Snapshots,
+        bool IsComplete);
 
     private sealed record QuotaHistoryKey(DateTimeOffset SnapshotLocal, string LimitId);
 
@@ -2082,7 +2990,13 @@ internal static class CodexUsageReader
     {
         ResetLiveFileCursors();
         CodexQuotaCycleReader.InvalidateCache();
-        return UsageCacheStore.Delete(CacheFolder);
+        var deleted = UsageCacheStore.Delete(CacheFolder);
+        lock (QuotaHistoryCacheSync)
+        {
+            ResetQuotaHistoryCache(GetQuotaHistoryPath());
+        }
+
+        return deleted;
     }
 
     public static bool ClearCachedDay(DateOnly date)
@@ -2096,34 +3010,44 @@ internal static class CodexUsageReader
 
     public static IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.GetIncompleteDays(CacheFolder, startInclusive, endInclusive);
+        return UsageCacheStore.GetIncompleteDays(
+            CacheFolder,
+            startInclusive,
+            endInclusive,
+            cancellationToken);
     }
 
-    public static TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    public static TokenUsageSummary ReadCachedRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal);
+        return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal, cancellationToken);
     }
 
     public static IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal);
+        return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal, cancellationToken);
     }
 
-    public static CodexQuotaEstimate? ReadQuotaEstimate()
+    public static CodexQuotaEstimate? ReadQuotaEstimate(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var now = DateTimeOffset.UtcNow.ToOffset(BeijingOffset);
-        var directSnapshot = CodexAppServerQuotaReader.ReadCurrent();
+        var directSnapshot = CodexAppServerQuotaReader.ReadCurrent(cancellationToken);
         if (directSnapshot is not null)
         {
             directSnapshot = NormalizeQuotaSnapshotWindows(directSnapshot);
             if (IsGeneralCodexQuotaSnapshot(directSnapshot))
             {
                 AppendQuotaHistoryIfNew(ToRateLimitSnapshot(directSnapshot));
-                return BuildQuotaEstimate(directSnapshot, now);
+                return BuildQuotaEstimate(directSnapshot, now, cancellationToken: cancellationToken);
             }
         }
 
@@ -2131,19 +3055,19 @@ internal static class CodexUsageReader
         // session-log path as a compatibility fallback in that case.
         var liveEnd = now.AddMinutes(5);
         var recentStart = now.AddMinutes(-30);
-        var snapshot = ReadQuotaSnapshotsUncached(recentStart, liveEnd)
+        var snapshot = ReadQuotaSnapshotsUncached(recentStart, liveEnd, cancellationToken).Snapshots
             .Where(IsGeneralCodexQuotaSnapshot)
             .OrderByDescending(item => item.SnapshotLocal)
             .FirstOrDefault()
-            ?? ReadQuotaSnapshotsCached(recentStart, liveEnd)
+            ?? ReadQuotaSnapshotsCached(recentStart, liveEnd, cancellationToken)
             .Where(IsGeneralCodexQuotaSnapshot)
             .OrderByDescending(item => item.SnapshotLocal)
             .FirstOrDefault()
-            ?? ReadQuotaSnapshotsCached(StartOfDay(now), liveEnd)
+            ?? ReadQuotaSnapshotsCached(StartOfDay(now), liveEnd, cancellationToken)
             .Where(IsGeneralCodexQuotaSnapshot)
             .OrderByDescending(item => item.SnapshotLocal)
             .FirstOrDefault()
-            ?? ReadCachedAndHistoricalQuotaSnapshots(now.AddDays(-8), liveEnd)
+            ?? ReadCachedAndHistoricalQuotaSnapshots(now.AddDays(-8), liveEnd, cancellationToken)
             .Where(IsGeneralCodexQuotaSnapshot)
             .OrderByDescending(item => item.SnapshotLocal)
             .FirstOrDefault();
@@ -2152,13 +3076,19 @@ internal static class CodexUsageReader
             return null;
         }
 
-        return BuildQuotaEstimate(snapshot, now);
+        cancellationToken.ThrowIfCancellationRequested();
+        return BuildQuotaEstimate(snapshot, now, cancellationToken: cancellationToken);
     }
 
-    public static CodexQuotaEstimate? ReadCachedQuotaEstimate()
+    public static CodexQuotaEstimate? ReadCachedQuotaEstimate(
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var now = DateTimeOffset.UtcNow.ToOffset(BeijingOffset);
-        var snapshot = ReadCachedAndHistoricalQuotaSnapshots(now.AddDays(-8), now.AddMinutes(5))
+        var snapshot = ReadCachedAndHistoricalQuotaSnapshots(
+                now.AddDays(-8),
+                now.AddMinutes(5),
+                cancellationToken)
             .Where(IsGeneralCodexQuotaSnapshot)
             .OrderByDescending(item => item.SnapshotLocal)
             .FirstOrDefault();
@@ -2167,7 +3097,7 @@ internal static class CodexUsageReader
             return null;
         }
 
-        return BuildQuotaEstimate(snapshot, now, includeLiveToday: false);
+        return BuildQuotaEstimate(snapshot, now, includeLiveToday: false, cancellationToken);
     }
 
     public static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshots(
@@ -2181,10 +3111,12 @@ internal static class CodexUsageReader
 
     public static IReadOnlyList<CodexQuotaSnapshot> ReadCachedQuotaSnapshots(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         return QuotaSnapshotCacheStore.Load(CacheFolder)
-            .GetSnapshots(startLocal, endLocal)
+            .GetSnapshots(startLocal, endLocal, cancellationToken)
             .Select(NormalizeQuotaSnapshotWindows)
             .ToList();
     }
@@ -2192,8 +3124,10 @@ internal static class CodexUsageReader
     public static IReadOnlyList<CodexQuotaSnapshot> ReadMaterializedQuotaTimeline(
         IEnumerable<DateTimeOffset> anchors,
         IEnumerable<CodexQuotaSnapshot>? supplementalSnapshots = null,
-        bool refreshExisting = false)
+        bool refreshExisting = false,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var normalizedAnchors = anchors
             .Select(anchor => anchor.ToOffset(BeijingOffset))
             .Distinct()
@@ -2205,7 +3139,10 @@ internal static class CodexUsageReader
         }
 
         var cache = QuotaSnapshotCacheStore.Load(CacheFolder);
-        var cached = cache.GetTimelineSnapshots(normalizedAnchors[0], normalizedAnchors[^1].AddTicks(1))
+        var cached = cache.GetTimelineSnapshots(
+                normalizedAnchors[0],
+                normalizedAnchors[^1].AddTicks(1),
+                cancellationToken)
             .Select(NormalizeQuotaSnapshotWindows)
             .ToList();
         var cachedByAnchor = cached.ToDictionary(item => item.SnapshotLocal, item => item);
@@ -2215,18 +3152,30 @@ internal static class CodexUsageReader
 
         if (missingAnchors.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var sourceStart = StartOfDay(missingAnchors[0]).AddDays(-1);
             var sourceEnd = StartOfDay(missingAnchors[^1]).AddDays(2);
             var sourceSnapshots = PrepareQuotaTimelineSources(
-                ReadCachedAndHistoricalQuotaSnapshots(sourceStart, sourceEnd)
-                    .Concat(supplementalSnapshots ?? Array.Empty<CodexQuotaSnapshot>()));
+                ReadCachedAndHistoricalQuotaSnapshots(sourceStart, sourceEnd, cancellationToken)
+                    .Concat(supplementalSnapshots ?? Array.Empty<CodexQuotaSnapshot>()),
+                cancellationToken);
+            var allIndex = new QuotaTimelineSnapshotIndex(sourceSnapshots);
+            var fiveHourIndex = new QuotaTimelineSnapshotIndex(sourceSnapshots.Where(item => item.FiveHourUsedPercent is not null));
+            var weekIndex = new QuotaTimelineSnapshotIndex(sourceSnapshots.Where(item => item.WeekUsedPercent is not null));
             var materialized = missingAnchors
-                .Select(anchor => MaterializeQuotaPoint(anchor, sourceSnapshots))
+                .Select(anchor =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return MaterializeQuotaPoint(anchor, allIndex, fiveHourIndex, weekIndex);
+                })
                 .ToList();
             var sourceMap = materialized.ToDictionary(
                 item => item.Snapshot.SnapshotLocal,
                 item => (item.BeforeSnapshotLocal, item.AfterSnapshotLocal));
-            cache.PutTimelineSnapshots(materialized.Select(item => item.Snapshot).ToList(), sourceMap);
+            cache.PutTimelineSnapshots(
+                materialized.Select(item => item.Snapshot).ToList(),
+                sourceMap,
+                cancellationToken);
 
             foreach (var point in materialized)
             {
@@ -2242,31 +3191,39 @@ internal static class CodexUsageReader
 
     public static IReadOnlyList<DateTimeOffset> GetIncompleteQuotaTimelineDays(
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
         return QuotaSnapshotCacheStore.Load(CacheFolder)
-            .GetIncompleteTimelineDays(startInclusive, endInclusive);
+            .GetIncompleteTimelineDays(startInclusive, endInclusive, cancellationToken);
     }
 
-    public static void WarmQuotaTimelineDay(DateTimeOffset dayLocal)
+    public static void WarmQuotaTimelineDay(
+        DateTimeOffset dayLocal,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var dayStart = StartOfDay(dayLocal);
         var dayEnd = dayStart.AddDays(1);
-        var rows = ReadCachedDetailRows(dayStart, dayEnd);
+        var rows = ReadCachedDetailRows(dayStart, dayEnd, cancellationToken);
         if (rows.Count == 0)
         {
             return;
         }
 
-        _ = ReadMaterializedQuotaTimeline(rows.Select(row => row.StartLocal));
+        _ = ReadMaterializedQuotaTimeline(
+            rows.Select(row => row.StartLocal),
+            cancellationToken: cancellationToken);
     }
 
     public static IReadOnlyList<CodexQuotaSnapshot> ReadCachedAndHistoricalQuotaSnapshots(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        var cached = ReadCachedQuotaSnapshots(startLocal, endLocal);
-        var history = ReadQuotaHistoryQuotaSnapshots(startLocal, endLocal);
+        cancellationToken.ThrowIfCancellationRequested();
+        var cached = ReadCachedQuotaSnapshots(startLocal, endLocal, cancellationToken);
+        var history = ReadQuotaHistoryQuotaSnapshots(startLocal, endLocal, cancellationToken);
         var historySparkTimes = history
             .Where(IsGpt53QuotaSnapshot)
             .Select(item => item.SnapshotLocal)
@@ -2279,8 +3236,10 @@ internal static class CodexUsageReader
     }
 
     private static IReadOnlyList<CodexQuotaSnapshot> PrepareQuotaTimelineSources(
-        IEnumerable<CodexQuotaSnapshot> snapshots)
+        IEnumerable<CodexQuotaSnapshot> snapshots,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var filtered = MergeQuotaSnapshots(snapshots)
             .Where(IsGeneralCodexQuotaSnapshot)
             .OrderBy(item => item.SnapshotLocal)
@@ -2293,16 +3252,17 @@ internal static class CodexUsageReader
         var useful = filtered.Where(HasTimelineQuotaUsage).ToList();
         if (useful.Count > 0)
         {
+            var usefulIndex = new QuotaTimelineSnapshotIndex(useful);
             filtered = filtered
                 .Where(snapshot =>
                     !IsZeroTimelineQuotaSnapshot(snapshot) ||
-                    !useful.Any(other =>
-                        Math.Abs((other.SnapshotLocal - snapshot.SnapshotLocal).TotalMinutes) <= 10 &&
-                        TimelineQuotaWindowsOverlap(snapshot, other)))
+                    !usefulIndex.AnyNearby(snapshot.SnapshotLocal, TimeSpan.FromMinutes(10),
+                        other => TimelineQuotaWindowsOverlap(snapshot, other)))
                 .ToList();
         }
 
-        return CodexQuotaCycleReader.MarkTransientResetOutliers(filtered)
+        cancellationToken.ThrowIfCancellationRequested();
+        return CodexQuotaCycleReader.MarkTransientResetOutliers(filtered, cancellationToken)
             .Where(item => !item.IsAnomaly)
             .OrderBy(item => item.SnapshotLocal)
             .ToList();
@@ -2310,13 +3270,11 @@ internal static class CodexUsageReader
 
     private static MaterializedQuotaPoint MaterializeQuotaPoint(
         DateTimeOffset anchor,
-        IReadOnlyList<CodexQuotaSnapshot> sources)
+        QuotaTimelineSnapshotIndex allIndex,
+        QuotaTimelineSnapshotIndex fiveHourIndex,
+        QuotaTimelineSnapshotIndex weekIndex)
     {
-        var before = sources.LastOrDefault(item => item.SnapshotLocal <= anchor);
-        var after = sources.FirstOrDefault(item => item.SnapshotLocal >= anchor);
-        var nearest = sources
-            .OrderBy(item => Math.Abs((item.SnapshotLocal - anchor).TotalSeconds))
-            .FirstOrDefault();
+        var (before, after, nearest) = allIndex.Find(anchor);
         if (nearest is not null && Math.Abs((nearest.SnapshotLocal - anchor).TotalMinutes) <= 2)
         {
             return new MaterializedQuotaPoint(
@@ -2327,12 +3285,12 @@ internal static class CodexUsageReader
 
         var fiveHour = InterpolateTimelineWindow(
             anchor,
-            sources,
+            fiveHourIndex,
             item => item.FiveHourUsedPercent,
             item => item.FiveHourResetAtLocal);
         var week = InterpolateTimelineWindow(
             anchor,
-            sources,
+            weekIndex,
             item => item.WeekUsedPercent,
             item => item.WeekResetAtLocal);
         var identity = nearest ?? before ?? after;
@@ -2351,14 +3309,11 @@ internal static class CodexUsageReader
 
     private static (decimal? UsedPercent, DateTimeOffset? ResetAtLocal) InterpolateTimelineWindow(
         DateTimeOffset anchor,
-        IReadOnlyList<CodexQuotaSnapshot> sources,
+        QuotaTimelineSnapshotIndex index,
         Func<CodexQuotaSnapshot, decimal?> usedSelector,
         Func<CodexQuotaSnapshot, DateTimeOffset?> resetSelector)
     {
-        var before = sources.LastOrDefault(item =>
-            item.SnapshotLocal <= anchor && usedSelector(item) is not null);
-        var after = sources.FirstOrDefault(item =>
-            item.SnapshotLocal >= anchor && usedSelector(item) is not null);
+        var (before, after, nearest) = index.Find(anchor);
         if (before is not null && after is not null)
         {
             var beforeUsed = usedSelector(before)!.Value;
@@ -2380,10 +3335,6 @@ internal static class CodexUsageReader
             }
         }
 
-        var nearest = sources
-            .Where(item => usedSelector(item) is not null)
-            .OrderBy(item => Math.Abs((item.SnapshotLocal - anchor).TotalSeconds))
-            .FirstOrDefault();
         return nearest is not null && Math.Abs((nearest.SnapshotLocal - anchor).TotalMinutes) <= 10
             ? (ClampTimelinePercent(usedSelector(nearest)!.Value), resetSelector(nearest))
             : (null, null);
@@ -2419,9 +3370,10 @@ internal static class CodexUsageReader
 
     public static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaHistoryQuotaSnapshots(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        var historySnapshots = ReadQuotaHistorySnapshots(startLocal, endLocal)
+        var historySnapshots = ReadQuotaHistorySnapshots(startLocal, endLocal, cancellationToken)
             .Where(IsQuotaHistorySnapshot)
             .ToList();
         var historySparkTimes = historySnapshots
@@ -2437,13 +3389,21 @@ internal static class CodexUsageReader
 
     public static IReadOnlyList<DateTimeOffset> GetIncompleteQuotaSnapshotDays(
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
-        return QuotaSnapshotCacheStore.GetIncompleteDays(CacheFolder, startInclusive, endInclusive);
+        return QuotaSnapshotCacheStore.GetIncompleteDays(
+            CacheFolder,
+            startInclusive,
+            endInclusive,
+            cancellationToken);
     }
 
-    public static void WarmQuotaSnapshotDay(DateTimeOffset dayLocal)
+    public static void WarmQuotaSnapshotDay(
+        DateTimeOffset dayLocal,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var dayStart = StartOfDay(dayLocal);
         var dayEnd = dayStart.AddDays(1);
         var now = DateTimeOffset.UtcNow.ToOffset(BeijingOffset);
@@ -2452,21 +3412,38 @@ internal static class CodexUsageReader
             dayEnd = now;
         }
 
-        _ = ReadQuotaSnapshotsCached(dayStart, dayEnd);
-        WarmQuotaTimelineDay(dayStart.AddDays(-1));
-        WarmQuotaTimelineDay(dayStart);
-        WarmQuotaTimelineDay(dayStart.AddDays(1));
+        _ = ReadQuotaSnapshotsCached(dayStart, dayEnd, cancellationToken);
+        WarmQuotaTimelineDay(dayStart.AddDays(-1), cancellationToken);
+        WarmQuotaTimelineDay(dayStart, cancellationToken);
+        WarmQuotaTimelineDay(dayStart.AddDays(1), cancellationToken);
     }
 
     public static void WarmQuotaSnapshotDays(
         IEnumerable<DateTimeOffset> daysLocal,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<DateTimeOffset>? dayCompleted = null,
+        Action<int, int>? fileProgress = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        var today = StartOfDay(BeijingClock.Now);
         var days = daysLocal
             .Select(StartOfDay)
+            .Where(day => day < today)
             .Distinct()
             .OrderBy(item => item)
             .ToList();
+        if (days.Count == 0)
+        {
+            return;
+        }
+
+        var incomplete = GetIncompleteQuotaSnapshotDays(days[0], days[^1], cancellationToken).ToHashSet();
+        foreach (var day in days.Where(day => !incomplete.Contains(day)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            dayCompleted?.Invoke(day);
+        }
+        days = days.Where(incomplete.Contains).ToList();
         if (days.Count == 0)
         {
             return;
@@ -2479,7 +3456,8 @@ internal static class CodexUsageReader
             .ToHashSet();
 
         cancellationToken.ThrowIfCancellationRequested();
-        var liveSnapshots = ReadRateLimitSnapshots(startLocal, endLocal);
+        var liveScan = ReadRateLimitSnapshots(startLocal, endLocal, cancellationToken, fileProgress);
+        var liveSnapshots = liveScan.Snapshots;
         var liveQuotaSnapshots = liveSnapshots
             .Where(IsQuotaHistorySnapshot)
             .Select(ToCodexQuotaSnapshot)
@@ -2488,7 +3466,7 @@ internal static class CodexUsageReader
             .Where(IsGpt53QuotaSnapshot)
             .Select(item => item.SnapshotLocal)
             .ToHashSet();
-        var historyQuotaSnapshots = ReadQuotaHistorySnapshots(startLocal, endLocal)
+        var historyQuotaSnapshots = ReadQuotaHistorySnapshots(startLocal, endLocal, cancellationToken)
             .Where(IsQuotaHistorySnapshot)
             .Where(item => !IsStaleGeneralSnapshotForLiveSpark(item, liveSparkTimes))
             .Select(ToCodexQuotaSnapshot);
@@ -2498,22 +3476,35 @@ internal static class CodexUsageReader
             .ToDictionary(group => group.Key, group => (IReadOnlyList<CodexQuotaSnapshot>)group.ToList());
 
         var cache = QuotaSnapshotCacheStore.Load(CacheFolder);
-        foreach (var day in days)
+        foreach (var day in days.OrderByDescending(day => day))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var date = DateOnly.FromDateTime(day.DateTime);
-            var existing = cache.GetSnapshots(date);
+            var existing = cache.GetSnapshots(date, cancellationToken);
             scannedByDate.TryGetValue(date, out var scanned);
             var merged = MergeQuotaSnapshots(existing.Concat(scanned ?? Array.Empty<CodexQuotaSnapshot>())).ToList();
-            cache.Put(date, merged, isComplete: true, scannedThroughLocal: day.AddDays(1).AddTicks(-1));
+            cache.Put(
+                date,
+                merged,
+                isComplete: liveScan.IsComplete,
+                scannedThroughLocal: day.AddDays(1).AddTicks(-1),
+                cancellationToken: cancellationToken,
+                propagateErrors: true);
+            if (liveScan.IsComplete && cache.TryGetRecord(date, out var record) && record.IsComplete)
+            {
+                dayCompleted?.Invoke(day);
+            }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         cache.Save();
+        CodexQuotaCycleReader.InvalidateCache();
     }
 
     private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsCached(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
         var result = new List<CodexQuotaSnapshot>();
         var cache = QuotaSnapshotCacheStore.Load(CacheFolder);
@@ -2523,6 +3514,7 @@ internal static class CodexUsageReader
 
         for (var dayStart = StartOfDay(startLocal); dayStart < endLocal; dayStart = dayStart.AddDays(1))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var dayEnd = dayStart.AddDays(1);
             var clippedStart = Max(dayStart, startLocal);
             var clippedEnd = Min(dayEnd, endLocal);
@@ -2532,7 +3524,7 @@ internal static class CodexUsageReader
             }
 
             var date = DateOnly.FromDateTime(dayStart.DateTime);
-            var daySnapshots = cache.GetSnapshots(date).ToList();
+            var daySnapshots = cache.GetSnapshots(date, cancellationToken).ToList();
             var liveToday = dayStart == todayStart;
             var effectiveClippedEnd = liveToday ? Min(clippedEnd, now) : clippedEnd;
             if (clippedStart >= effectiveClippedEnd)
@@ -2549,7 +3541,7 @@ internal static class CodexUsageReader
             var fullHistoricalDay = dayStart < todayStart;
             var hasCompleteCoverage =
                 hasRecord && record is not null &&
-                (fullHistoricalDay && record.IsComplete ||
+                (fullHistoricalDay && record.IsComplete && record.IsValid ||
                  daySnapshots.Count > 0 &&
                  !hasPrefixGap &&
                  !hasAmbiguousQuotaCache &&
@@ -2581,16 +3573,17 @@ internal static class CodexUsageReader
                 var scanEnd = fullHistoricalDay ? dayEnd : effectiveClippedEnd;
                 if (scanStart < scanEnd)
                 {
-                    var scanned = ReadQuotaSnapshotsUncached(scanStart, scanEnd);
+                    var scannedResult = ReadQuotaSnapshotsUncached(scanStart, scanEnd, cancellationToken);
                     daySnapshots = MergeQuotaSnapshots(daySnapshots
-                        .Concat(scanned)
+                        .Concat(scannedResult.Snapshots)
                         .Where(item => item.SnapshotLocal >= dayStart && item.SnapshotLocal < dayEnd))
                         .ToList();
                     cache.Put(
                         date,
                         daySnapshots,
-                        isComplete: fullHistoricalDay,
-                        scannedThroughLocal: scanEnd.AddTicks(-1));
+                        isComplete: fullHistoricalDay && scannedResult.IsComplete,
+                        scannedThroughLocal: scanEnd.AddTicks(-1),
+                        cancellationToken: cancellationToken);
                     cacheChanged = true;
                 }
             }
@@ -2660,17 +3653,21 @@ internal static class CodexUsageReader
             ?.SnapshotLocal;
     }
 
-    private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsUncached(
+    private static QuotaSnapshotScanResult ReadQuotaSnapshotsUncached(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        var liveSnapshots = ReadRateLimitSnapshots(startLocal, endLocal);
-        foreach (var item in liveSnapshots)
+        cancellationToken.ThrowIfCancellationRequested();
+        var liveScan = ReadRateLimitSnapshots(startLocal, endLocal, cancellationToken);
+        foreach (var item in liveScan.Snapshots)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             AppendQuotaHistoryIfNew(item);
         }
 
-        var liveQuotaSnapshots = liveSnapshots
+        cancellationToken.ThrowIfCancellationRequested();
+        var liveQuotaSnapshots = liveScan.Snapshots
             .Where(IsQuotaHistorySnapshot)
             .Select(ToCodexQuotaSnapshot)
             .ToList();
@@ -2678,14 +3675,14 @@ internal static class CodexUsageReader
             .Where(IsGpt53QuotaSnapshot)
             .Select(item => item.SnapshotLocal)
             .ToHashSet();
-        var historyQuotaSnapshots = ReadQuotaHistorySnapshots(startLocal, endLocal)
+        var historyQuotaSnapshots = ReadQuotaHistorySnapshots(startLocal, endLocal, cancellationToken)
             .Where(IsQuotaHistorySnapshot)
             .Where(item => !IsStaleGeneralSnapshotForLiveSpark(item, liveSparkTimes))
             .Select(ToCodexQuotaSnapshot);
 
-        return MergeQuotaSnapshots(liveQuotaSnapshots
-                .Concat(historyQuotaSnapshots))
-            .ToList();
+        return new QuotaSnapshotScanResult(
+            MergeQuotaSnapshots(liveQuotaSnapshots.Concat(historyQuotaSnapshots)).ToList(),
+            liveScan.IsComplete);
     }
 
     private static bool IsStaleGeneralSnapshotForLiveSpark(
@@ -2717,6 +3714,20 @@ internal static class CodexUsageReader
 
     internal static CodexQuotaSnapshot NormalizeQuotaSnapshotWindows(CodexQuotaSnapshot snapshot)
     {
+        var normalizedFiveHour = QuotaPercentRules.Normalize(snapshot.FiveHourUsedPercent);
+        var normalizedWeek = QuotaPercentRules.Normalize(snapshot.WeekUsedPercent);
+        if (normalizedFiveHour != snapshot.FiveHourUsedPercent ||
+            normalizedWeek != snapshot.WeekUsedPercent)
+        {
+            snapshot = snapshot with
+            {
+                FiveHourUsedPercent = normalizedFiveHour,
+                FiveHourResetAtLocal = normalizedFiveHour is null ? null : snapshot.FiveHourResetAtLocal,
+                WeekUsedPercent = normalizedWeek,
+                WeekResetAtLocal = normalizedWeek is null ? null : snapshot.WeekResetAtLocal
+            };
+        }
+
         // During the temporary removal of the 5h limit, Codex emits the 7d
         // window as `primary` and omits `secondary`. Older builds persisted
         // that payload in the 5h columns. A real 5h reset cannot be more than
@@ -2806,20 +3817,24 @@ internal static class CodexUsageReader
         return score;
     }
 
-    private static CodexQuotaEstimate BuildQuotaEstimate(RateLimitSnapshot snapshot, DateTimeOffset now)
+    private static CodexQuotaEstimate BuildQuotaEstimate(
+        RateLimitSnapshot snapshot,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
     {
         return new CodexQuotaEstimate(
             snapshot.TimestampLocal,
             snapshot.LimitId,
             snapshot.LimitName,
-            BuildQuotaWindowEstimate("5h", snapshot.FiveHour, now),
-            BuildQuotaWindowEstimate("1周", snapshot.Week, now));
+            BuildQuotaWindowEstimate("5h", snapshot.FiveHour, now, cancellationToken: cancellationToken),
+            BuildQuotaWindowEstimate("1周", snapshot.Week, now, cancellationToken: cancellationToken));
     }
 
     private static CodexQuotaEstimate BuildQuotaEstimate(
         CodexQuotaSnapshot snapshot,
         DateTimeOffset now,
-        bool includeLiveToday = true)
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
     {
         return new CodexQuotaEstimate(
             snapshot.SnapshotLocal,
@@ -2829,12 +3844,14 @@ internal static class CodexUsageReader
                 "5h",
                 ToRateLimitWindow(snapshot.FiveHourUsedPercent, 5 * 60, snapshot.FiveHourResetAtLocal),
                 now,
-                includeLiveToday),
+                includeLiveToday,
+                cancellationToken),
             BuildQuotaWindowEstimate(
                 "1周",
                 ToRateLimitWindow(snapshot.WeekUsedPercent, 7 * 24 * 60, snapshot.WeekResetAtLocal),
                 now,
-                includeLiveToday));
+                includeLiveToday,
+                cancellationToken));
     }
 
     private static RateLimitWindowSnapshot? ToRateLimitWindow(
@@ -2851,33 +3868,35 @@ internal static class CodexUsageReader
         string label,
         RateLimitWindowSnapshot? snapshot,
         DateTimeOffset now,
-        bool includeLiveToday = true)
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
     {
-        if (snapshot is null || snapshot.WindowMinutes <= 0)
+        cancellationToken.ThrowIfCancellationRequested();
+        if (snapshot is not { } window || window.WindowMinutes <= 0)
         {
             return null;
         }
 
-        var windowStart = snapshot.ResetAtLocal is null
-            ? now.AddMinutes(-snapshot.WindowMinutes)
-            : snapshot.ResetAtLocal.Value.AddMinutes(-snapshot.WindowMinutes);
+        var windowStart = window.ResetAtLocal is null
+            ? now.AddMinutes(-window.WindowMinutes)
+            : window.ResetAtLocal.Value.AddMinutes(-window.WindowMinutes);
         if (windowStart > now)
         {
-            windowStart = now.AddMinutes(-snapshot.WindowMinutes);
+            windowStart = now.AddMinutes(-window.WindowMinutes);
         }
 
-        var usage = ReadRangeFromDetailRows(windowStart, now, includeLiveToday);
-        var usedCost = usage.EstimateCost(PriceProfiles.PrimaryCodex);
-        var ratio = snapshot.UsedPercent / 100m;
-        var estimatedCostLimit = ratio > 0 ? usedCost / ratio : (decimal?)null;
-        var estimatedTokenLimit = ratio > 0 ? (long?)Math.Round(usage.TotalTokens / ratio) : null;
+        var usage = ReadRangeFromDetailRows(windowStart, now, includeLiveToday, cancellationToken);
+        var usedCost = CodexModelCost.Estimate(usage).KnownCost;
+        var estimatedCostLimit = CodexModelCost.EstimateQuotaValue(usage, window.UsedPercent);
+        // A mixed-model subscription does not have a fixed token capacity.
+        long? estimatedTokenLimit = null;
         return new CodexQuotaWindowEstimate(
             label,
-            snapshot.UsedPercent,
-            snapshot.WindowMinutes,
+            window.UsedPercent,
+            window.WindowMinutes,
             windowStart,
             now,
-            snapshot.ResetAtLocal,
+            window.ResetAtLocal,
             usage,
             usedCost,
             estimatedCostLimit,
@@ -2887,8 +3906,11 @@ internal static class CodexUsageReader
     public static TokenUsageSummary ReadRangeFromDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        bool includeLiveToday = true)
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
     {
+        startLocal = startLocal.ToOffset(BeijingOffset);
+        endLocal = endLocal.ToOffset(BeijingOffset);
         var summary = new TokenUsageSummary
         {
             StartLocal = startLocal,
@@ -2898,13 +3920,19 @@ internal static class CodexUsageReader
 
         for (var segmentStart = startLocal; segmentStart < endLocal;)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var nextDay = StartOfDay(segmentStart).AddDays(1);
             var segmentEnd = nextDay < endLocal ? nextDay : endLocal;
             var rows = includeLiveToday
-                ? ReadDetailRows(segmentStart, segmentEnd, includeLiveToday: true)
-                : ReadCachedDetailRows(segmentStart, segmentEnd);
+                ? ReadDetailRows(
+                    segmentStart,
+                    segmentEnd,
+                    includeLiveToday: true,
+                    cancellationToken: cancellationToken)
+                : ReadCachedDetailRows(segmentStart, segmentEnd, cancellationToken);
             foreach (var row in rows)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 AddBucketToSummary(summary, dailyBuckets, row);
             }
 
@@ -2957,20 +3985,22 @@ internal static class CodexUsageReader
 
     private static object? ToQuotaHistoryWindow(RateLimitWindowSnapshot? window)
     {
-        if (window is null)
+        if (window is not { } value)
         {
             return null;
         }
 
         return new
         {
-            usedPercent = window.UsedPercent,
-            windowMinutes = window.WindowMinutes,
-            resetAtLocal = window.ResetAtLocal
+            usedPercent = value.UsedPercent,
+            windowMinutes = value.WindowMinutes,
+            resetAtLocal = value.ResetAtLocal
         };
     }
 
-    private static void EnsureQuotaHistoryCacheLoaded(string path)
+    private static void EnsureQuotaHistoryCacheLoaded(
+        string path,
+        CancellationToken cancellationToken = default)
     {
         var info = new FileInfo(path);
         if (!info.Exists)
@@ -2988,20 +4018,29 @@ internal static class CodexUsageReader
 
         QuotaHistorySnapshotCache.Clear();
         QuotaHistoryKeyCache.Clear();
-        foreach (var line in File.ReadLines(path))
+        try
         {
-            if (string.IsNullOrWhiteSpace(line) || TryReadQuotaHistorySnapshot(line) is not { } snapshot)
+            foreach (var line in File.ReadLines(path))
             {
-                continue;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(line) || TryReadQuotaHistorySnapshot(line) is not { } snapshot)
+                {
+                    continue;
+                }
+
+                QuotaHistorySnapshotCache.Add(snapshot);
+                QuotaHistoryKeyCache.Add(new QuotaHistoryKey(
+                    snapshot.TimestampLocal,
+                    NormalizeLimitId(snapshot.LimitId)));
             }
 
-            QuotaHistorySnapshotCache.Add(snapshot);
-            QuotaHistoryKeyCache.Add(new QuotaHistoryKey(
-                snapshot.TimestampLocal,
-                NormalizeLimitId(snapshot.LimitId)));
+            UpdateQuotaHistoryCacheFileState(path);
         }
-
-        UpdateQuotaHistoryCacheFileState(path);
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            ResetQuotaHistoryCache(path);
+            throw;
+        }
     }
 
     private static void ResetQuotaHistoryCache(string path)
@@ -3031,18 +4070,20 @@ internal static class CodexUsageReader
 
     private static string GetQuotaHistoryPath()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, CacheFolder, QuotaHistoryFileName);
+        return Path.Combine(MonitorCachePaths.LocalAppData, CacheFolder, QuotaHistoryFileName);
     }
 
     private static IReadOnlyList<RateLimitSnapshot> ReadQuotaHistorySnapshots(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
         var path = GetQuotaHistoryPath();
         lock (QuotaHistoryCacheSync)
         {
-            EnsureQuotaHistoryCacheLoaded(path);
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureQuotaHistoryCacheLoaded(path, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             return QuotaHistorySnapshotCache
                 .Where(snapshot => snapshot.TimestampLocal >= startLocal && snapshot.TimestampLocal < endLocal)
                 .ToList();
@@ -3094,7 +4135,7 @@ internal static class CodexUsageReader
 
         var usedPercent = GetDecimal(window, "usedPercent");
         var windowMinutes = (int)GetInt64(window, "windowMinutes");
-        if (usedPercent is null || windowMinutes <= 0)
+        if (!QuotaPercentRules.IsValid(usedPercent) || windowMinutes <= 0)
         {
             return null;
         }
@@ -3107,11 +4148,129 @@ internal static class CodexUsageReader
             resetAt = parsedReset;
         }
 
-        return new RateLimitWindowSnapshot(usedPercent.Value, windowMinutes, resetAt);
+        return new RateLimitWindowSnapshot(usedPercent!.Value, windowMinutes, resetAt);
     }
 
-    public static TokenUsageSummary ReadRange(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday = true)
+    public static void WarmHistoricalDays(
+        IEnumerable<DateTimeOffset> daysLocal,
+        CancellationToken cancellationToken = default,
+        Action<DateTimeOffset>? dayCompleted = null,
+        Action<int, int>? fileProgress = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        var todayStart = StartOfDay(DateTimeOffset.UtcNow.ToOffset(BeijingOffset));
+        var days = daysLocal
+            .Select(day => StartOfDay(day.ToOffset(BeijingOffset)))
+            .Where(day => day < todayStart)
+            .Distinct()
+            .OrderByDescending(day => day)
+            .ToList();
+        if (days.Count == 0)
+        {
+            return;
+        }
+
+        var incompleteDates = GetIncompleteHistoricalDays(days[^1], days[0], cancellationToken)
+            .Select(day => DateOnly.FromDateTime(day.DateTime))
+            .ToHashSet();
+        foreach (var day in days)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!incompleteDates.Contains(DateOnly.FromDateTime(day.DateTime)))
+            {
+                dayCompleted?.Invoke(day);
+            }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        days = days.Where(day => incompleteDates.Contains(DateOnly.FromDateTime(day.DateTime))).ToList();
+        if (days.Count == 0)
+        {
+            return;
+        }
+
+        var startLocal = days[^1];
+        var endLocal = days[0].AddDays(1);
+        var eventsByDay = days.ToDictionary(
+            day => DateOnly.FromDateTime(day.DateTime),
+            _ => new List<TokenUsageEvent>());
+        var files = new List<string>();
+        foreach (var root in GetLogRoots())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                files.Add(file);
+            }
+        }
+
+        // Read each source once for the entire pending history. A historical
+        // day's mtime filter also includes every later log, so scanning days
+        // separately repeatedly reads the same (potentially very large) files.
+        // Retain only token events for requested days, never the JSONL text.
+        var isComplete = true;
+        fileProgress?.Invoke(0, files.Count);
+        for (var index = 0; index < files.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var fileEvents = new List<TokenUsageEvent>();
+            if (!ReadEventFile(files[index], startLocal, endLocal, fileEvents, cancellationToken))
+            {
+                isComplete = false;
+            }
+
+            foreach (var item in fileEvents)
+            {
+                var date = DateOnly.FromDateTime(item.Timestamp.ToOffset(BeijingOffset).DateTime);
+                if (eventsByDay.TryGetValue(date, out var dayEvents))
+                {
+                    dayEvents.Add(item);
+                }
+            }
+            fileProgress?.Invoke(index + 1, files.Count);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var cache = UsageCacheStore.Load(CacheFolder);
+        foreach (var dayStart in days)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var date = DateOnly.FromDateTime(dayStart.DateTime);
+            // Deduplication is scoped to a day, matching usage_events' key and
+            // the existing per-day reader when a turn continues past midnight.
+            var events = UsageEventMerger.Merge(cache.GetDetailEvents(date, cancellationToken)
+                .Concat(eventsByDay[date]));
+            eventsByDay.Remove(date);
+            var dayEnd = dayStart.AddDays(1);
+            if (events.Count == 0 && cache.TryGet(date, out var legacyBucket) && legacyBucket.Events > 0)
+            {
+                // Keep legacy summary-only data if the original source is no
+                // longer present, but do not claim its missing details are complete.
+                cache.Put(legacyBucket, isComplete: false, scannedThroughLocal: dayEnd.AddTicks(-1),
+                    cancellationToken: cancellationToken, propagateErrors: true);
+                continue;
+            }
+
+            var bucket = CreateBucketFromEvents(dayStart, events);
+            cache.Put(bucket, isComplete, dayEnd.AddTicks(-1), events,
+                cancellationToken: cancellationToken, propagateErrors: true);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (isComplete && GetIncompleteHistoricalDays(dayStart, dayStart, cancellationToken).Count == 0)
+            {
+                dayCompleted?.Invoke(dayStart);
+            }
+        }
+    }
+
+    public static TokenUsageSummary ReadRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(BeijingOffset);
+        endLocal = endLocal.ToOffset(BeijingOffset);
         var summary = new TokenUsageSummary
         {
             StartLocal = startLocal,
@@ -3127,6 +4286,7 @@ internal static class CodexUsageReader
 
         for (var dayStart = StartOfDay(startLocal); dayStart < endLocal; dayStart = dayStart.AddDays(1))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var dayEnd = dayStart.AddDays(1);
             var clippedStart = Max(dayStart, startLocal);
             var clippedEnd = Min(dayEnd, endLocal);
@@ -3140,6 +4300,22 @@ internal static class CodexUsageReader
             var fullCachedDay = clippedStart == dayStart && (fullHistoricalDay || liveToday);
             var date = DateOnly.FromDateTime(dayStart.DateTime);
 
+            // Quota cycles usually start partway through a day. A complete day
+            // with all event details can answer that slice precisely, including
+            // imported events. Reopening rollouts here both rescans history on
+            // every cycle refresh and omits events that exist on another device.
+            if (!fullHistoricalDay && dayStart < todayStart &&
+                cache.TryGetRecord(date, out var boundaryRecord) &&
+                boundaryRecord.IsComplete && boundaryRecord.DetailEventCount == boundaryRecord.Events)
+            {
+                var boundarySummary = cache.ReadRange(clippedStart, clippedEnd, cancellationToken);
+                foreach (var bucket in boundarySummary.DailyBuckets)
+                {
+                    AddBucketToSummary(summary, dailyBuckets, bucket);
+                }
+                continue;
+            }
+
             if (fullCachedDay && cache.TryGet(date, out var cachedBucket))
             {
                 AddBucketToSummary(summary, dailyBuckets, cachedBucket);
@@ -3147,15 +4323,18 @@ internal static class CodexUsageReader
 
             if (fullHistoricalDay)
             {
-                if (cache.TryGetRecord(date, out var record) && record.IsComplete)
+                if (cache.TryGetRecord(date, out var record) &&
+                    record.IsComplete &&
+                    record.DetailEventCount == record.Events)
                 {
                     continue;
                 }
 
-                var scanStart = cache.TryGetRecord(date, out record) && record.ScannedThroughLocal is not null
-                    ? record.ScannedThroughLocal.Value.AddTicks(1)
-                    : dayStart;
-                AddScanRange(scanRanges, Max(scanStart, clippedStart), dayEnd, cacheHistoricalDays: true);
+                // An incomplete historical record can retain an end-of-day
+                // watermark after a schema change or a failed source scan.
+                // Its previous coverage is no longer proof that the counters
+                // are current, so rebuild the whole day and merge its details.
+                AddScanRange(scanRanges, dayStart, dayEnd, cacheHistoricalDays: true);
             }
             else if (liveToday)
             {
@@ -3186,14 +4365,16 @@ internal static class CodexUsageReader
 
         foreach (var scanRange in scanRanges)
         {
-            var scanned = ReadRangeUncached(scanRange.StartLocal, scanRange.EndLocal);
-            foreach (var bucket in scanned.DailyBuckets)
+            cancellationToken.ThrowIfCancellationRequested();
+            var scanned = ReadRangeUncached(scanRange.StartLocal, scanRange.EndLocal, cancellationToken);
+            foreach (var bucket in scanned.Summary.DailyBuckets)
             {
                 AddBucketToSummary(summary, dailyBuckets, bucket);
             }
 
             for (var dayStart = StartOfDay(scanRange.StartLocal); dayStart < scanRange.EndLocal; dayStart = dayStart.AddDays(1))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var date = DateOnly.FromDateTime(dayStart.DateTime);
                 var isToday = dayStart == todayStart;
                 if (!scanRange.CacheHistoricalDays && !isToday)
@@ -3201,7 +4382,7 @@ internal static class CodexUsageReader
                     continue;
                 }
 
-                var scannedBucket = scanned.DailyBuckets.FirstOrDefault(item =>
+                var scannedBucket = scanned.Summary.DailyBuckets.FirstOrDefault(item =>
                     DateOnly.FromDateTime(item.StartLocal.DateTime) == date) ?? new TokenUsageBucket
                     {
                         StartLocal = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, BeijingOffset)
@@ -3215,32 +4396,62 @@ internal static class CodexUsageReader
 
                 AddBucketValues(mergedBucket, scannedBucket);
                 var scannedThrough = Min(dayStart.AddDays(1), scanRange.EndLocal).AddTicks(-1);
-                var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart;
+                var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart && scanned.IsComplete;
                 IReadOnlyList<TokenUsageEvent>? detailEvents = null;
                 var replaceDetailEvents = true;
-                if (cache.HasDetailEvents(date))
+                var hasDetailEvents = cache.HasDetailEvents(date, cancellationToken);
+                if (hasDetailEvents)
                 {
                     var detailStart = isToday
                         ? dayStart
                         : Max(dayStart, scanRange.StartLocal);
                     var detailEnd = Min(dayStart.AddDays(1), scanRange.EndLocal);
-                    var newEvents = ReadEventsUncached(detailStart, detailEnd, useLiveCursor: true);
-                    detailEvents = UsageEventMerger.Merge(cache.GetDetailEvents(date)
-                        .Concat(newEvents)
+                    var newEventsResult = ReadEventsUncached(
+                        detailStart,
+                        detailEnd,
+                        useLiveCursor: true,
+                        cancellationToken: cancellationToken);
+                    detailEvents = UsageEventMerger.Merge(cache.GetDetailEvents(date, cancellationToken)
+                        .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1)));
                     mergedBucket = CreateBucketFromEvents(dayStart, detailEvents);
                     replaceDetailEvents = true;
+                    isComplete &= newEventsResult.IsComplete;
+                }
+                else if (scanRange.CacheHistoricalDays && scannedBucket.Events > 0)
+                {
+                    // A legacy cache may contain only a daily aggregate. For
+                    // a full historical rescan, prefer newly observed source
+                    // events when available instead of adding them to the old
+                    // aggregate and double-counting the day.
+                    mergedBucket = scannedBucket;
                 }
 
-                cache.Put(mergedBucket, isComplete, scannedThrough, detailEvents, replaceDetailEvents);
+                cache.Put(
+                    mergedBucket,
+                    isComplete,
+                    scannedThrough,
+                    detailEvents,
+                    replaceDetailEvents,
+                    cancellationToken);
+                dailyBuckets[date] = mergedBucket;
                 cacheChanged = true;
             }
         }
 
         if (cacheChanged)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
-            return cache.ReadRange(startLocal, endLocal);
+            summary = new TokenUsageSummary
+            {
+                StartLocal = startLocal,
+                EndLocal = endLocal
+            };
+            foreach (var bucket in dailyBuckets.Values)
+            {
+                AddBucketValues(summary, bucket);
+            }
         }
 
         summary.DailyBuckets.AddRange(
@@ -3254,8 +4465,12 @@ internal static class CodexUsageReader
     public static IReadOnlyList<TokenUsageBucket> ReadDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        bool includeLiveToday = true)
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(BeijingOffset);
+        endLocal = endLocal.ToOffset(BeijingOffset);
         var dayStart = StartOfDay(startLocal);
         var date = DateOnly.FromDateTime(dayStart.DateTime);
         var now = DateTimeOffset.UtcNow.ToOffset(BeijingOffset);
@@ -3265,7 +4480,7 @@ internal static class CodexUsageReader
             ? Min(endLocal, now)
             : endLocal;
         var cache = UsageCacheStore.Load(CacheFolder);
-        var cachedEvents = cache.GetDetailEvents(date).ToList();
+        var cachedEvents = cache.GetDetailEvents(date, cancellationToken).ToList();
 
         if (dayStart == todayStart && !includeLiveToday)
         {
@@ -3277,30 +4492,44 @@ internal static class CodexUsageReader
             var effectiveScannedThrough = dayStart == todayStart
                 ? GetEffectiveLiveScannedThrough(record, now)
                 : record.ScannedThroughLocal;
-            var hasCompleteCoverage = record.IsComplete ||
-                                      effectiveScannedThrough is not null &&
-                                      effectiveScannedThrough.Value >= effectiveEndLocal.AddTicks(-1);
+            var hasCompleteDetails = cachedEvents.Count == record.Events;
+            var hasCompleteCoverage = hasCompleteDetails && (record.IsComplete ||
+                                      dayStart == todayStart && effectiveScannedThrough is not null &&
+                                      effectiveScannedThrough.Value >= effectiveEndLocal.AddTicks(-1));
             if (hasCompleteCoverage)
             {
                 return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
             }
 
-            if (includeLiveToday)
+            if (dayStart < todayStart || includeLiveToday)
             {
-                var scanStart = effectiveScannedThrough is null
-                    ? startLocal
+                var replaceDetails = !hasCompleteDetails || dayStart < todayStart && !record.IsComplete;
+                var scanStart = replaceDetails || effectiveScannedThrough is null
+                    ? replaceDetails ? dayStart : startLocal
                     : Max(startLocal, effectiveScannedThrough.Value.AddTicks(1));
-                if (scanStart < effectiveEndLocal)
+                var scanEnd = dayStart < todayStart ? dayEnd : effectiveEndLocal;
+                if (scanStart < scanEnd)
                 {
                     // Always give a fresh live cursor the full day. This self-heals a cache
                     // produced by an older build that advanced past future-dated JSONL rows.
-                    var newEvents = ReadEventsUncached(dayStart, effectiveEndLocal, useLiveCursor: true);
+                    var newEventsResult = ReadEventsUncached(
+                        dayStart,
+                        scanEnd,
+                        useLiveCursor: true,
+                        cancellationToken: cancellationToken);
                     var mergedEvents = UsageEventMerger.Merge(cachedEvents
-                        .Concat(newEvents)
+                        .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
                     var mergedBucket = CreateBucketFromEvents(dayStart, mergedEvents);
-                    var isComplete = dayStart < todayStart && effectiveEndLocal >= dayEnd;
-                    cache.Put(mergedBucket, isComplete, effectiveEndLocal.AddTicks(-1), newEvents, replaceDetailEvents: false);
+                    var isComplete = dayStart < todayStart && scanEnd >= dayEnd && newEventsResult.IsComplete;
+                    cache.Put(
+                        mergedBucket,
+                        isComplete,
+                        scanEnd.AddTicks(-1),
+                        replaceDetails ? mergedEvents : newEventsResult.Events,
+                        replaceDetailEvents: replaceDetails,
+                        cancellationToken: cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                     cache.Save();
                     cachedEvents = mergedEvents.ToList();
                 }
@@ -3309,12 +4538,19 @@ internal static class CodexUsageReader
             return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
         }
 
-        var fullEvents = UsageEventMerger.Merge(cachedEvents.Concat(ReadEventsUncached(startLocal, endLocal)));
+        var fullEventsResult = ReadEventsUncached(startLocal, endLocal, cancellationToken: cancellationToken);
+        var fullEvents = UsageEventMerger.Merge(cachedEvents.Concat(fullEventsResult.Events));
         var fullBucket = CreateBucketFromEvents(dayStart, fullEvents);
-        var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd;
+        var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd && fullEventsResult.IsComplete;
         if (startLocal == dayStart)
         {
-            cache.Put(fullBucket, completeHistoricalDay, endLocal.AddTicks(-1), fullEvents);
+            cache.Put(
+                fullBucket,
+                completeHistoricalDay,
+                endLocal.AddTicks(-1),
+                fullEvents,
+                cancellationToken: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
         }
 
@@ -3340,25 +4576,39 @@ internal static class CodexUsageReader
 
     public static IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal));
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(BeijingOffset);
+        endLocal = endLocal.ToOffset(BeijingOffset);
+        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal, cancellationToken: cancellationToken).Events);
     }
 
-    private static TokenUsageSummary ReadRangeUncached(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private static UsageRangeScanResult ReadRangeUncached(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken)
     {
+        PruneLiveFileState(startLocal, endLocal);
         var summary = new TokenUsageSummary
         {
             StartLocal = startLocal,
             EndLocal = endLocal
         };
         var dailyBuckets = new Dictionary<DateOnly, TokenUsageBucket>();
+        var isComplete = true;
 
         foreach (var root in GetLogRoots())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
             {
-                ReadFile(file, startLocal, endLocal, summary, dailyBuckets);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!ReadFile(file, startLocal, endLocal, summary, dailyBuckets, cancellationToken))
+                {
+                    isComplete = false;
+                }
             }
         }
 
@@ -3367,40 +4617,55 @@ internal static class CodexUsageReader
                 .OrderBy(bucket => bucket.StartLocal)
                 .Where(bucket => bucket.Events > 0));
 
-        return summary;
+        return new UsageRangeScanResult(summary, isComplete);
     }
 
-    private static List<TokenUsageEvent> ReadEventsUncached(
+    private static UsageEventScanResult ReadEventsUncached(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        bool useLiveCursor = false)
+        bool useLiveCursor = false,
+        CancellationToken cancellationToken = default)
     {
         var events = new List<TokenUsageEvent>();
+        var isComplete = true;
         var incremental = useLiveCursor && IsLiveRange(startLocal, endLocal);
+        if (incremental)
+        {
+            PruneLiveFileState(startLocal, endLocal);
+        }
 
         foreach (var root in GetLogRoots())
         {
+            cancellationToken.ThrowIfCancellationRequested();
             foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (incremental)
                 {
-                    ReadEventFileIncremental(file, startLocal, endLocal, events);
+                    if (!ReadEventFileIncremental(file, startLocal, endLocal, events, cancellationToken))
+                    {
+                        isComplete = false;
+                    }
                 }
                 else
                 {
-                    ReadEventFile(file, startLocal, endLocal, events);
+                    if (!ReadEventFile(file, startLocal, endLocal, events, cancellationToken))
+                    {
+                        isComplete = false;
+                    }
                 }
             }
         }
 
-        return UsageEventMerger.Merge(events).ToList();
+        return new UsageEventScanResult(UsageEventMerger.Merge(events).ToList(), isComplete);
     }
 
-    private static void ReadEventFile(
+    private static bool ReadEventFile(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        List<TokenUsageEvent> events)
+        List<TokenUsageEvent> events,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -3409,33 +4674,42 @@ internal static class CodexUsageReader
             var replayFilter = new SubagentReplayFilter();
             while (reader.ReadLine() is { } line)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!replayFilter.ShouldReadTokenCount(line))
                 {
                     continue;
                 }
 
-                var usageEvent = TryReadUsageEvent(line, startLocal, endLocal);
+                var usageEvent = TryReadUsageEvent(line, startLocal, endLocal, replayFilter.ModelId, replayFilter.ServiceTier);
                 if (usageEvent is not null)
                 {
                     events.Add(usageEvent);
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
-            return;
+            return false;
         }
+
+        return true;
     }
 
-    private static void ReadEventFileIncremental(
+    private static bool ReadEventFileIncremental(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        List<TokenUsageEvent> events)
+        List<TokenUsageEvent> events,
+        CancellationToken cancellationToken)
     {
         var replayFilter = UsageReplayFilters.GetOrAdd(file, static _ => new SubagentReplayFilter());
-        UsageTailReader.ReadNewLinesWhile(file, startLocal, line =>
+        return UsageTailReader.ReadNewLinesWhile(file, startLocal, line =>
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (SubagentReplayFilter.TryReadRecordTimestamp(line) is { } timestamp && timestamp >= endLocal)
             {
                 return false;
@@ -3446,13 +4720,17 @@ internal static class CodexUsageReader
                 return true;
             }
 
-            var usageEvent = TryReadUsageEvent(line, startLocal, endLocal);
+            var usageEvent = TryReadUsageEvent(line, startLocal, endLocal, replayFilter.ModelId, replayFilter.ServiceTier);
             if (usageEvent is not null)
             {
                 events.Add(usageEvent);
             }
 
             return true;
+        }, cancellationToken, onRestart: () =>
+        {
+            replayFilter = new SubagentReplayFilter();
+            UsageReplayFilters[file] = replayFilter;
         });
     }
 
@@ -3462,13 +4740,7 @@ internal static class CodexUsageReader
             .Select(item =>
             {
                 var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
-                bucket.Add(
-                    item.Timestamp,
-                    item.InputTokens,
-                    item.CachedInputTokens,
-                    item.OutputTokens,
-                    item.ReasoningOutputTokens,
-                    item.TotalTokens);
+                bucket.Add(item);
                 return bucket;
             })
             .ToList();
@@ -3481,13 +4753,7 @@ internal static class CodexUsageReader
         var bucket = new TokenUsageBucket { StartLocal = bucketStart };
         foreach (var item in UsageEventMerger.Merge(events))
         {
-            bucket.Add(
-                item.Timestamp,
-                item.InputTokens,
-                item.CachedInputTokens,
-                item.OutputTokens,
-                item.ReasoningOutputTokens,
-                item.TotalTokens);
+            bucket.Add(item);
         }
 
         return bucket;
@@ -3561,7 +4827,11 @@ internal static class CodexUsageReader
 
     private static IEnumerable<string> GetLogRoots()
     {
-        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        var codexHome = UsageLogPaths.GetOverrideRoot(UsageSource.Codex) ?? OverrideCodexHome;
+        if (string.IsNullOrWhiteSpace(codexHome))
+        {
+            codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+        }
         if (string.IsNullOrWhiteSpace(codexHome))
         {
             var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -3586,11 +4856,11 @@ internal static class CodexUsageReader
         DateTimeOffset startLocal,
         DateTimeOffset endLocal)
     {
-        // Active JSONL records can be stamped well ahead of LastWriteTimeUtc. Keep a
-        // bounded look-back for live reads and never drop a file with a pending cursor.
-        var startUtc = (IsLiveRange(startLocal, endLocal)
-            ? startLocal.Subtract(TimeSpan.FromDays(1))
-            : startLocal).UtcDateTime;
+        // Session contents can extend beyond their preserved file mtime (including
+        // copied history). Historical batches inspect all files once; only live
+        // tail polling uses mtime to narrow the candidates.
+        var incremental = IsLiveRange(startLocal, endLocal);
+        var startUtc = startLocal.Subtract(TimeSpan.FromDays(1)).UtcDateTime;
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -3599,6 +4869,12 @@ internal static class CodexUsageReader
 
         foreach (var file in Directory.EnumerateFiles(root, "*.jsonl", options))
         {
+            if (!incremental)
+            {
+                yield return file;
+                continue;
+            }
+
             FileInfo info;
             try
             {
@@ -3618,26 +4894,51 @@ internal static class CodexUsageReader
         }
     }
 
-    private static IReadOnlyList<RateLimitSnapshot> ReadLatestRateLimitSnapshots(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private static IReadOnlyList<RateLimitSnapshot> ReadLatestRateLimitSnapshots(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return ReadRateLimitSnapshots(startLocal, endLocal)
+        return ReadRateLimitSnapshots(startLocal, endLocal, cancellationToken).Snapshots
             .GroupBy(GetRateLimitKey, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.OrderByDescending(item => item.TimestampLocal).First())
             .OrderByDescending(item => item.TimestampLocal)
             .ToList();
     }
 
-    private static IReadOnlyList<RateLimitSnapshot> ReadRateLimitSnapshots(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private static RateLimitScanResult ReadRateLimitSnapshots(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default,
+        Action<int, int>? fileProgress = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var snapshots = new List<RateLimitSnapshot>();
+        var isComplete = true;
         var incremental = IsLiveRange(startLocal, endLocal);
-        foreach (var root in GetLogRoots())
+        if (incremental)
         {
-            foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
+            PruneLiveFileState(startLocal, endLocal);
+        }
+
+        var files = GetLogRoots()
+            .SelectMany(root => EnumerateJsonlFiles(root, startLocal, endLocal))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        fileProgress?.Invoke(0, files.Count);
+        var completed = 0;
+        foreach (var file in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (incremental)
                 {
-                    ReadRateLimitFileIncremental(file, startLocal, endLocal, snapshots);
+                    if (!ReadRateLimitFileIncremental(file, startLocal, endLocal, snapshots, cancellationToken))
+                    {
+                        isComplete = false;
+                    }
                     continue;
                 }
 
@@ -3648,14 +4949,14 @@ internal static class CodexUsageReader
                     var replayFilter = new SubagentReplayFilter();
                     while (reader.ReadLine() is { } line)
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (!replayFilter.ShouldReadTokenCount(line) ||
                             !line.Contains("\"rate_limits\"", StringComparison.Ordinal))
                         {
                             continue;
                         }
 
-                        var snapshot = TryReadRateLimitSnapshot(line, startLocal, endLocal);
-                        if (snapshot is null)
+                        if (TryReadRateLimitSnapshot(line, startLocal, endLocal) is not { } snapshot)
                         {
                             continue;
                         }
@@ -3663,25 +4964,36 @@ internal static class CodexUsageReader
                         snapshots.Add(snapshot);
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch
                 {
                     // Ignore files that are actively being written or are not readable.
+                    isComplete = false;
                 }
+            }
+            finally
+            {
+                fileProgress?.Invoke(++completed, files.Count);
             }
         }
 
-        return snapshots;
+        return new RateLimitScanResult(snapshots, isComplete);
     }
 
-    private static void ReadRateLimitFileIncremental(
+    private static bool ReadRateLimitFileIncremental(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        List<RateLimitSnapshot> snapshots)
+        List<RateLimitSnapshot> snapshots,
+        CancellationToken cancellationToken)
     {
         var replayFilter = QuotaReplayFilters.GetOrAdd(file, static _ => new SubagentReplayFilter());
-        QuotaTailReader.ReadNewLinesWhile(file, startLocal, line =>
+        return QuotaTailReader.ReadNewLinesWhile(file, startLocal, line =>
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (SubagentReplayFilter.TryReadRecordTimestamp(line) is { } timestamp && timestamp >= endLocal)
             {
                 return false;
@@ -3693,14 +5005,13 @@ internal static class CodexUsageReader
                 return true;
             }
 
-            var snapshot = TryReadRateLimitSnapshot(line, startLocal, endLocal);
-            if (snapshot is not null)
+            if (TryReadRateLimitSnapshot(line, startLocal, endLocal) is { } snapshot)
             {
                 snapshots.Add(snapshot);
             }
 
             return true;
-        });
+        }, cancellationToken);
     }
 
     private static bool IsLiveRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
@@ -3717,11 +5028,53 @@ internal static class CodexUsageReader
         QuotaReplayFilters.Clear();
     }
 
+    private static void PruneLiveFileState(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    {
+        if (!IsLiveRange(startLocal, endLocal))
+        {
+            return;
+        }
+
+        // Keep the same one-day look-back used by EnumerateJsonlFiles. A file
+        // appended after this point will get a fresh mtime and be discovered on
+        // the next pass, while inactive historical files no longer pin state.
+        var cutoffUtc = startLocal.Subtract(TimeSpan.FromDays(1)).UtcDateTime;
+        UsageTailReader.PruneBeforeUtc(cutoffUtc);
+        QuotaTailReader.PruneBeforeUtc(cutoffUtc);
+        PruneReplayFiltersBeforeUtc(UsageReplayFilters, cutoffUtc);
+        PruneReplayFiltersBeforeUtc(QuotaReplayFilters, cutoffUtc);
+    }
+
+    private static void PruneReplayFiltersBeforeUtc(
+        ConcurrentDictionary<string, SubagentReplayFilter> filters,
+        DateTime cutoffUtc)
+    {
+        foreach (var pair in filters)
+        {
+            bool shouldRemove;
+            try
+            {
+                var info = new FileInfo(pair.Key);
+                shouldRemove = !info.Exists || info.LastWriteTimeUtc < cutoffUtc;
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (shouldRemove)
+            {
+                ((ICollection<KeyValuePair<string, SubagentReplayFilter>>)filters).Remove(pair);
+            }
+        }
+    }
+
     private static RateLimitSnapshot? SelectDisplayedQuotaSnapshot(IReadOnlyList<RateLimitSnapshot> snapshots)
     {
         return snapshots
             .Where(IsDisplayedQuotaSnapshot)
             .OrderByDescending(item => item.TimestampLocal)
+            .Select(item => (RateLimitSnapshot?)item)
             .FirstOrDefault();
     }
 
@@ -3904,7 +5257,7 @@ internal static class CodexUsageReader
 
         var usedPercent = GetDecimal(window, "used_percent");
         var windowMinutes = (int)GetInt64(window, "window_minutes");
-        if (usedPercent is null || windowMinutes <= 0)
+        if (!QuotaPercentRules.IsValid(usedPercent) || windowMinutes <= 0)
         {
             return null;
         }
@@ -3916,7 +5269,7 @@ internal static class CodexUsageReader
             resetAt = DateTimeOffset.FromUnixTimeSeconds(resetSeconds).ToOffset(BeijingOffset);
         }
 
-        return new RateLimitWindowSnapshot(usedPercent.Value, windowMinutes, resetAt);
+        return new RateLimitWindowSnapshot(usedPercent!.Value, windowMinutes, resetAt);
     }
 
     private static (RateLimitWindowSnapshot? FiveHour, RateLimitWindowSnapshot? Week) ClassifyRateLimitWindows(
@@ -3925,7 +5278,7 @@ internal static class CodexUsageReader
     {
         var windows = new[] { first, second }
             .Where(window => window is not null)
-            .Select(window => window!)
+            .Select(window => window!.Value)
             .GroupBy(window => window.WindowMinutes)
             .Select(group => group.First())
             .ToList();
@@ -3933,20 +5286,27 @@ internal static class CodexUsageReader
         // Field position is not stable, but window duration is. Other windows
         // (notably the 30-day reset-card window) are not 5h/7d quota data.
         return (
-            windows.FirstOrDefault(window => IsFiveHourWindow(window.WindowMinutes)),
-            windows.FirstOrDefault(window => IsWeeklyWindow(window.WindowMinutes)));
+            windows
+                .Where(window => IsFiveHourWindow(window.WindowMinutes))
+                .Select(window => (RateLimitWindowSnapshot?)window)
+                .FirstOrDefault(),
+            windows
+                .Where(window => IsWeeklyWindow(window.WindowMinutes))
+                .Select(window => (RateLimitWindowSnapshot?)window)
+                .FirstOrDefault());
     }
 
     internal static bool IsFiveHourWindow(int windowMinutes) => windowMinutes == FiveHourWindowMinutes;
 
     internal static bool IsWeeklyWindow(int windowMinutes) => windowMinutes == WeeklyWindowMinutes;
 
-    private static void ReadFile(
+    private static bool ReadFile(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         TokenUsageSummary summary,
-        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets)
+        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -3955,18 +5315,25 @@ internal static class CodexUsageReader
             var replayFilter = new SubagentReplayFilter();
             while (reader.ReadLine() is { } line)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!replayFilter.ShouldReadTokenCount(line))
                 {
                     continue;
                 }
 
-                ReadLine(line, startLocal, endLocal, summary, dailyBuckets);
+                ReadLine(line, startLocal, endLocal, summary, dailyBuckets, replayFilter.ModelId, replayFilter.ServiceTier);
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
-            return;
+            return false;
         }
+
+        return true;
     }
 
     private static void ReadLine(
@@ -3974,21 +5341,16 @@ internal static class CodexUsageReader
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         TokenUsageSummary summary,
-        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets)
+        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
+        string? modelId, string? serviceTier)
     {
-        var usageEvent = TryReadUsageEvent(line, startLocal, endLocal);
+        var usageEvent = TryReadUsageEvent(line, startLocal, endLocal, modelId, serviceTier);
         if (usageEvent is null)
         {
             return;
         }
 
-        summary.Add(
-            usageEvent.Timestamp,
-            usageEvent.InputTokens,
-            usageEvent.CachedInputTokens,
-            usageEvent.OutputTokens,
-            usageEvent.ReasoningOutputTokens,
-            usageEvent.TotalTokens);
+        summary.Add(usageEvent);
 
         var dayKey = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
         if (!dailyBuckets.TryGetValue(dayKey, out var bucket))
@@ -4000,19 +5362,14 @@ internal static class CodexUsageReader
             dailyBuckets[dayKey] = bucket;
         }
 
-        bucket.Add(
-            usageEvent.Timestamp,
-            usageEvent.InputTokens,
-            usageEvent.CachedInputTokens,
-            usageEvent.OutputTokens,
-            usageEvent.ReasoningOutputTokens,
-            usageEvent.TotalTokens);
+        bucket.Add(usageEvent);
     }
 
     private static TokenUsageEvent? TryReadUsageEvent(
         string line,
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        string? modelId, string? serviceTier)
     {
         try
         {
@@ -4053,12 +5410,13 @@ internal static class CodexUsageReader
 
             var input = GetInt64(usage, "input_tokens");
             var cached = GetInt64(usage, "cached_input_tokens");
+            var cacheWrite = GetInt64(usage, "cache_write_input_tokens");
             var output = GetInt64(usage, "output_tokens");
             var reasoning = GetInt64(usage, "reasoning_output_tokens");
             var total = GetInt64(usage, "total_tokens");
             if (total == 0)
             {
-                total = input + output;
+                total = TokenCountMath.AddNonNegative(input, output);
             }
 
             var key = payload.TryGetProperty("turn_id", out var turnIdElement)
@@ -4071,12 +5429,27 @@ internal static class CodexUsageReader
                 output,
                 reasoning,
                 total,
-                string.IsNullOrWhiteSpace(key) ? null : $"codex:{key}");
+                string.IsNullOrWhiteSpace(key) ? null : $"codex:{key}",
+                cacheWrite,
+                ReadModelId(usage) ?? ReadModelId(info) ?? ReadModelId(payload) ?? modelId,
+                ReadServiceTier(usage) ?? ReadServiceTier(info) ?? ReadServiceTier(payload) ?? serviceTier);
         }
         catch
         {
             return null;
         }
+    }
+
+    private static string? ReadServiceTier(JsonElement element) =>
+        element.TryGetProperty("service_tier", out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()?.Trim().ToLowerInvariant() : null;
+
+    private static string? ReadModelId(JsonElement element)
+    {
+        foreach (var name in new[] { "model", "model_name" })
+            if (element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(value.GetString())) return value.GetString();
+        return null;
     }
 
     private static bool StringEquals(JsonElement element, string propertyName, string expected)

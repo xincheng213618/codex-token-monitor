@@ -18,7 +18,8 @@ internal enum CodexDataExportScope
 {
     All,
     Today,
-    ThisWeek
+    ThisWeek,
+    RecentDays
 }
 
 /// <summary>
@@ -29,7 +30,7 @@ internal static class CodexDataTransferService
 {
     private const string CacheFolder = "CodexTokenMonitor";
     private const string PackageFormat = "codex-token-monitor-transfer";
-    private const int PackageVersion = 1;
+    private const int PackageVersion = 3;
     private static readonly object DeviceIdSyncRoot = new();
     private static readonly SemaphoreSlim ImportGate = new(1, 1);
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -102,45 +103,13 @@ internal static class CodexDataTransferService
             throw new ArgumentException("导出时间范围无效。");
         }
 
-        var usageEvents = UsageCacheStore.Load(cacheFolder)
-            .GetAllDetailEvents()
-            .Where(item => IsInExportRange(item.Timestamp, startInclusive, endExclusive))
-            .ToList();
-        var quotaSnapshots = QuotaSnapshotCacheStore.Load(cacheFolder)
-            .GetAllSnapshots()
-            .Where(item => IsInExportRange(item.SnapshotLocal, startInclusive, endExclusive))
-            .ToList();
-        cancellationToken.ThrowIfCancellationRequested();
-        var package = new CodexTransferPackage
-        {
-            Format = PackageFormat,
-            Version = PackageVersion,
-            PackageId = Guid.NewGuid().ToString("N"),
-            SourceDeviceId = deviceId,
-            SourceDeviceName = string.IsNullOrWhiteSpace(deviceName) ? "Unknown device" : deviceName.Trim(),
-            ExportedAtLocal = exportedAtLocal,
-            UsageEvents = usageEvents.Select(item => new PortableUsageEvent
-            {
-                Key = UsageEventMerger.GetStableKey(item),
-                TimestampLocal = item.Timestamp,
-                InputTokens = item.InputTokens,
-                CachedInputTokens = item.CachedInputTokens,
-                OutputTokens = item.OutputTokens,
-                ReasoningOutputTokens = item.ReasoningOutputTokens,
-                TotalTokens = item.TotalTokens
-            }).ToList(),
-            QuotaSnapshots = quotaSnapshots.Select(item => new PortableQuotaSnapshot
-            {
-                SnapshotLocal = item.SnapshotLocal,
-                LimitId = item.LimitId,
-                LimitName = item.LimitName,
-                FiveHourUsedPercent = item.FiveHourUsedPercent,
-                FiveHourResetAtLocal = item.FiveHourResetAtLocal,
-                WeekUsedPercent = item.WeekUsedPercent,
-                WeekResetAtLocal = item.WeekResetAtLocal,
-                IsAnomaly = item.IsAnomaly
-            }).ToList()
-        };
+        var usageCache = UsageCacheStore.Load(cacheFolder);
+        var quotaCache = QuotaSnapshotCacheStore.Load(cacheFolder);
+        var quotaSnapshots = quotaCache.EnumerateSnapshots(
+            startInclusive,
+            endExclusive,
+            cancellationToken);
+        var sourceDeviceName = string.IsNullOrWhiteSpace(deviceName) ? "Unknown device" : deviceName.Trim();
 
         var fullPath = Path.GetFullPath(filePath);
         var directory = Path.GetDirectoryName(fullPath);
@@ -150,11 +119,52 @@ internal static class CodexDataTransferService
         }
 
         var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";
+        var usageEventCount = 0;
+        var quotaSnapshotCount = 0;
         try
         {
-            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 64 * 1024,
+                       options: FileOptions.SequentialScan))
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
             {
-                JsonSerializer.SerializeAsync(stream, package, JsonOptions, cancellationToken).GetAwaiter().GetResult();
+                writer.WriteStartObject();
+                writer.WriteString("format", PackageFormat);
+                writer.WriteNumber("version", PackageVersion);
+                writer.WriteString("packageId", Guid.NewGuid().ToString("N"));
+                writer.WriteString("sourceDeviceId", deviceId);
+                writer.WriteString("sourceDeviceName", sourceDeviceName);
+                writer.WriteString("exportedAtLocal", exportedAtLocal);
+
+                writer.WritePropertyName("usageEvents");
+                writer.WriteStartArray();
+                foreach (var item in usageCache.EnumerateDetailEvents(
+                             startInclusive,
+                             endExclusive,
+                             cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    WriteUsageEvent(writer, item);
+                    usageEventCount++;
+                }
+
+                writer.WriteEndArray();
+                writer.WritePropertyName("quotaSnapshots");
+                writer.WriteStartArray();
+                foreach (var item in quotaSnapshots)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    WriteQuotaSnapshot(writer, item);
+                    quotaSnapshotCount++;
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+                writer.Flush();
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -170,9 +180,9 @@ internal static class CodexDataTransferService
 
         return new CodexDataExportResult(
             fullPath,
-            package.UsageEvents.Count,
-            package.QuotaSnapshots.Count,
-            package.SourceDeviceName);
+            usageEventCount,
+            quotaSnapshotCount,
+            sourceDeviceName);
     }
 
     internal static (DateTimeOffset? StartInclusive, DateTimeOffset? EndExclusive) GetExportRange(
@@ -194,6 +204,8 @@ internal static class CodexDataTransferService
             CodexDataExportScope.All => (null, null),
             CodexDataExportScope.Today => (todayStart, todayStart.AddDays(1)),
             CodexDataExportScope.ThisWeek => GetThisWeekRange(todayStart),
+            // Eight Beijing dates cover the entire rolling 7d quota across calendar weeks.
+            CodexDataExportScope.RecentDays => (todayStart.AddDays(-7), todayStart.AddDays(1)),
             _ => throw new ArgumentOutOfRangeException(nameof(scope), scope, "未知的导出范围。")
         };
     }
@@ -206,12 +218,62 @@ internal static class CodexDataTransferService
         return (weekStart, weekStart.AddDays(7));
     }
 
-    private static bool IsInExportRange(
-        DateTimeOffset timestamp,
-        DateTimeOffset? startInclusive,
-        DateTimeOffset? endExclusive)
+    private static void WriteUsageEvent(Utf8JsonWriter writer, TokenUsageEvent item)
     {
-        return startInclusive is null || timestamp >= startInclusive.Value && timestamp < endExclusive!.Value;
+        item = item.Normalize();
+        writer.WriteStartObject();
+        writer.WriteString("key", UsageEventMerger.GetStableKey(item));
+        writer.WriteString("timestampLocal", item.Timestamp);
+        writer.WriteNumber("inputTokens", item.InputTokens);
+        writer.WriteNumber("cachedInputTokens", item.CachedInputTokens);
+        writer.WriteNumber("cacheWriteInputTokens", item.CacheWriteInputTokens);
+        if (item.ModelId is not null) writer.WriteString("modelId", item.ModelId);
+        if (item.ServiceTier is not null) writer.WriteString("serviceTier", item.ServiceTier);
+        writer.WriteNumber("outputTokens", item.OutputTokens);
+        writer.WriteNumber("reasoningOutputTokens", item.ReasoningOutputTokens);
+        writer.WriteNumber("totalTokens", item.TotalTokens);
+        writer.WriteEndObject();
+    }
+
+    private static void WriteQuotaSnapshot(Utf8JsonWriter writer, CodexQuotaSnapshot item)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("snapshotLocal", item.SnapshotLocal);
+        writer.WriteString("limitId", item.LimitId);
+        writer.WriteString("limitName", item.LimitName);
+        WriteNullableDecimal(writer, "fiveHourUsedPercent", item.FiveHourUsedPercent);
+        WriteNullableDateTimeOffset(writer, "fiveHourResetAtLocal", item.FiveHourResetAtLocal);
+        WriteNullableDecimal(writer, "weekUsedPercent", item.WeekUsedPercent);
+        WriteNullableDateTimeOffset(writer, "weekResetAtLocal", item.WeekResetAtLocal);
+        writer.WriteBoolean("isAnomaly", item.IsAnomaly);
+        writer.WriteEndObject();
+    }
+
+    private static void WriteNullableDecimal(Utf8JsonWriter writer, string propertyName, decimal? value)
+    {
+        if (value is { } number)
+        {
+            writer.WriteNumber(propertyName, number);
+        }
+        else
+        {
+            writer.WriteNull(propertyName);
+        }
+    }
+
+    private static void WriteNullableDateTimeOffset(
+        Utf8JsonWriter writer,
+        string propertyName,
+        DateTimeOffset? value)
+    {
+        if (value is { } timestamp)
+        {
+            writer.WriteString(propertyName, timestamp);
+        }
+        else
+        {
+            writer.WriteNull(propertyName);
+        }
     }
 
     public static CodexDataImportResult Import(
@@ -229,14 +291,21 @@ internal static class CodexDataTransferService
         return ImportCore(filePaths, cacheFolder, null, cancellationToken);
     }
 
-    internal static CodexDataImportResult ImportThisWeek(
+    internal static CodexDataImportResult ImportRecentDays(
         string filePath,
         CancellationToken cancellationToken = default,
         string cacheFolder = CacheFolder,
         DateTimeOffset? now = null)
     {
-        var range = GetExportRange(CodexDataExportScope.ThisWeek, now ?? DateTimeOffset.UtcNow);
+        var range = GetExportRange(CodexDataExportScope.RecentDays, now ?? DateTimeOffset.UtcNow);
         return ImportCore(new[] { filePath }, cacheFolder, (range.StartInclusive!.Value, range.EndExclusive!.Value), cancellationToken);
+    }
+
+    internal static CodexDataImportResult ImportHistoryRange(string filePath, string cacheFolder,
+        CodexHistoryRange range, CancellationToken cancellationToken)
+    {
+        range.Validate();
+        return ImportCore(new[] { filePath }, cacheFolder, (range.StartLocal, range.EndLocal), cancellationToken);
     }
 
     private static CodexDataImportResult ImportCore(
@@ -275,7 +344,7 @@ internal static class CodexDataTransferService
             (usageEvents.Any(item => item.Timestamp < range.Start || item.Timestamp >= range.End) ||
              quotaSnapshots.Any(item => item.SnapshotLocal < range.Start || item.SnapshotLocal >= range.End)))
         {
-            throw new InvalidDataException("数据包包含本周之外的数据，请检查两台电脑的日期并重新上传或下载本周数据。");
+            throw new InvalidDataException("数据包包含本次同步范围之外的数据，请检查两台电脑的日期并重新同步。");
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -348,7 +417,7 @@ internal static class CodexDataTransferService
             package.Version != PackageVersion ||
             string.IsNullOrWhiteSpace(package.SourceDeviceId))
         {
-            throw new InvalidDataException($"不是受支持的 Codex 监控器数据包：{Path.GetFileName(filePath)}");
+            throw new InvalidDataException($"请使用新版监控器重新统计并导出（需要模型和速度信息 v3 数据包）：{Path.GetFileName(filePath)}");
         }
 
         package.UsageEvents ??= new List<PortableUsageEvent>();
@@ -362,6 +431,8 @@ internal static class CodexDataTransferService
             item.InputTokens < 0 ||
             item.CachedInputTokens < 0 ||
             item.CachedInputTokens > item.InputTokens ||
+            item.CacheWriteInputTokens < 0 ||
+            item.CacheWriteInputTokens > item.InputTokens - item.CachedInputTokens ||
             item.OutputTokens < 0 ||
             item.ReasoningOutputTokens < 0 ||
             item.TotalTokens < 0)
@@ -371,7 +442,7 @@ internal static class CodexDataTransferService
 
         var timestamp = item.TimestampLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var key = string.IsNullOrWhiteSpace(item.Key)
-            ? $"portable:{sourceDeviceId}:{timestamp:O}:{item.InputTokens}:{item.CachedInputTokens}:{item.OutputTokens}:{item.ReasoningOutputTokens}:{item.TotalTokens}"
+            ? $"portable:{sourceDeviceId}:{timestamp:O}:{item.InputTokens}:{item.CachedInputTokens}:{item.CacheWriteInputTokens}:{item.OutputTokens}:{item.ReasoningOutputTokens}:{item.TotalTokens}"
             : item.Key.Trim();
         return new TokenUsageEvent(
             timestamp,
@@ -380,7 +451,9 @@ internal static class CodexDataTransferService
             item.OutputTokens,
             item.ReasoningOutputTokens,
             item.TotalTokens,
-            key);
+            key,
+            item.CacheWriteInputTokens,
+            item.ModelId, item.ServiceTier);
     }
 
     private static CodexQuotaSnapshot ToQuotaSnapshot(PortableQuotaSnapshot item)
@@ -392,7 +465,7 @@ internal static class CodexDataTransferService
             throw new InvalidDataException("数据包包含无效的额度快照。");
         }
 
-        return new CodexQuotaSnapshot(
+        var snapshot = CodexUsageReader.NormalizeQuotaSnapshotWindows(new CodexQuotaSnapshot(
             item.SnapshotLocal.ToOffset(CodexUsageReader.BeijingOffset),
             item.LimitId,
             item.LimitName,
@@ -400,7 +473,13 @@ internal static class CodexDataTransferService
             item.FiveHourResetAtLocal?.ToOffset(CodexUsageReader.BeijingOffset),
             item.WeekUsedPercent,
             item.WeekResetAtLocal?.ToOffset(CodexUsageReader.BeijingOffset),
-            item.IsAnomaly);
+            item.IsAnomaly));
+        if (snapshot.FiveHourUsedPercent is null && snapshot.WeekUsedPercent is null)
+        {
+            throw new InvalidDataException("数据包包含没有可用额度窗口的快照。");
+        }
+
+        return snapshot;
     }
 
     private static bool IsValidPercent(decimal? value)
@@ -434,13 +513,11 @@ internal static class CodexDataTransferService
                (snapshot.WeekResetAtLocal is null ? 0 : 1);
     }
 
-    private static string GetOrCreateDeviceId()
+    internal static string GetOrCreateDeviceId()
     {
         lock (DeviceIdSyncRoot)
         {
-            var directory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                CacheFolder);
+            var directory = Path.Combine(MonitorCachePaths.LocalAppData, CacheFolder);
             var path = Path.Combine(directory, "transfer-device-id-v1.txt");
             try
             {
@@ -481,10 +558,13 @@ internal static class CodexDataTransferService
 
     private sealed class PortableUsageEvent
     {
+        public string? ModelId { get; set; }
+        public string? ServiceTier { get; set; }
         public string? Key { get; set; }
         public DateTimeOffset TimestampLocal { get; set; }
         public long InputTokens { get; set; }
         public long CachedInputTokens { get; set; }
+        public long CacheWriteInputTokens { get; set; }
         public long OutputTokens { get; set; }
         public long ReasoningOutputTokens { get; set; }
         public long TotalTokens { get; set; }

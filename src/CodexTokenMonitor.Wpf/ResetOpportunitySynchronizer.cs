@@ -4,7 +4,7 @@ internal sealed class ResetOpportunitySynchronizer
 {
     private bool isSyncing;
 
-    public async Task<ResetOpportunitySyncResult?> SyncAsync()
+    public async Task<ResetOpportunitySyncResult?> SyncAsync(CancellationToken cancellationToken = default)
     {
         if (isSyncing)
         {
@@ -14,7 +14,7 @@ internal sealed class ResetOpportunitySynchronizer
         isSyncing = true;
         try
         {
-            return await ResetOpportunityStore.SyncFromCodexAsync();
+            return await ResetOpportunityStore.SyncFromCodexAsync(cancellationToken);
         }
         catch (OperationCanceledException)
         {

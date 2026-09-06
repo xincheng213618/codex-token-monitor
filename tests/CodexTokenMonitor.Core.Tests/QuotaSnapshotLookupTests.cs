@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace CodexTokenMonitor.Tests;
@@ -55,6 +56,42 @@ public sealed class QuotaSnapshotLookupTests
     }
 
     [Fact]
+    public void Select_UsesProvidedIntervalForAggregatedMultiDayBucket()
+    {
+        var start = new DateTimeOffset(2026, 7, 11, 0, 0, 0, Beijing);
+        var first = Snapshot(start.AddMinutes(5), 10m, 20m);
+        var nextBucket = Snapshot(start.AddMinutes(15), 30m, 40m);
+        var lookup = new QuotaSnapshotLookup(new[] { first, nextBucket });
+        var range = new SelectedRange(start, start.AddDays(7), "", "", RangeMode.Week);
+
+        var selected = lookup.Select(
+            range,
+            Bucket(start),
+            eventBreakdown: false,
+            bucketInterval: TimeSpan.FromMinutes(10));
+
+        Assert.Same(first, selected);
+    }
+
+    [Fact]
+    public void Select_DoesNotPullNextBucketBoundaryBackward()
+    {
+        var start = new DateTimeOffset(2026, 7, 11, 0, 0, 0, Beijing);
+        var previous = Snapshot(start.AddMinutes(-1), 10m, 20m);
+        var nextBucket = Snapshot(start.AddMinutes(10), 30m, 40m);
+        var lookup = new QuotaSnapshotLookup(new[] { previous, nextBucket });
+        var range = new SelectedRange(start, start.AddDays(7), "", "", RangeMode.Week);
+
+        var selected = lookup.Select(
+            range,
+            Bucket(start),
+            eventBreakdown: false,
+            bucketInterval: TimeSpan.FromMinutes(10));
+
+        Assert.Same(previous, selected);
+    }
+
+    [Fact]
     public void Select_HandlesLargeDayWithoutQuadraticRescans()
     {
         var start = new DateTimeOffset(2026, 7, 11, 0, 0, 0, Beijing);
@@ -101,6 +138,139 @@ public sealed class QuotaSnapshotLookupTests
         Assert.Null(normalized.WeekResetAtLocal);
     }
 
+    [Fact]
+    public void NormalizeQuotaSnapshotWindows_DropsOutOfRangePercentages()
+    {
+        var snapshotTime = new DateTimeOffset(2026, 7, 2, 14, 13, 0, Beijing);
+        var snapshot = new CodexQuotaSnapshot(
+            snapshotTime,
+            "codex",
+            null,
+            101m,
+            snapshotTime.AddHours(5),
+            -1m,
+            snapshotTime.AddDays(7));
+
+        var normalized = CodexUsageReader.NormalizeQuotaSnapshotWindows(snapshot);
+
+        Assert.Null(normalized.FiveHourUsedPercent);
+        Assert.Null(normalized.FiveHourResetAtLocal);
+        Assert.Null(normalized.WeekUsedPercent);
+        Assert.Null(normalized.WeekResetAtLocal);
+    }
+
+    [Fact]
+    public void QuotaCache_DoesNotMarkAllInvalidSnapshotsAsComplete()
+    {
+        var folder = $"CodexTokenMonitorTests-{Guid.NewGuid():N}";
+        var date = new DateOnly(2026, 7, 19);
+        var snapshotTime = new DateTimeOffset(date.Year, date.Month, date.Day, 2, 0, 0, Beijing);
+        var invalid = new CodexQuotaSnapshot(
+            snapshotTime,
+            "codex",
+            "Codex",
+            101m,
+            snapshotTime.AddHours(5),
+            -1m,
+            snapshotTime.AddDays(7));
+
+        try
+        {
+            var cache = QuotaSnapshotCacheStore.Load(folder);
+            cache.Put(date, new[] { invalid }, isComplete: true, scannedThroughLocal: snapshotTime);
+
+            Assert.True(cache.TryGetRecord(date, out var record));
+            Assert.False(record.IsComplete);
+            Assert.Empty(record.Snapshots);
+            Assert.Contains(
+                QuotaSnapshotCacheStore.GetIncompleteDays(folder, snapshotTime, snapshotTime),
+                item => item == new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, Beijing));
+        }
+        finally
+        {
+            UsageCacheStore.Delete(folder);
+        }
+    }
+
+    [Fact]
+    public void QuotaCache_PreflightDetectsCorruptedCompleteDay()
+    {
+        var folder = $"CodexTokenMonitorTests-{Guid.NewGuid():N}";
+        var date = new DateOnly(2026, 7, 20);
+        var dayStart = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, Beijing);
+        var snapshotTime = dayStart.AddHours(2);
+        try
+        {
+            var cache = QuotaSnapshotCacheStore.Load(folder);
+            cache.Put(
+                date,
+                new[] { Snapshot(snapshotTime, 10m, 20m) },
+                isComplete: true,
+                scannedThroughLocal: snapshotTime);
+
+            using (var connection = new SqliteConnection($"Data Source={QuotaSnapshotCacheStore.GetCachePath(folder)}"))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE quota_snapshots
+                    SET five_hour_used_percent = '101',
+                        week_used_percent = '-1'
+                    WHERE date = $date;
+                    UPDATE quota_days SET is_complete = 1 WHERE date = $date;
+                    """;
+                command.Parameters.AddWithValue("$date", date.ToString("yyyy-MM-dd"));
+                command.ExecuteNonQuery();
+            }
+
+            Assert.Contains(
+                QuotaSnapshotCacheStore.GetIncompleteDays(folder, dayStart, dayStart),
+                item => item == dayStart);
+            Assert.True(cache.TryGetRecord(date, out var record));
+            Assert.False(record.IsValid);
+            Assert.False(record.IsComplete);
+        }
+        finally
+        {
+            UsageCacheStore.Delete(folder);
+        }
+    }
+
+    [Fact]
+    public void LockedQuotaLogDoesNotMarkHistoricalDayComplete()
+    {
+        var date = new DateOnly(2026, 7, 21);
+        var dayStart = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, Beijing);
+        var codexHome = Path.Combine(Path.GetTempPath(), $"CodexQuotaLogs-{Guid.NewGuid():N}");
+        var sessions = Path.Combine(codexHome, "sessions", "2026", "07", "21");
+        var logPath = Path.Combine(sessions, "locked.jsonl");
+        var cacheRoot = Path.Combine(Path.GetTempPath(), $"CodexQuotaCache-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(sessions);
+        Directory.CreateDirectory(cacheRoot);
+        File.WriteAllText(logPath, "{\"type\":\"event_msg\"}\n");
+
+        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(cacheRoot);
+        CodexUsageReader.OverrideCodexHome = codexHome;
+        try
+        {
+            using (var lockStream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                CodexUsageReader.WarmQuotaSnapshotDay(dayStart);
+            }
+
+            var cache = QuotaSnapshotCacheStore.Load("CodexTokenMonitor");
+            Assert.True(cache.TryGetRecord(date, out var record));
+            Assert.False(record.IsComplete);
+        }
+        finally
+        {
+            CodexUsageReader.OverrideCodexHome = null;
+            UsageCacheStore.Delete("CodexTokenMonitor");
+            TryDeleteDirectory(codexHome);
+            TryDeleteDirectory(cacheRoot);
+        }
+    }
+
     private static SelectedRange DayRange(DateTimeOffset start)
     {
         return new SelectedRange(start, start.AddDays(1), "", "", RangeMode.Day);
@@ -118,5 +288,20 @@ public sealed class QuotaSnapshotLookupTests
         DateTimeOffset? reset = null)
     {
         return new CodexQuotaSnapshot(time, "codex", "Codex", fiveHour, reset, week, reset);
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch
+        {
+            // Best-effort cleanup of unique temporary test data.
+        }
     }
 }

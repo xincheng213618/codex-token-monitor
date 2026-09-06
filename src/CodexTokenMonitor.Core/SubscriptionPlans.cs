@@ -22,13 +22,22 @@ internal sealed record SubscriptionPlanSummary(
 
 internal static class SubscriptionPlanStore
 {
-    private const string CacheFolder = "CodexTokenMonitor";
     private static readonly object SyncRoot = new();
-    private static bool initialized;
+    private static string? initializedPath;
+    private static IReadOnlyList<SubscriptionPlanRecord>? cachedRecords;
 
-    public static IReadOnlyList<SubscriptionPlanRecord> Defaults()
+    public static SubscriptionPlanRecord CreateMonthly(DateTimeOffset start, string planName = "Pro 20x", decimal amountCny = 1380m)
     {
-        return new[]
+        if (amountCny < 0) throw new ArgumentOutOfRangeException(nameof(amountCny), "月费不能为负数。");
+        return new SubscriptionPlanRecord
+        {
+            StartLocal = start, EndLocal = start.AddMonths(1), PlanName = planName.Trim(), AmountCny = amountCny
+        };
+    }
+
+    public static IReadOnlyList<SubscriptionPlanRecord> Defaults(DateTimeOffset? asOfLocal = null)
+    {
+        var records = new List<SubscriptionPlanRecord>
         {
             new SubscriptionPlanRecord
             {
@@ -37,22 +46,28 @@ internal static class SubscriptionPlanStore
                 EndLocal = Local(2026, 6, 1, 0, 0),
                 PlanName = "Plus",
                 AmountCny = 128m
-            },
-            new SubscriptionPlanRecord
-            {
-                Id = "default-2026-06-pro20x",
-                StartLocal = Local(2026, 6, 2, 0, 0),
-                EndLocal = Local(2026, 7, 2, 0, 0),
-                PlanName = "Pro 20x",
-                AmountCny = 1380m
             }
         };
+        var now = (asOfLocal ?? BeijingClock.Now).ToOffset(CodexUsageReader.BeijingOffset);
+        for (var start = Local(2026, 6, 2, 0, 0); start <= now; start = start.AddMonths(1))
+        {
+            records.Add(new SubscriptionPlanRecord
+            {
+                Id = $"default-{start:yyyy-MM}-pro20x", StartLocal = start, EndLocal = start.AddMonths(1),
+                PlanName = "Pro 20x", AmountCny = 1380m
+            });
+        }
+        return records;
     }
 
     public static IReadOnlyList<SubscriptionPlanRecord> Load()
     {
         EnsureInitialized();
-        return ReadRecords();
+        lock (SyncRoot)
+        {
+            cachedRecords ??= CloneRecords(ReadRecords());
+            return CloneRecords(cachedRecords);
+        }
     }
 
     private static IReadOnlyList<SubscriptionPlanRecord> ReadRecords()
@@ -95,34 +110,49 @@ internal static class SubscriptionPlanStore
     public static void Save(IReadOnlyList<SubscriptionPlanRecord> records)
     {
         EnsureInitialized();
-        using var connection = OpenConnection();
-        using var transaction = connection.BeginTransaction();
-        using (var deleteCommand = connection.CreateCommand())
-        {
-            deleteCommand.Transaction = transaction;
-            deleteCommand.CommandText = "DELETE FROM subscription_plans";
-            deleteCommand.ExecuteNonQuery();
-        }
+        var normalizedRecords = records
+            .Where(item => item.EndLocal > item.StartLocal)
+            .OrderBy(item => item.StartLocal)
+            .Select(item => new SubscriptionPlanRecord
+            {
+                Id = string.IsNullOrWhiteSpace(item.Id) ? Guid.NewGuid().ToString("N") : item.Id,
+                StartLocal = item.StartLocal,
+                EndLocal = item.EndLocal,
+                PlanName = string.IsNullOrWhiteSpace(item.PlanName) ? "未命名套餐" : item.PlanName.Trim(),
+                AmountCny = item.AmountCny
+            })
+            .ToList();
 
-        foreach (var record in records
-                     .Where(item => item.EndLocal > item.StartLocal)
-                     .OrderBy(item => item.StartLocal))
+        lock (SyncRoot)
         {
-            using var command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = """
-                INSERT INTO subscription_plans (id, start_local, end_local, plan_name, amount_cny)
-                VALUES ($id, $start_local, $end_local, $plan_name, $amount_cny)
-                """;
-            command.Parameters.AddWithValue("$id", string.IsNullOrWhiteSpace(record.Id) ? Guid.NewGuid().ToString("N") : record.Id);
-            command.Parameters.AddWithValue("$start_local", FormatDateTimeOffset(record.StartLocal));
-            command.Parameters.AddWithValue("$end_local", FormatDateTimeOffset(record.EndLocal));
-            command.Parameters.AddWithValue("$plan_name", string.IsNullOrWhiteSpace(record.PlanName) ? "未命名套餐" : record.PlanName.Trim());
-            command.Parameters.AddWithValue("$amount_cny", record.AmountCny.ToString(CultureInfo.InvariantCulture));
-            command.ExecuteNonQuery();
-        }
+            using var connection = OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            using (var deleteCommand = connection.CreateCommand())
+            {
+                deleteCommand.Transaction = transaction;
+                deleteCommand.CommandText = "DELETE FROM subscription_plans";
+                deleteCommand.ExecuteNonQuery();
+            }
 
-        transaction.Commit();
+            foreach (var record in normalizedRecords)
+            {
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = """
+                    INSERT INTO subscription_plans (id, start_local, end_local, plan_name, amount_cny)
+                    VALUES ($id, $start_local, $end_local, $plan_name, $amount_cny)
+                    """;
+                command.Parameters.AddWithValue("$id", record.Id);
+                command.Parameters.AddWithValue("$start_local", FormatDateTimeOffset(record.StartLocal));
+                command.Parameters.AddWithValue("$end_local", FormatDateTimeOffset(record.EndLocal));
+                command.Parameters.AddWithValue("$plan_name", record.PlanName);
+                command.Parameters.AddWithValue("$amount_cny", record.AmountCny.ToString(CultureInfo.InvariantCulture));
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            cachedRecords = CloneRecords(normalizedRecords);
+        }
     }
 
     public static SubscriptionPlanSummary Summarize(DateTimeOffset startLocal, DateTimeOffset endLocal)
@@ -159,7 +189,7 @@ internal static class SubscriptionPlanStore
     {
         lock (SyncRoot)
         {
-            if (initialized)
+            if (initializedPath == MonitorSettingsDatabase.Path)
             {
                 return;
             }
@@ -179,7 +209,8 @@ internal static class SubscriptionPlanStore
             using var countCommand = connection.CreateCommand();
             countCommand.CommandText = "SELECT COUNT(*) FROM subscription_plans";
             var count = Convert.ToInt32(countCommand.ExecuteScalar(), CultureInfo.InvariantCulture);
-            initialized = true;
+            initializedPath = MonitorSettingsDatabase.Path;
+            cachedRecords = null;
             if (count == 0)
             {
                 Save(Defaults());
@@ -189,7 +220,7 @@ internal static class SubscriptionPlanStore
 
     private static SqliteConnection OpenConnection()
     {
-        var path = UsageCacheStore.GetCachePath(CacheFolder);
+        var path = MonitorSettingsDatabase.Path;
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
@@ -238,5 +269,19 @@ internal static class SubscriptionPlanStore
     private static DateTimeOffset ParseDateTimeOffset(string value)
     {
         return DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+    }
+
+    private static IReadOnlyList<SubscriptionPlanRecord> CloneRecords(IEnumerable<SubscriptionPlanRecord> records)
+    {
+        return records
+            .Select(item => new SubscriptionPlanRecord
+            {
+                Id = item.Id,
+                StartLocal = item.StartLocal,
+                EndLocal = item.EndLocal,
+                PlanName = item.PlanName,
+                AmountCny = item.AmountCny
+            })
+            .ToList();
     }
 }

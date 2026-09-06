@@ -20,6 +20,9 @@ internal partial class PriceSettingsWindow : Window
     public PriceSettingsWindow(string initialGroup)
     {
         InitializeComponent();
+        var settings = PriceSettingsStore.Current.Clone();
+        if (CodexModelCost.AddMissingPresets(settings, UsageCacheStore.Load().GetModelIds()) > 0)
+            PriceSettingsStore.Save(settings);
         LoadSettings(PriceSettingsStore.Current);
         SourceTabs.SelectedIndex = Math.Max(0, PricePresetGroups.All
             .Select((group, index) => (group, index))
@@ -476,6 +479,7 @@ internal partial class PriceSettingsWindow : Window
             settings.GptName = gpt.Model;
             settings.GptUncachedInputPerMillion = gpt.UncachedInput;
             settings.GptCachedInputPerMillion = gpt.CachedInput;
+            settings.GptCacheWriteInputPerMillion = gpt.CacheWriteInput;
             settings.GptOutputPerMillion = gpt.Output;
         }
         else
@@ -483,6 +487,7 @@ internal partial class PriceSettingsWindow : Window
             settings.GptName = current.GptName;
             settings.GptUncachedInputPerMillion = current.GptUncachedInputPerMillion;
             settings.GptCachedInputPerMillion = current.GptCachedInputPerMillion;
+            settings.GptCacheWriteInputPerMillion = current.GptCacheWriteInputPerMillion;
             settings.GptOutputPerMillion = current.GptOutputPerMillion;
         }
 
@@ -548,6 +553,7 @@ internal sealed class PricePresetRow : INotifyPropertyChanged
     public string ScheduleLabel => Preset.ScheduleLabel;
     public decimal UncachedInput => Preset.UncachedInput;
     public decimal CachedInput => Preset.CachedInput;
+    public decimal CacheWriteInput => Preset.EffectiveCacheWriteInput;
     public decimal Output => Preset.Output;
     public string Source => Preset.Source;
     public string DisplayName => string.IsNullOrWhiteSpace(Provider) ? Model : $"{Provider} · {Model}";
@@ -588,6 +594,7 @@ internal sealed class PricePresetRow : INotifyPropertyChanged
         OnPropertyChanged(nameof(ScheduleLabel));
         OnPropertyChanged(nameof(UncachedInput));
         OnPropertyChanged(nameof(CachedInput));
+        OnPropertyChanged(nameof(CacheWriteInput));
         OnPropertyChanged(nameof(Output));
         OnPropertyChanged(nameof(Source));
         OnPropertyChanged(nameof(DisplayName));

@@ -5,7 +5,7 @@ namespace CodexTokenMonitor;
 internal static class LastDisplayStore
 {
     private const string FolderName = "CodexTokenMonitor";
-    private const string FileName = "wpf-last-display-v2.json";
+    private const string FileName = "wpf-last-display-v5.json";
     private static readonly JsonSerializerOptions JsonOptions = new();
     private static readonly object SyncRoot = new();
     private static readonly SemaphoreSlim WriteGate = new(1, 1);
@@ -34,7 +34,11 @@ internal static class LastDisplayStore
 
     public static void Save(UsageSource source, SelectedRange range, UsageQueryResult result)
     {
-        var snapshot = new LastDisplaySnapshot(source, range, result);
+        // DetailRows are only needed by the live view. Keeping them in the
+        // debounced restore snapshot makes every refresh retain the complete
+        // detail list until the background write completes.
+        var compactResult = result with { DetailRows = Array.Empty<TokenUsageBucket>() };
+        var snapshot = new LastDisplaySnapshot(source, range, compactResult);
         CancellationTokenSource cts;
         long version;
         lock (SyncRoot)
@@ -117,9 +121,19 @@ internal static class LastDisplayStore
                 Directory.CreateDirectory(directory);
             }
 
-            var temporaryPath = path + ".tmp";
-            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(state, JsonOptions));
-            File.Move(temporaryPath, path, overwrite: true);
+            var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
+            try
+            {
+                File.WriteAllText(temporaryPath, JsonSerializer.Serialize(state, JsonOptions));
+                File.Move(temporaryPath, path, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath))
+                {
+                    File.Delete(temporaryPath);
+                }
+            }
         }
         catch
         {
@@ -129,8 +143,7 @@ internal static class LastDisplayStore
 
     private static string GetPath()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, FolderName, FileName);
+        return Path.Combine(MonitorCachePaths.LocalAppData, FolderName, FileName);
     }
 
     private static LastDisplaySnapshot? ToSnapshot(LastDisplayState state)
@@ -141,12 +154,13 @@ internal static class LastDisplayStore
         }
 
         var range = new SelectedRange(
-            state.Range.Start,
-            state.Range.End,
+            Normalize(state.Range.Start),
+            Normalize(state.Range.End),
             state.Range.Title ?? "",
             state.Range.BreakdownTitle ?? "",
             state.Range.Mode,
-            state.Range.IsCustomStart);
+            state.Range.IsCustomStart,
+            state.Range.FollowsCurrent);
         var result = new UsageQueryResult(
             ToSummary(state.Result.Summary),
             state.Result.BreakdownRows.Select(ToBucket).ToList(),
@@ -164,12 +178,13 @@ internal static class LastDisplayStore
             SavedAtLocal = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset),
             Range = new LastDisplayRangeState
             {
-                Start = snapshot.Range.Start,
-                End = snapshot.Range.End,
+                Start = Normalize(snapshot.Range.Start),
+                End = Normalize(snapshot.Range.End),
                 Title = snapshot.Range.Title,
                 BreakdownTitle = snapshot.Range.BreakdownTitle,
                 Mode = snapshot.Range.Mode,
-                IsCustomStart = snapshot.Range.IsCustomStart
+                IsCustomStart = snapshot.Range.IsCustomStart,
+                FollowsCurrent = snapshot.Range.FollowsCurrent
             },
             Result = new LastDisplayResultState
             {
@@ -186,11 +201,13 @@ internal static class LastDisplayStore
     {
         var summary = new TokenUsageSummary
         {
-            StartLocal = state.StartLocal,
-            EndLocal = state.EndLocal,
+            StartLocal = Normalize(state.StartLocal),
+            EndLocal = Normalize(state.EndLocal),
             Events = state.Events,
             InputTokens = state.InputTokens,
             CachedInputTokens = state.CachedInputTokens,
+            CacheWriteInputTokens = state.CacheWriteInputTokens,
+            ModelUsage = state.ModelUsage,
             UncachedInputTokens = state.UncachedInputTokens,
             OutputTokens = state.OutputTokens,
             ReasoningOutputTokens = state.ReasoningOutputTokens,
@@ -198,8 +215,13 @@ internal static class LastDisplayStore
             LongContextEvents = state.LongContextEvents,
             LongContextInputTokens = state.LongContextInputTokens,
             LongContextCachedInputTokens = state.LongContextCachedInputTokens,
+            LongContextCacheWriteInputTokens = state.LongContextCacheWriteInputTokens,
             LongContextOutputTokens = state.LongContextOutputTokens,
-            LastTokenEventLocal = state.LastTokenEventLocal
+            PeakInputTokens = state.PeakInputTokens,
+            PeakCachedInputTokens = state.PeakCachedInputTokens,
+            PeakCacheWriteInputTokens = state.PeakCacheWriteInputTokens,
+            PeakOutputTokens = state.PeakOutputTokens,
+            LastTokenEventLocal = Normalize(state.LastTokenEventLocal)
         };
         summary.DailyBuckets.AddRange(state.DailyBuckets.Select(ToBucket));
         return summary;
@@ -209,11 +231,13 @@ internal static class LastDisplayStore
     {
         return new LastDisplaySummaryState
         {
-            StartLocal = summary.StartLocal,
-            EndLocal = summary.EndLocal,
+            StartLocal = Normalize(summary.StartLocal),
+            EndLocal = Normalize(summary.EndLocal),
             Events = summary.Events,
             InputTokens = summary.InputTokens,
             CachedInputTokens = summary.CachedInputTokens,
+            CacheWriteInputTokens = summary.CacheWriteInputTokens,
+            ModelUsage = summary.ModelUsage,
             UncachedInputTokens = summary.UncachedInputTokens,
             OutputTokens = summary.OutputTokens,
             ReasoningOutputTokens = summary.ReasoningOutputTokens,
@@ -221,8 +245,13 @@ internal static class LastDisplayStore
             LongContextEvents = summary.LongContextEvents,
             LongContextInputTokens = summary.LongContextInputTokens,
             LongContextCachedInputTokens = summary.LongContextCachedInputTokens,
+            LongContextCacheWriteInputTokens = summary.LongContextCacheWriteInputTokens,
             LongContextOutputTokens = summary.LongContextOutputTokens,
-            LastTokenEventLocal = summary.LastTokenEventLocal,
+            PeakInputTokens = summary.PeakInputTokens,
+            PeakCachedInputTokens = summary.PeakCachedInputTokens,
+            PeakCacheWriteInputTokens = summary.PeakCacheWriteInputTokens,
+            PeakOutputTokens = summary.PeakOutputTokens,
+            LastTokenEventLocal = Normalize(summary.LastTokenEventLocal),
             DailyBuckets = summary.DailyBuckets.Select(FromBucket).ToList()
         };
     }
@@ -231,10 +260,12 @@ internal static class LastDisplayStore
     {
         return new TokenUsageBucket
         {
-            StartLocal = state.StartLocal,
+            StartLocal = Normalize(state.StartLocal),
             Events = state.Events,
             InputTokens = state.InputTokens,
             CachedInputTokens = state.CachedInputTokens,
+            CacheWriteInputTokens = state.CacheWriteInputTokens,
+            ModelUsage = state.ModelUsage,
             UncachedInputTokens = state.UncachedInputTokens,
             OutputTokens = state.OutputTokens,
             ReasoningOutputTokens = state.ReasoningOutputTokens,
@@ -242,8 +273,13 @@ internal static class LastDisplayStore
             LongContextEvents = state.LongContextEvents,
             LongContextInputTokens = state.LongContextInputTokens,
             LongContextCachedInputTokens = state.LongContextCachedInputTokens,
+            LongContextCacheWriteInputTokens = state.LongContextCacheWriteInputTokens,
             LongContextOutputTokens = state.LongContextOutputTokens,
-            LastTokenEventLocal = state.LastTokenEventLocal
+            PeakInputTokens = state.PeakInputTokens,
+            PeakCachedInputTokens = state.PeakCachedInputTokens,
+            PeakCacheWriteInputTokens = state.PeakCacheWriteInputTokens,
+            PeakOutputTokens = state.PeakOutputTokens,
+            LastTokenEventLocal = Normalize(state.LastTokenEventLocal)
         };
     }
 
@@ -251,10 +287,12 @@ internal static class LastDisplayStore
     {
         return new LastDisplayBucketState
         {
-            StartLocal = bucket.StartLocal,
+            StartLocal = Normalize(bucket.StartLocal),
             Events = bucket.Events,
             InputTokens = bucket.InputTokens,
             CachedInputTokens = bucket.CachedInputTokens,
+            CacheWriteInputTokens = bucket.CacheWriteInputTokens,
+            ModelUsage = bucket.ModelUsage,
             UncachedInputTokens = bucket.UncachedInputTokens,
             OutputTokens = bucket.OutputTokens,
             ReasoningOutputTokens = bucket.ReasoningOutputTokens,
@@ -262,8 +300,13 @@ internal static class LastDisplayStore
             LongContextEvents = bucket.LongContextEvents,
             LongContextInputTokens = bucket.LongContextInputTokens,
             LongContextCachedInputTokens = bucket.LongContextCachedInputTokens,
+            LongContextCacheWriteInputTokens = bucket.LongContextCacheWriteInputTokens,
             LongContextOutputTokens = bucket.LongContextOutputTokens,
-            LastTokenEventLocal = bucket.LastTokenEventLocal
+            PeakInputTokens = bucket.PeakInputTokens,
+            PeakCachedInputTokens = bucket.PeakCachedInputTokens,
+            PeakCacheWriteInputTokens = bucket.PeakCacheWriteInputTokens,
+            PeakOutputTokens = bucket.PeakOutputTokens,
+            LastTokenEventLocal = Normalize(bucket.LastTokenEventLocal)
         };
     }
 
@@ -272,7 +315,7 @@ internal static class LastDisplayStore
         return state is null
             ? null
             : new CodexQuotaEstimate(
-                state.SnapshotLocal,
+                Normalize(state.SnapshotLocal),
                 state.LimitId,
                 state.LimitName,
                 ToQuotaWindow(state.FiveHour),
@@ -285,7 +328,7 @@ internal static class LastDisplayStore
             ? null
             : new LastDisplayQuotaState
             {
-                SnapshotLocal = quota.SnapshotLocal,
+                SnapshotLocal = Normalize(quota.SnapshotLocal),
                 LimitId = quota.LimitId,
                 LimitName = quota.LimitName,
                 FiveHour = FromQuotaWindow(quota.FiveHour),
@@ -301,9 +344,9 @@ internal static class LastDisplayStore
                 state.Label ?? "",
                 state.UsedPercent,
                 state.WindowMinutes,
-                state.WindowStartLocal,
-                state.WindowEndLocal,
-                state.ResetAtLocal,
+                Normalize(state.WindowStartLocal),
+                Normalize(state.WindowEndLocal),
+                Normalize(state.ResetAtLocal),
                 ToSummary(state.Usage),
                 state.UsedGptCost,
                 state.EstimatedGptLimit,
@@ -319,9 +362,9 @@ internal static class LastDisplayStore
                 Label = window.Label,
                 UsedPercent = window.UsedPercent,
                 WindowMinutes = window.WindowMinutes,
-                WindowStartLocal = window.WindowStartLocal,
-                WindowEndLocal = window.WindowEndLocal,
-                ResetAtLocal = window.ResetAtLocal,
+                WindowStartLocal = Normalize(window.WindowStartLocal),
+                WindowEndLocal = Normalize(window.WindowEndLocal),
+                ResetAtLocal = Normalize(window.ResetAtLocal),
                 Usage = FromSummary(window.Usage),
                 UsedGptCost = window.UsedGptCost,
                 EstimatedGptLimit = window.EstimatedGptLimit,
@@ -332,27 +375,37 @@ internal static class LastDisplayStore
     private static CodexQuotaSnapshot ToQuotaSnapshot(LastDisplayQuotaSnapshotState state)
     {
         return new CodexQuotaSnapshot(
-            state.SnapshotLocal,
+            Normalize(state.SnapshotLocal),
             state.LimitId,
             state.LimitName,
             state.FiveHourUsedPercent,
-            state.FiveHourResetAtLocal,
+            Normalize(state.FiveHourResetAtLocal),
             state.WeekUsedPercent,
-            state.WeekResetAtLocal);
+            Normalize(state.WeekResetAtLocal));
     }
 
     private static LastDisplayQuotaSnapshotState FromQuotaSnapshot(CodexQuotaSnapshot snapshot)
     {
         return new LastDisplayQuotaSnapshotState
         {
-            SnapshotLocal = snapshot.SnapshotLocal,
+            SnapshotLocal = Normalize(snapshot.SnapshotLocal),
             LimitId = snapshot.LimitId,
             LimitName = snapshot.LimitName,
             FiveHourUsedPercent = snapshot.FiveHourUsedPercent,
-            FiveHourResetAtLocal = snapshot.FiveHourResetAtLocal,
+            FiveHourResetAtLocal = Normalize(snapshot.FiveHourResetAtLocal),
             WeekUsedPercent = snapshot.WeekUsedPercent,
-            WeekResetAtLocal = snapshot.WeekResetAtLocal
+            WeekResetAtLocal = Normalize(snapshot.WeekResetAtLocal)
         };
+    }
+
+    private static DateTimeOffset Normalize(DateTimeOffset value)
+    {
+        return value.ToOffset(CodexUsageReader.BeijingOffset);
+    }
+
+    private static DateTimeOffset? Normalize(DateTimeOffset? value)
+    {
+        return value?.ToOffset(CodexUsageReader.BeijingOffset);
     }
 }
 
@@ -374,6 +427,7 @@ internal sealed class LastDisplayRangeState
     public string? BreakdownTitle { get; set; }
     public RangeMode Mode { get; set; }
     public bool IsCustomStart { get; set; }
+    public bool FollowsCurrent { get; set; }
 }
 
 internal sealed class LastDisplayResultState
@@ -387,10 +441,12 @@ internal sealed class LastDisplayResultState
 
 internal class LastDisplayBucketState
 {
+    public Dictionary<string, TokenUsageBucket> ModelUsage { get; set; } = new();
     public DateTimeOffset StartLocal { get; set; }
     public long Events { get; set; }
     public long InputTokens { get; set; }
     public long CachedInputTokens { get; set; }
+    public long CacheWriteInputTokens { get; set; }
     public long UncachedInputTokens { get; set; }
     public long OutputTokens { get; set; }
     public long ReasoningOutputTokens { get; set; }
@@ -398,7 +454,12 @@ internal class LastDisplayBucketState
     public long LongContextEvents { get; set; }
     public long LongContextInputTokens { get; set; }
     public long LongContextCachedInputTokens { get; set; }
+    public long LongContextCacheWriteInputTokens { get; set; }
     public long LongContextOutputTokens { get; set; }
+    public long PeakInputTokens { get; set; }
+    public long PeakCachedInputTokens { get; set; }
+    public long PeakCacheWriteInputTokens { get; set; }
+    public long PeakOutputTokens { get; set; }
     public DateTimeOffset? LastTokenEventLocal { get; set; }
 }
 

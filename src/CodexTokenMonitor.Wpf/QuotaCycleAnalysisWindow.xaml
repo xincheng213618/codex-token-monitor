@@ -1,0 +1,232 @@
+<Window x:Class="CodexTokenMonitor.QuotaCycleAnalysisWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="周期模型与额度代价"
+        Width="1480"
+        Height="930"
+        MinWidth="1080"
+        MinHeight="720"
+        WindowStartupLocation="CenterOwner"
+        Background="#F4F7FB"
+        FontFamily="Microsoft YaHei UI">
+    <Window.Resources>
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#DFE7F0" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="Padding" Value="16,13" />
+        </Style>
+        <Style x:Key="MetricLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#64748B" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style x:Key="MetricValue" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#172033" />
+            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontSize" Value="24" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,5,0,2" />
+        </Style>
+        <Style x:Key="MetricNote" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#64748B" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="AutoGenerateColumns" Value="False" />
+            <Setter Property="CanUserAddRows" Value="False" />
+            <Setter Property="CanUserDeleteRows" Value="False" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="HeadersVisibility" Value="Column" />
+            <Setter Property="GridLinesVisibility" Value="Horizontal" />
+            <Setter Property="HorizontalGridLinesBrush" Value="#EAF0F6" />
+            <Setter Property="BorderBrush" Value="#DFE7F0" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="AlternatingRowBackground" Value="#FAFCFE" />
+            <Setter Property="RowHeight" Value="31" />
+            <Setter Property="ColumnHeaderHeight" Value="34" />
+            <Setter Property="SelectionMode" Value="Single" />
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#F7F9FC" />
+            <Setter Property="Foreground" Value="#526174" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="8,0" />
+            <Setter Property="BorderBrush" Value="#DFE7F0" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+        </Style>
+        <Style x:Key="CloseButton" TargetType="Button">
+            <Setter Property="MinWidth" Value="86" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="Background" Value="#0F806D" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="112" />
+            <RowDefinition Height="3*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="2*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="2,0,2,13">
+            <Border DockPanel.Dock="Right" Background="#E8F4F1" CornerRadius="12" Padding="12,5" VerticalAlignment="Center">
+                <TextBlock Foreground="#0F766E" FontSize="12" Text="模型日志 × 额度快照插值" />
+            </Border>
+            <StackPanel>
+                <TextBlock x:Name="CycleTitleText" FontSize="22" FontWeight="SemiBold" Foreground="#172033" />
+                <TextBlock x:Name="CycleMetaText" Margin="0,4,0,0" Foreground="#64748B" />
+            </StackPanel>
+        </DockPanel>
+
+        <Grid Grid.Row="1" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,6,0">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource MetricLabel}" Text="可归因额度跌幅" />
+                    <TextBlock x:Name="QuotaDropValue" Style="{StaticResource MetricValue}" Text="-" />
+                    <TextBlock x:Name="QuotaDropNote" Style="{StaticResource MetricNote}" Text="等待额度锚点" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="1" Style="{StaticResource Card}" Margin="6,0">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource MetricLabel}" Text="这段换算代价（含 Fast）" />
+                    <TextBlock x:Name="EquivalentCostValue" Style="{StaticResource MetricValue}" Text="-" />
+                    <TextBlock x:Name="EquivalentCostNote" Style="{StaticResource MetricNote}" Text="订阅额度比较口径" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="2" Style="{StaticResource Card}" Margin="6,0">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource MetricLabel}" Text="全周期 100% 折算" />
+                    <TextBlock x:Name="FullEstimateValue" Style="{StaticResource MetricValue}" Text="-" />
+                    <TextBlock x:Name="FullEstimateNote" Style="{StaticResource MetricNote}" Text="按全部可归因区间加权" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="3" Style="{StaticResource Card}" Margin="6,0">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource MetricLabel}" Text="5% 分段波动" />
+                    <TextBlock x:Name="VolatilityValue" Style="{StaticResource MetricValue}" Text="-" />
+                    <TextBlock x:Name="VolatilityNote" Style="{StaticResource MetricNote}" Text="局部折算离散程度" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="4" Style="{StaticResource Card}" Margin="6,0,0,0">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource MetricLabel}" Text="主导模型" />
+                    <TextBlock x:Name="DominantModelValue" Style="{StaticResource MetricValue}" Text="-" FontFamily="Microsoft YaHei UI" FontSize="21" />
+                    <TextBlock x:Name="DominantModelNote" Style="{StaticResource MetricNote}" Text="按归因额度跌幅" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="2" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3.2*" />
+                <ColumnDefinition Width="1.05*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource Card}" Padding="10" Margin="0,0,7,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <DockPanel Margin="8,2,8,6">
+                        <TextBlock DockPanel.Dock="Right" Foreground="#64748B" FontSize="11" VerticalAlignment="Center"
+                                   Text="上方色带=主导模型 · 悬停查看 · 点击联动明细" />
+                        <TextBlock FontSize="14" FontWeight="SemiBold" Foreground="#263247" Text="额度位置 × 局部换算代价" />
+                    </DockPanel>
+                    <ContentControl x:Name="ChartHost" Grid.Row="1" />
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="1" Style="{StaticResource Card}" Margin="7,0,0,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <DockPanel Margin="0,0,0,8">
+                        <TextBlock DockPanel.Dock="Right" Foreground="#94A3B8" FontSize="11" Text="额度归因占比" />
+                        <TextBlock FontSize="14" FontWeight="SemiBold" Foreground="#263247" Text="模型构成" />
+                    </DockPanel>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl x:Name="ModelShareList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2,0,10" ToolTip="{Binding Detail}">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="8" />
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Orientation="Horizontal">
+                                            <Ellipse Width="9" Height="9" Fill="{Binding Accent}" Margin="0,0,7,0" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding Model}" Foreground="#334155" FontWeight="SemiBold" />
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1" Text="{Binding Share}" Foreground="#475569" FontFamily="Segoe UI" />
+                                        <ProgressBar Grid.Row="1" Grid.ColumnSpan="2" Minimum="0" Maximum="100" Value="{Binding ShareValue}"
+                                                     Foreground="{Binding Accent}" Background="#E9EEF5" BorderThickness="0" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    <Border Grid.Row="2" Background="#F7F9FC" CornerRadius="5" Padding="10" Margin="0,9,0,0">
+                        <StackPanel>
+                            <TextBlock Foreground="#64748B" FontSize="11" Text="本周期最明显的差异" />
+                            <TextBlock x:Name="InsightText" Foreground="#334155" Margin="0,4,0,0" TextWrapping="Wrap" LineHeight="19" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <DockPanel Grid.Row="3" Margin="2,0,2,7">
+            <TextBlock DockPanel.Dock="Right" Foreground="#64748B" FontSize="11" VerticalAlignment="Center"
+                       Text="每行按 5% 额度带聚合；小于 2% 的边缘区间标为小样本" />
+            <TextBlock FontSize="14" FontWeight="SemiBold" Foreground="#263247" Text="分段明细" />
+        </DockPanel>
+
+        <DataGrid x:Name="BandGrid" Grid.Row="4" SelectionChanged="BandGrid_SelectionChanged">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="剩余额度" Binding="{Binding QuotaRange}" Width="116" />
+                <DataGridTextColumn Header="发生时间" Binding="{Binding TimeRange}" Width="158" />
+                <DataGridTextColumn Header="主导模型" Binding="{Binding DominantModel}" Width="112" />
+                <DataGridTextColumn Header="模型混用" Binding="{Binding ModelMix}" Width="220" />
+                <DataGridTextColumn Header="掉了" Binding="{Binding QuotaDrop}" Width="72" />
+                <DataGridTextColumn Header="Tokens" Binding="{Binding Tokens}" Width="88" />
+                <DataGridTextColumn Header="本段代价" Binding="{Binding EquivalentCost}" Width="92" />
+                <DataGridTextColumn Header="换算 100%" Binding="{Binding FullEstimate}" Width="96" />
+                <DataGridTextColumn Header="相对均值" Binding="{Binding Difference}" Width="82" />
+                <DataGridTextColumn Header="可信度" Binding="{Binding Reliability}" Width="78" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <DockPanel Grid.Row="5" Margin="2,12,2,0" LastChildFill="True">
+            <Button DockPanel.Dock="Right" Style="{StaticResource CloseButton}" Content="关闭" Click="CloseButton_Click" />
+            <TextBlock x:Name="StatusText" DockPanel.Dock="Right" Foreground="#64748B" VerticalAlignment="Center" Margin="0,0,18,0" />
+            <TextBlock Foreground="#7C8798" FontSize="11" VerticalAlignment="Center" TextWrapping="Wrap"
+                       Text="说明：模型与 Token 来自会话日志；额度位置会在服务端快照之间插值。分段归因适合比较模型代价和波动，不等同于官方逐请求计费。" />
+        </DockPanel>
+    </Grid>
+</Window>

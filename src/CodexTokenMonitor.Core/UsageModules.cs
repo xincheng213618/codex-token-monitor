@@ -14,7 +14,8 @@ internal sealed record SelectedRange(
     string Title,
     string BreakdownTitle,
     RangeMode Mode,
-    bool IsCustomStart = false);
+    bool IsCustomStart = false,
+    bool FollowsCurrent = false);
 
 internal sealed record UsageQueryResult(
     TokenUsageSummary Summary,
@@ -43,7 +44,7 @@ internal abstract class UsageSourceModule
     public UsageSource Source => Reader.Source;
     public string Title => Reader.Title;
     public virtual bool SupportsCycle => false;
-    public DateTime PickerValue { get; set; } = DateTime.Today;
+    public DateTime PickerValue { get; set; } = BeijingClock.Today;
     public DateTimeOffset? CustomStartLocal { get; set; }
     public SelectedRange? LastRange { get; private set; }
     public UsageQueryResult? LastResult { get; private set; }
@@ -70,13 +71,14 @@ internal abstract class UsageSourceModule
 
     public void StoreDisplay(SelectedRange range, UsageQueryResult result)
     {
+        var displayResult = WithoutDetailRows(result);
         LastRange = range;
-        LastResult = result;
+        LastResult = displayResult;
 
         var key = DisplayCacheKey.From(range);
         if (displayCache.ContainsKey(key))
         {
-            displayCache[key] = result;
+            displayCache[key] = displayResult;
             TouchCachedDisplay(key);
         }
     }
@@ -97,7 +99,7 @@ internal abstract class UsageSourceModule
     public void CacheDisplay(SelectedRange range, UsageQueryResult result)
     {
         var key = DisplayCacheKey.From(range);
-        displayCache[key] = result;
+        displayCache[key] = WithoutDetailRows(result);
         TouchCachedDisplay(key);
 
         while (displayCacheOrder.Count > DisplayCacheCapacity)
@@ -120,6 +122,13 @@ internal abstract class UsageSourceModule
     {
         displayCacheOrder.Remove(key);
         displayCacheOrder.Add(key);
+    }
+
+    private static UsageQueryResult WithoutDetailRows(UsageQueryResult result)
+    {
+        return result.DetailRows.Count == 0
+            ? result
+            : result with { DetailRows = Array.Empty<TokenUsageBucket>() };
     }
 
     private readonly record struct DisplayCacheKey(

@@ -12,6 +12,7 @@ internal partial class DataSharingWindow : Window
     private readonly CodexDataSharingServer server;
     private readonly Func<string, CancellationToken, Task<CodexDataExportResult>> exportWeek;
     private readonly Func<string, CancellationToken, Task<CodexDataImportResult>> importWeek;
+    private readonly CodexHistorySharingStore historyStore;
     private readonly CodexDataSharingSettings settings = CodexDataSharingSettings.Load();
     private readonly CancellationTokenSource lifetime;
     private readonly Queue<string> activity = new();
@@ -22,17 +23,22 @@ internal partial class DataSharingWindow : Window
     public DataSharingWindow(CodexDataSharingServer server,
         Func<string, CancellationToken, Task<CodexDataExportResult>> exportWeek,
         Func<string, CancellationToken, Task<CodexDataImportResult>> importWeek,
+        CodexHistorySharingStore historyStore,
         CancellationToken cancellationToken)
     {
         InitializeComponent();
         this.server = server;
         this.exportWeek = exportWeek;
         this.importWeek = importWeek;
+        this.historyStore = historyStore;
         lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         PortBox.Text = settings.Port.ToString(CultureInfo.InvariantCulture);
         LocalKeyBox.Text = settings.AccessKey;
         RemoteAddressBox.Text = settings.ServerAddress;
         RemoteKeyBox.Text = settings.ServerAccessKey;
+        AutoStartBox.IsChecked = settings.AutoStart;
+        AutoStartBox.Checked += SaveAutoStart;
+        AutoStartBox.Unchecked += SaveAutoStart;
         server.Activity += OnServerActivity;
         UpdateServerState();
         Closed += (_, _) =>
@@ -42,6 +48,13 @@ internal partial class DataSharingWindow : Window
             lifetime.Cancel();
             lifetime.Dispose();
         };
+    }
+
+    private void SaveAutoStart(object sender, RoutedEventArgs e)
+    {
+        settings.AutoStart = AutoStartBox.IsChecked == true;
+        try { settings.Save(); }
+        catch (Exception ex) { AddActivity($"保存自动开启设置失败：{ex.Message}"); }
     }
 
     private async void ServerToggleButton_Click(object sender, RoutedEventArgs e)
@@ -131,10 +144,22 @@ internal partial class DataSharingWindow : Window
     private async void TestButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("测试连接", async (client, token) =>
     {
         var peer = await client.TestConnectionAsync(token);
-        return $"已连接：{peer.DeviceName}。可以上传或下载本周数据。";
+        return $"已连接：{peer.DeviceName}。可以上传或下载最近 8 天数据。";
     });
 
-    private async void UploadButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("上传本周数据", async (client, token) =>
+    private async void SyncButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("双向同步最近 8 天", async (client, token) =>
+    {
+        await client.TestConnectionAsync(token);
+        using var upload = new CodexSharingTemporaryFile();
+        await exportWeek(upload.FilePath, token);
+        var uploaded = await client.UploadAsync(upload.FilePath, token);
+        using var download = new CodexSharingTemporaryFile();
+        await client.DownloadAsync(download.FilePath, token);
+        var imported = await importWeek(download.FilePath, token);
+        return FormatResult("服务器已合并", uploaded) + Environment.NewLine + FormatResult("本机已合并", imported);
+    });
+
+    private async void UploadButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("上传最近 8 天数据", async (client, token) =>
     {
         await client.TestConnectionAsync(token);
         using var temporary = new CodexSharingTemporaryFile();
@@ -143,7 +168,29 @@ internal partial class DataSharingWindow : Window
         return FormatResult("服务器已合并", result);
     });
 
-    private async void DownloadButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("下载并合并本周数据", async (client, token) =>
+    private async void HistorySyncButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("双向同步全部历史", async (client, token) =>
+    {
+        var result = await client.SyncHistoryAsync(historyStore, message =>
+        {
+            if (!Dispatcher.HasShutdownStarted)
+                _ = Dispatcher.BeginInvoke(new Action(() => { if (!closed) OperationText.Text = message; }));
+        }, token);
+        // Finish with the normal recent path so today's actively appended logs
+        // are refreshed on both computers after the cached history batches.
+        using var upload = new CodexSharingTemporaryFile();
+        await exportWeek(upload.FilePath, token);
+        var recentUploaded = await client.UploadAsync(upload.FilePath, token);
+        using var download = new CodexSharingTemporaryFile();
+        await client.DownloadAsync(download.FilePath, token);
+        var recentImported = await importWeek(download.FilePath, token);
+        return $"全部历史已同步（{result.BatchCount:N0} 批），最近 8 天已刷新。" + Environment.NewLine +
+            FormatResult("历史：服务器已合并", result.Uploaded) + Environment.NewLine +
+            FormatResult("历史：本机已合并", result.Downloaded) + Environment.NewLine +
+            FormatResult("最近：服务器已合并", recentUploaded) + Environment.NewLine +
+            FormatResult("最近：本机已合并", recentImported);
+    });
+
+    private async void DownloadButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("下载并合并最近 8 天数据", async (client, token) =>
     {
         await client.TestConnectionAsync(token);
         using var temporary = new CodexSharingTemporaryFile();
@@ -204,7 +251,7 @@ internal partial class DataSharingWindow : Window
 
     private void SetTransferBusy(bool busy)
     {
-        TestButton.IsEnabled = UploadButton.IsEnabled = DownloadButton.IsEnabled = !busy;
+        TestButton.IsEnabled = SyncButton.IsEnabled = HistorySyncButton.IsEnabled = UploadButton.IsEnabled = DownloadButton.IsEnabled = !busy;
         RemoteAddressBox.IsEnabled = RemoteKeyBox.IsEnabled = !busy;
         CancelButton.IsEnabled = busy;
     }

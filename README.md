@@ -7,13 +7,15 @@
 ## 功能
 
 - 统计 Codex / Claude Code / ZCode / WorkBuddy / DSH 五种来源的 token 使用量。
-  - DSH（DeepSeek Harness）直接读取 `~/.dsh/sessions` 下 zstd 压缩的会话日志，统计每次模型调用的 input / 缓存读取 / output / reasoning。
+  - DSH（DeepSeek Harness）直接读取 `~/.dsh/sessions` 下 zstd 压缩的会话日志，统计每次模型调用的 input / 缓存读取 / 缓存创建 / output / reasoning。
 - 支持按天、近 7 天窗口、按月、按 Codex 额度周期（7d 周期）查看。
+- 当前周/月/周期范围若截止到现在，会叠加当天实时日志并随自动刷新更新；历史范围继续优先使用缓存。
 - 支持“从当前算”，方便比较同一任务在不同 AI 工具里的消耗。
-- 展示 input、cached input、uncached input、output、reasoning output、缓存命中率、事件数和 Coding Time（10 分钟空闲判定的活跃时长）。
+- 展示 input、cached input、cache write、uncached input、output、reasoning output、缓存命中率、事件数和 Coding Time（10 分钟空闲判定的活跃时长）。
 - 以 ScottPlot 时间轴图表查看当天/周/月 token 峰值：总 Token 与缓存输入柱状图 + 累计总 Token 折线，可调节高度、带图例和轴标签。
 - 用 SQLite 缓存历史统计，历史日期切换更快；启动后后台自动预热历史日缓存。
 - 支持导出/导入 Codex 统计数据包，把多台电脑的 token 事件和额度快照合并到一台主统计电脑；重复导入会自动去重。
+- 支持从主界面复制当前统计摘要，或将当前来源/范围的分桶明细、费用档和 Codex 额度快照导出为 UTF-8 CSV。
 - 支持恢复上次关闭时的显示状态（来源、时间范围、查询结果）。
 - Codex 额度：
   - 优先通过 Codex 本地 app-server（`codex app-server --stdio`）实时读取 5h / 7d 剩余额度百分比，自动发现可运行的 Codex CLI（Desktop 插件副本、npm 安装、PATH 上的 `codex.exe/.cmd/.bat`），不可用时回退到本机会话日志捕获的额度记录。
@@ -46,14 +48,18 @@
 dotnet build .\CodexTokenMonitor.slnx -c Release
 ```
 
-CI（GitHub Actions，`.github/workflows/build.yml`）会在 push / PR 时在 `windows-latest` 上执行 restore + Release 构建。
+CI（GitHub Actions，`.github/workflows/build.yml`）会在 push / PR 时在 `windows-latest` 上执行 restore、Release 构建和 Core 回归测试。
 
 ## 发布单文件 exe
 
-默认 Release 为框架依赖单文件，约 50 MB，需要 .NET 8 Desktop Runtime 和 ASP.NET Core 8 Runtime（局域网共享服务使用）。正式输出仍为 `outputs/CodexTokenMonitor`：
+便携版会把 .NET runtime 一起打进 exe，体积较大，但复制到没装 .NET 的 Windows 机器也能直接运行：
 
 ```powershell
-dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Release -o .\outputs\CodexTokenMonitor
+$publishDir = Join-Path (Get-Location) 'outputs/CodexTokenMonitor'
+if (Test-Path -LiteralPath $publishDir) {
+    Remove-Item -LiteralPath $publishDir -Recurse -Force
+}
+dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Release -r win-x64 --self-contained true -o .\outputs\CodexTokenMonitor
 ```
 
 生成文件：
@@ -62,7 +68,11 @@ dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Relea
 outputs/CodexTokenMonitor/CodexTokenMonitor.exe
 ```
 
-轻量版（`Lite` 配置，框架依赖）只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime 和 ASP.NET Core 8 Runtime，exe 体积会小很多：
+日常只使用这一个输出目录。一键生成和后续更新均覆盖此位置，不再按功能名称另建发布目录。
+
+Release 发布目录只保留这个 exe，不需要旁边的 Core PDB 或 .NET runtime 文件；发布前应清理旧目录，避免旧版文件残留。
+
+轻量版（`Lite` 配置，框架依赖）只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime 和 ASP.NET Core 8 Runtime（局域网共享服务使用），exe 体积会小很多：
 
 ```powershell
 dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Lite -o .\outputs\CodexTokenMonitor-lite
@@ -74,13 +84,11 @@ dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Lite 
 outputs/CodexTokenMonitor-lite/CodexTokenMonitor.exe
 ```
 
-一键发布脚本（双击运行，自动定位项目并发布到 `outputs\CodexTokenMonitor`，可用 `--no-pause` / `--no-open` 控制）：
+一键发布脚本会先执行 Core 回归测试，测试通过后才发布到 `outputs\CodexTokenMonitor`；可用 `--no-pause` / `--no-open` 控制窗口行为：
 
 ```text
 outputs/一键生成CodexTokenMonitor.cmd
 ```
-
-局域网共享入口为 **数据管理 → 局域网共享**：默认端口 **36666**，手动开启本机服务；其他电脑填写地址和访问密钥，手动上传本周或下载并合并本周。使用说明见 [用户指南](docs/USER_GUIDE.md#局域网共享手动上传--下载本周)。
 
 ## 本地数据位置
 
@@ -109,7 +117,12 @@ outputs/一键生成CodexTokenMonitor.cmd
 
 ## 跨电脑合并 Codex 数据
 
-1. 在每台电脑点击“数据管理”，按需要选择“导入其他电脑数据…”“仅导出今天数据…”“仅导出本周数据…”或“导出全部数据…”，生成 `*.codex.json` 数据包（旧版 `*.codex-data.json` 仍可导入）。今天和本周都按北京时间计算，本周从周一 00:00 开始。
+同一个账号在两台电脑使用时，两边先启动新版，各自从 Codex 原日志重新统计。在一台开启“数据管理 → 局域网共享”，另一台填写地址和密钥。第一次等两边缓存完成后，手动点“同步全部历史”：按双方已缓存日期分批双向合并，显示进度，最后刷新最近用量。日常点“双向同步最近 8 天”即可覆盖跨自然周的当前 7d 窗口。长期离线或补录旧数据后，可再次同步全部历史；中断后重新同步也不会重复计数。全量同步读取统计缓存，不重新遍历原始会话文件。
+
+Codex 使用新的 `token-cache-v4.sqlite3`；旧统计缓存不迁移，原始会话日志不删除。模型 ID 随事件传输，费用在本机按价格库计算，价格设置不会随用量同步。
+
+
+1. 在每台电脑点击“数据管理”，按需要选择“导入其他电脑数据…”“仅导出今天数据…”“仅导出本周数据…”或“导出全部数据…”，生成 `*.codex.json` 数据包（模型统计使用 v2 数据包，两台电脑都需要新版重新统计）。今天和本周都按北京时间计算，本周从周一 00:00 开始。
 2. 将这些文件复制到作为主统计端的电脑。
 3. 将一个或多个数据包直接拖到程序窗口，确认后即可合并；也可以在“数据管理”中点击“导入其他电脑数据…”手动选择。
 
@@ -119,17 +132,24 @@ outputs/一键生成CodexTokenMonitor.cmd
 
 ## 费用口径
 
+Codex 的“实际模型 · API 等价”按每条日志的模型、输入、缓存创建、缓存读取和输出匹配价格库后汇总；鼠标悬停可查看各模型明细。新模型自动加入价格库，默认 0x（费用为 0）并标明待填写；补价后历史费用直接重算，无需重扫日志。其余卡片标注“换用”，回答相同 Token 换模型后的参考费用，不假定另一模型会产生相同长度的真实响应。
+
+官方剩余百分比与重置时间直接读取；“组合折算”美元额度使用当前周期/区间的实际模型费用与已用百分比推算，需先合并同账号全部设备的用量。API 价格不是订阅扣额规则，模型组合变化后该金额不是固定上限；不再按总 Token 声称固定容量。
+
+
 费用使用本地 token 事件估算：
 
 ```text
 cost = uncached_input_millions * input_price
      + cached_input_millions * cached_input_price
+     + cache_write_input_millions * cache_write_price
      + output_millions * output_price
 ```
 
 注意：
 
 - Reasoning output 已包含在 output 中，不重复计费。
+- 价格档未单独填写缓存创建价时，缓存创建按普通未缓存输入价回退，避免旧价格文件漏算。
 - 单事件 input 超过 27.2 万 token 时记为“长上下文事件”，在明细行单独统计。
 - Codex 本地 token 和远端套餐额度不是同一个概念，额度估算只是用百分比变化做反推。
 - Fast / 普通模式可能有不同额度倍率，历史区间混合模式时只能作为近似值。
@@ -152,7 +172,7 @@ tests/CodexTokenMonitor.Core.Tests/                        核心回归测试
 dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.csproj -c Release
 ```
 
-实时日志采用“首次完整读取、后续按文件尾部增量读取”的方式（`LiveFileTailReader` 按文件维护读取游标）。活动 JSONL 被截断、替换、清理缓存或查询需要更早覆盖范围时，读取游标会自动失效并安全回退；历史完整日仍以 SQLite 数据为准。子代理（subagent）会话文件的“父任务回放”段会被过滤，只统计子任务边界之后的 token_count。后台缓存与前台刷新共用 I/O 闸门，避免同时扫描。
+实时日志采用“首次完整读取、后续按文件尾部增量读取”的方式（`LiveFileTailReader` 按文件维护读取游标）。活动 JSONL 被截断、替换、清理缓存或查询需要更早覆盖范围时，读取游标会自动失效并安全回退；历史完整日仍以 SQLite 数据为准。子代理（subagent）会话文件的“父任务回放”段会被过滤，只统计子任务边界之后的 token_count。后台缓存、前台刷新和当前额度曲线实时扫描共用 I/O 闸门，避免同时扫描。
 
 关键文件：
 

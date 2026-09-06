@@ -8,10 +8,16 @@ internal sealed record WorkBuddyUsageEntry(
     DateTimeOffset Timestamp,
     long Input,
     long Cached,
+    long CacheWrite,
     long Output,
     long Total)
 {
-    public long CompletenessScore => Input + Cached + Output + Total;
+    public decimal CompletenessScore =>
+        (decimal)TokenCountMath.NonNegative(Input) +
+        TokenCountMath.NonNegative(Cached) +
+        TokenCountMath.NonNegative(CacheWrite) +
+        TokenCountMath.NonNegative(Output) +
+        TokenCountMath.NonNegative(Total);
 }
 
 internal static class WorkBuddyUsageReader
@@ -30,25 +36,48 @@ internal static class WorkBuddyUsageReader
 
     public static IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
         DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive)
+        DateTimeOffset endInclusive,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.GetIncompleteDays(CacheFolder, startInclusive, endInclusive);
+        return UsageCacheStore.GetIncompleteDays(CacheFolder, startInclusive, endInclusive, cancellationToken);
     }
 
-    public static TokenUsageSummary ReadCachedRange(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    public static TokenUsageSummary ReadCachedRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal);
+        return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal, cancellationToken);
     }
 
     public static IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal);
+        return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal, cancellationToken);
     }
 
-    public static TokenUsageSummary ReadRange(DateTimeOffset startLocal, DateTimeOffset endLocal, bool includeLiveToday = true)
+    public static void WarmHistoricalDays(
+        IEnumerable<DateTimeOffset> daysLocal,
+        CancellationToken cancellationToken = default,
+        Action<DateTimeOffset>? dayCompleted = null,
+        Action<int, int>? fileProgress = null)
     {
+        HistoricalUsageBatchWarmer.WarmDays(CacheFolder, daysLocal,
+            (start, end, token) => ReadEventsUncached(start, end, token, fileProgress),
+            cancellationToken, dayCompleted);
+    }
+
+    public static TokenUsageSummary ReadRange(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var summary = new TokenUsageSummary
         {
             StartLocal = startLocal,
@@ -64,6 +93,7 @@ internal static class WorkBuddyUsageReader
 
         for (var dayStart = StartOfDay(startLocal); dayStart < endLocal; dayStart = dayStart.AddDays(1))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var dayEnd = dayStart.AddDays(1);
             var clippedStart = Max(dayStart, startLocal);
             var clippedEnd = Min(dayEnd, endLocal);
@@ -84,15 +114,16 @@ internal static class WorkBuddyUsageReader
 
             if (fullHistoricalDay)
             {
-                if (cache.TryGetRecord(date, out var record) && record.IsComplete)
+                if (cache.TryGetRecord(date, out var record) &&
+                    record.IsComplete &&
+                    record.DetailEventCount == record.Events)
                 {
                     continue;
                 }
 
-                var scanStart = cache.TryGetRecord(date, out record) && record.ScannedThroughLocal is not null
-                    ? record.ScannedThroughLocal.Value.AddTicks(1)
-                    : dayStart;
-                AddScanRange(scanRanges, Max(scanStart, clippedStart), dayEnd, cacheHistoricalDays: true);
+                // Invalidated historical records can retain a watermark at the
+                // end of the day. Re-scan the full day to restore completion.
+                AddScanRange(scanRanges, dayStart, dayEnd, cacheHistoricalDays: true);
             }
             else if (liveToday)
             {
@@ -114,14 +145,16 @@ internal static class WorkBuddyUsageReader
 
         foreach (var scanRange in scanRanges)
         {
-            var scanned = ReadRangeUncached(scanRange.StartLocal, scanRange.EndLocal);
-            foreach (var bucket in scanned.DailyBuckets)
+            cancellationToken.ThrowIfCancellationRequested();
+            var scanned = ReadRangeUncached(scanRange.StartLocal, scanRange.EndLocal, cancellationToken);
+            foreach (var bucket in scanned.Summary.DailyBuckets)
             {
                 AddBucketToSummary(summary, dailyBuckets, bucket);
             }
 
             for (var dayStart = StartOfDay(scanRange.StartLocal); dayStart < scanRange.EndLocal; dayStart = dayStart.AddDays(1))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var date = DateOnly.FromDateTime(dayStart.DateTime);
                 var isToday = dayStart == todayStart;
                 if (!scanRange.CacheHistoricalDays && !isToday)
@@ -129,7 +162,7 @@ internal static class WorkBuddyUsageReader
                     continue;
                 }
 
-                var scannedBucket = scanned.DailyBuckets.FirstOrDefault(item =>
+                var scannedBucket = scanned.Summary.DailyBuckets.FirstOrDefault(item =>
                     DateOnly.FromDateTime(item.StartLocal.DateTime) == date) ?? new TokenUsageBucket
                     {
                         StartLocal = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset)
@@ -143,28 +176,57 @@ internal static class WorkBuddyUsageReader
 
                 AddBucketValues(mergedBucket, scannedBucket);
                 var scannedThrough = Min(dayStart.AddDays(1), scanRange.EndLocal).AddTicks(-1);
-                var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart;
+                var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart && scanned.IsComplete;
                 IReadOnlyList<TokenUsageEvent>? detailEvents = null;
                 var replaceDetailEvents = true;
-                if (cache.HasDetailEvents(date))
+                var detailScanComplete = true;
+                var hasDetailEvents = cache.HasDetailEvents(date, cancellationToken);
+                if (hasDetailEvents)
                 {
-                    var detailStart = Max(dayStart, scanRange.StartLocal);
+                    var cachedDetailEvents = cache.GetDetailEvents(date, cancellationToken);
+                    var detailsAreComplete = !cache.TryGetRecord(date, out var detailRecord) ||
+                                             cachedDetailEvents.Count == detailRecord.Events;
+                    var detailStart = detailsAreComplete
+                        ? Max(dayStart, scanRange.StartLocal)
+                        : dayStart;
                     var detailEnd = Min(dayStart.AddDays(1), scanRange.EndLocal);
-                    var newEvents = ReadEventsUncached(detailStart, detailEnd);
-                    detailEvents = newEvents
+                    var newEventsResult = ReadEventsUncached(detailStart, detailEnd, cancellationToken);
+                    detailScanComplete = newEventsResult.IsComplete;
+                    detailEvents = UsageEventMerger.Merge(cachedDetailEvents.Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1))
-                        .ToList();
-                    replaceDetailEvents = false;
+                        .ToList());
+                    mergedBucket = CreateBucketFromEvents(dayStart, detailEvents);
+                }
+                else if (scanRange.CacheHistoricalDays && scannedBucket.Events > 0)
+                {
+                    mergedBucket = scannedBucket;
                 }
 
-                cache.Put(mergedBucket, isComplete, scannedThrough, detailEvents, replaceDetailEvents);
+                cache.Put(
+                    mergedBucket,
+                    isComplete && detailScanComplete,
+                    scannedThrough,
+                    detailEvents,
+                    replaceDetailEvents,
+                    cancellationToken);
+                dailyBuckets[date] = mergedBucket;
                 cacheChanged = true;
             }
         }
 
         if (cacheChanged)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
+            summary = new TokenUsageSummary
+            {
+                StartLocal = startLocal,
+                EndLocal = endLocal
+            };
+            foreach (var bucket in dailyBuckets.Values)
+            {
+                AddBucketValues(summary, bucket);
+            }
         }
 
         summary.DailyBuckets.AddRange(
@@ -178,15 +240,19 @@ internal static class WorkBuddyUsageReader
     public static IReadOnlyList<TokenUsageBucket> ReadDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        bool includeLiveToday = true)
+        bool includeLiveToday = true,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var dayStart = StartOfDay(startLocal);
         var date = DateOnly.FromDateTime(dayStart.DateTime);
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var todayStart = StartOfDay(now);
         var dayEnd = dayStart.AddDays(1);
         var cache = UsageCacheStore.Load(CacheFolder);
-        var cachedEvents = cache.GetDetailEvents(date).ToList();
+        var cachedEvents = cache.GetDetailEvents(date, cancellationToken).ToList();
 
         if (dayStart == todayStart && !includeLiveToday)
         {
@@ -195,28 +261,38 @@ internal static class WorkBuddyUsageReader
 
         if (cache.TryGetRecord(date, out var record) && (cachedEvents.Count > 0 || record.Events == 0))
         {
-            var hasCompleteCoverage = record.IsComplete ||
-                                      record.ScannedThroughLocal is not null &&
-                                      record.ScannedThroughLocal.Value >= endLocal.AddTicks(-1);
+            var hasCompleteDetails = cachedEvents.Count == record.Events;
+            var hasCompleteCoverage = hasCompleteDetails && (record.IsComplete ||
+                                      dayStart >= todayStart && record.ScannedThroughLocal is not null &&
+                                      record.ScannedThroughLocal.Value >= endLocal.AddTicks(-1));
             if (hasCompleteCoverage)
             {
                 return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
             }
 
-            if (includeLiveToday)
+            if (dayStart < todayStart || includeLiveToday)
             {
-                var scanStart = record.ScannedThroughLocal is null
-                    ? startLocal
+                var replaceDetails = !hasCompleteDetails || dayStart < todayStart && !record.IsComplete;
+                var scanStart = replaceDetails || record.ScannedThroughLocal is null
+                    ? replaceDetails ? dayStart : startLocal
                     : Max(startLocal, record.ScannedThroughLocal.Value.AddTicks(1));
-                if (scanStart < endLocal)
+                var scanEnd = dayStart < todayStart ? dayEnd : endLocal;
+                if (scanStart < scanEnd)
                 {
-                    var newEvents = ReadEventsUncached(scanStart, endLocal);
+                    var newEventsResult = ReadEventsUncached(scanStart, scanEnd, cancellationToken);
                     var mergedEvents = UsageEventMerger.Merge(cachedEvents
-                        .Concat(newEvents)
+                        .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
                     var mergedBucket = CreateBucketFromEvents(dayStart, mergedEvents);
-                    var isComplete = dayStart < todayStart && endLocal >= dayEnd;
-                    cache.Put(mergedBucket, isComplete, endLocal.AddTicks(-1), newEvents, replaceDetailEvents: false);
+                    var isComplete = dayStart < todayStart && scanEnd >= dayEnd && newEventsResult.IsComplete;
+                    cache.Put(
+                        mergedBucket,
+                        isComplete,
+                        scanEnd.AddTicks(-1),
+                        replaceDetails ? mergedEvents : newEventsResult.Events,
+                        replaceDetailEvents: replaceDetails,
+                        cancellationToken: cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                     cache.Save();
                     cachedEvents = mergedEvents.ToList();
                 }
@@ -225,12 +301,19 @@ internal static class WorkBuddyUsageReader
             return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
         }
 
-        var fullEvents = ReadEventsUncached(startLocal, endLocal);
+        var fullEventsResult = ReadEventsUncached(startLocal, endLocal, cancellationToken);
+        var fullEvents = fullEventsResult.Events;
         var fullBucket = CreateBucketFromEvents(dayStart, fullEvents);
-        var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd;
+        var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd && fullEventsResult.IsComplete;
         if (startLocal == dayStart)
         {
-            cache.Put(fullBucket, completeHistoricalDay, endLocal.AddTicks(-1), fullEvents);
+            cache.Put(
+                fullBucket,
+                completeHistoricalDay,
+                endLocal.AddTicks(-1),
+                fullEvents,
+                cancellationToken: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
         }
 
@@ -239,12 +322,19 @@ internal static class WorkBuddyUsageReader
 
     public static IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
     {
-        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal));
+        cancellationToken.ThrowIfCancellationRequested();
+        startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
+        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal, cancellationToken).Events);
     }
 
-    private static TokenUsageSummary ReadRangeUncached(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private static UsageRangeScanResult ReadRangeUncached(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken)
     {
         var summary = new TokenUsageSummary
         {
@@ -253,12 +343,15 @@ internal static class WorkBuddyUsageReader
         };
         var dailyBuckets = new Dictionary<DateOnly, TokenUsageBucket>();
 
-        foreach (var usageEvent in ReadEventsUncached(startLocal, endLocal))
+        var eventsResult = ReadEventsUncached(startLocal, endLocal, cancellationToken);
+        foreach (var usageEvent in eventsResult.Events)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             summary.Add(
                 usageEvent.Timestamp,
                 usageEvent.InputTokens,
                 usageEvent.CachedInputTokens,
+                usageEvent.CacheWriteInputTokens,
                 usageEvent.OutputTokens,
                 usageEvent.ReasoningOutputTokens,
                 usageEvent.TotalTokens);
@@ -277,6 +370,7 @@ internal static class WorkBuddyUsageReader
                 usageEvent.Timestamp,
                 usageEvent.InputTokens,
                 usageEvent.CachedInputTokens,
+                usageEvent.CacheWriteInputTokens,
                 usageEvent.OutputTokens,
                 usageEvent.ReasoningOutputTokens,
                 usageEvent.TotalTokens);
@@ -287,31 +381,55 @@ internal static class WorkBuddyUsageReader
                 .OrderBy(bucket => bucket.StartLocal)
                 .Where(bucket => bucket.Events > 0));
 
-        return summary;
+        return new UsageRangeScanResult(summary, eventsResult.IsComplete);
     }
 
-    private static List<TokenUsageEvent> ReadEventsUncached(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private static UsageEventScanResult ReadEventsUncached(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken,
+        Action<int, int>? fileProgress = null)
     {
         var entries = new Dictionary<string, WorkBuddyUsageEntry>(StringComparer.Ordinal);
+        var isComplete = true;
 
+        var files = new List<string>();
         foreach (var root in GetLogRoots())
         {
-            foreach (var file in EnumerateJsonlFiles(root, startLocal))
+            cancellationToken.ThrowIfCancellationRequested();
+            files.AddRange(EnumerateJsonlFiles(root, startLocal));
+        }
+        fileProgress?.Invoke(0, files.Count);
+        for (var index = 0; index < files.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!ReadFile(files[index], startLocal, endLocal, entries, cancellationToken))
             {
-                ReadFile(file, startLocal, endLocal, entries);
+                isComplete = false;
             }
+            fileProgress?.Invoke(index + 1, files.Count);
         }
 
-        return entries.Values
+        var events = entries.Values
             .OrderBy(item => item.Timestamp)
-            .Select(item => new TokenUsageEvent(item.Timestamp, item.Input, item.Cached, item.Output, 0, item.Total, $"workbuddy:{item.Key}"))
+            .Select(item => new TokenUsageEvent(
+                item.Timestamp,
+                item.Input,
+                item.Cached,
+                item.Output,
+                0,
+                item.Total,
+                $"workbuddy:{item.Key}",
+                item.CacheWrite))
             .ToList();
+        return new UsageEventScanResult(events, isComplete);
     }
 
     private static IEnumerable<string> GetLogRoots()
     {
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var projects = Path.Combine(profile, ".workbuddy", "projects");
+        var projects = UsageLogPaths.GetOverrideRoot(UsageSource.WorkBuddy) ??
+                       Path.Combine(profile, ".workbuddy", "projects");
         if (Directory.Exists(projects))
         {
             yield return projects;
@@ -346,11 +464,12 @@ internal static class WorkBuddyUsageReader
         }
     }
 
-    private static void ReadFile(
+    private static bool ReadFile(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
-        Dictionary<string, WorkBuddyUsageEntry> entries)
+        Dictionary<string, WorkBuddyUsageEntry> entries,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -358,6 +477,7 @@ internal static class WorkBuddyUsageReader
             using var reader = new StreamReader(stream);
             while (reader.ReadLine() is { } line)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!line.Contains("\"usage\"", StringComparison.Ordinal) ||
                     !line.Contains("\"input_tokens\"", StringComparison.Ordinal))
                 {
@@ -370,17 +490,26 @@ internal static class WorkBuddyUsageReader
                     continue;
                 }
 
-                if (!entries.TryGetValue(entry.Key, out var existing) ||
+                // A batch must retain the same identity on different days,
+                // just as separate daily scans do.
+                var dayKey = $"{entry.Timestamp:yyyy-MM-dd}|{entry.Key}";
+                if (!entries.TryGetValue(dayKey, out var existing) ||
                     entry.CompletenessScore > existing.CompletenessScore)
                 {
-                    entries[entry.Key] = entry;
+                    entries[dayKey] = entry;
                 }
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch
         {
-            return;
+            return false;
         }
+
+        return true;
     }
 
     private static WorkBuddyUsageEntry? TryReadLine(
@@ -413,11 +542,16 @@ internal static class WorkBuddyUsageReader
 
             var input = GetInt64(usage, "input_tokens");
             var cached = GetInt64(usage, "cache_read_input_tokens");
+            var cacheWrite = GetInt64(usage, "cache_write_input_tokens");
+            if (cacheWrite == 0)
+            {
+                cacheWrite = GetInt64(usage, "cache_creation_input_tokens");
+            }
             var output = GetInt64(usage, "output_tokens");
             var total = GetInt64(usage, "total_tokens");
             if (total <= 0)
             {
-                total = input + output;
+                total = TokenCountMath.AddNonNegative(input, output);
             }
 
             cached = Math.Min(Math.Max(0, cached), Math.Max(0, input));
@@ -437,7 +571,7 @@ internal static class WorkBuddyUsageReader
                         ? uuid
                         : $"{file}|{timestamp.UtcTicks}|{input}|{cached}|{output}|{total}";
 
-            return new WorkBuddyUsageEntry(key, timestamp, input, cached, output, total);
+            return new WorkBuddyUsageEntry(key, timestamp, input, cached, cacheWrite, output, total);
         }
         catch
         {
@@ -513,6 +647,7 @@ internal static class WorkBuddyUsageReader
                     item.Timestamp,
                     item.InputTokens,
                     item.CachedInputTokens,
+                    item.CacheWriteInputTokens,
                     item.OutputTokens,
                     item.ReasoningOutputTokens,
                     item.TotalTokens);
@@ -532,6 +667,7 @@ internal static class WorkBuddyUsageReader
                 item.Timestamp,
                 item.InputTokens,
                 item.CachedInputTokens,
+                item.CacheWriteInputTokens,
                 item.OutputTokens,
                 item.ReasoningOutputTokens,
                 item.TotalTokens);

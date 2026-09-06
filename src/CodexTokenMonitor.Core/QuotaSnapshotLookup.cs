@@ -24,7 +24,11 @@ internal sealed class QuotaSnapshotLookup
                     .First());
     }
 
-    public CodexQuotaSnapshot? Select(SelectedRange range, TokenUsageBucket bucket, bool eventBreakdown)
+    public CodexQuotaSnapshot? Select(
+        SelectedRange range,
+        TokenUsageBucket bucket,
+        bool eventBreakdown,
+        TimeSpan? bucketInterval = null)
     {
         if (ordered.Length == 0)
         {
@@ -39,14 +43,20 @@ internal sealed class QuotaSnapshotLookup
             return SelectForAnchor(bucket.StartLocal, tolerance);
         }
 
-        var bucketEnd = bucket.StartLocal.AddDays(1);
+        var interval = bucketInterval is { } value && value > TimeSpan.Zero
+            ? value
+            : TimeSpan.FromDays(1);
+        var bucketEnd = bucket.StartLocal.Add(interval);
         var inBucketIndex = LowerBound(ordered, bucketEnd) - 1;
         if (inBucketIndex >= 0 && ordered[inBucketIndex].SnapshotLocal >= bucket.StartLocal)
         {
             return ordered[inBucketIndex];
         }
 
-        var beforeIndex = UpperBound(ordered, bucketEnd) - 1;
+        // A snapshot exactly at bucketEnd belongs to the next bucket. Using
+        // UpperBound here would incorrectly pull that boundary row backward
+        // into the current bucket when the current bucket has no snapshot.
+        var beforeIndex = LowerBound(ordered, bucketEnd) - 1;
         if (beforeIndex >= 0)
         {
             return ordered[beforeIndex];
