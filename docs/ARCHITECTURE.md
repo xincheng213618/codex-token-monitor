@@ -1,4 +1,4 @@
-﻿# Codex Token Monitor 架构说明
+# Codex Token Monitor 架构说明
 
 本文面向想了解或修改本项目的开发者。文档中的类名均为源码中的实际命名，便于对照阅读。
 
@@ -18,19 +18,20 @@ CodexTokenMonitor.slnx
 │  │   ├─ 设置存储：PriceSettings、SubscriptionPlans、SubscriptionPlanImporter、
 │  │   │            ResetOpportunities
 │  │   └─ 数据交换：CodexDataTransferService、CodexDataSharingServer/Client
-│  ├─ CodexTokenMonitor.Wpf/        # WPF 界面（net8.0-windows10.0.19041.0）
-│  │   ├─ MainWindow、QuotaEstimateWindow、QuotaCostCurveWindow、CacheDetailsWindow
-│  │   ├─ WpfTokenTimelineControl、QuotaCostCurveControl、QuotaCostCurveCalculator
-│  │   ├─ BackgroundCacheWarmer、LastDisplayStore、WeekWindowPicker
-│  │   └─ 价格设置窗口（PriceSettingsWindow、PricePresetEditorWindow）
-│  └─ CodexTokenMonitor.LegacyDialogs/   # 被 WPF 编译包含的 WinForms 对话框
-│       └─ ResetOpportunityForm、SubscriptionPlanForm
+│  └─ CodexTokenMonitor.Wpf/        # 原生 WPF 界面与设置窗口（net8.0-windows10.0.19041.0）
+│      ├─ MainWindow、MainWindow.DataTransfer、MainWindow.DataSharing
+│      ├─ QuotaEstimateWindow、QuotaCostCurveWindow、CacheDetailsWindow
+│      ├─ WpfTokenTimelineControl、QuotaCostCurveControl、QuotaCostCurveCalculator
+│      ├─ BackgroundCacheWarmer、LastDisplayStore、WeekWindowPicker
+│      ├─ PriceSettingsWindow、PricePresetEditorWindow
+│      ├─ ResetOpportunityWindow、SubscriptionPlanWindow
+│      └─ Themes/MonitorTheme.xaml、CostCardControl
 └─ tests/CodexTokenMonitor.Core.Tests/   # xUnit 核心回归测试
 ```
 
-依赖关系：`Wpf → Core`，`Wpf` 通过 `Compile Include` 把 `LegacyDialogs` 的两个窗体直接编入。
+依赖关系：`Wpf → Core`。主界面和设置窗口均使用 WPF，已移除旧 WinForms 窗体的直接编译引用及 `UseWindowsForms`。
 
-局域网共享使用 `Microsoft.AspNetCore.App` 中的 Kestrel，显式监听 IPv4 端口（默认 36666），由主窗口持有服务生命周期；`DataSharingWindow` 只负责手动启停和客户端操作。无自动同步、无启动时监听。所有请求使用 `X-Codex-Sharing-Key` 请求头鉴权，不启用 CORS，不接受客户端给定的文件路径。`GET /api/health` 返回协议版本与设备名，`GET /api/week` 导出最近 8 个北京时间日期的 v2 JSON 数据包，`POST /api/week` 接收原始 JSON 数据包并返回新增/已有事件与快照数。下载包含服务器已合并的其他设备数据。
+局域网共享使用 `Microsoft.AspNetCore.App` 中的 Kestrel，显式监听 IPv4 端口（默认 36666），由主窗口持有服务生命周期。启动时按保存的 `AutoStart` 设置开启监听，默认开启；`DataSharingWindow` 提供该选项、手动启停和客户端同步操作。程序不会定时主动发起跨电脑同步。所有请求使用 `X-Codex-Sharing-Key` 请求头鉴权，不启用 CORS，不接受客户端给定的文件路径。`GET /api/health` 返回协议版本与设备名，`GET /api/week` 导出最近 8 个北京时间日期的 v2 JSON 数据包，`POST /api/week` 接收原始 JSON 数据包并返回新增/已有事件与快照数。下载包含服务器已合并的其他设备数据。
 
 网络读写使用独立临时文件和流式传输；包上限 256 MB，每次传输限时 3 分钟，单个服务器同时只处理一个数据包，多余传输返回 409。`MainWindow.DataSharing.cs` 在已有 `usageQueryGate` 内调用导出/导入，导入先验证整包属于最近 8 个北京时间日期，再通过现有稳定键合并。网络成功返回与 UI 刷新分离，UI 刷新通过 Dispatcher 排队，避免缓存锁与主线程相互等待。共享配置位于 `%LOCALAPPDATA%\CodexTokenMonitor\data-sharing-v1.json`；自包含发布携带网络运行时，Lite 发布要求另装 ASP.NET Core 8 Runtime。
 
@@ -134,17 +135,17 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 | 上次显示 | `wpf-last-display-v2.json` | `LastDisplayStore` 防抖落盘，启动时恢复 |
 
 - 套餐导入：`SubscriptionPlanImporter` 从本地 Codex sqlite 数据库尝试识别套餐记录。
-- 重置卡同步：`ResetOpportunityStore.SyncFromCodexAsync` 读取 `~/.codex/auth.json` 的 access_token，GET `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`，把返回的 credits 写入本地；只有用户主动点击同步才发起该请求。
+- 重置卡同步：`ResetOpportunityStore.SyncFromCodexAsync` 读取 `~/.codex/auth.json` 的 access_token，GET `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`，把返回的 credits 写入本地。主窗口首轮用量刷新后会静默同步，用户也可在重置设置中手动同步；成功同步立即持久化，取消设置窗口不会撤销已同步结果。
 
 ## 8. UI 结构（MainWindow）
 
 ```text
-├─ 顶部工具条：来源 Tab（Codex / Claude Code / ZCode / WorkBuddy / DSH）｜缓存详情｜数据管理▾｜重置设置｜套餐设置｜价格设置
+├─ 应用标题与设置操作；下一行是来源 Tab（Codex / Claude Code / ZCode / WorkBuddy / DSH）与缓存详情
 ├─ 额度面板（仅 Codex）：5h 额度 / 7d 额度 / 当前套餐 / 重置过期 / 重置评估 + [估算]
 ├─ 范围选择条：模式（天/周/月/周期）｜<｜日期 或 周期下拉｜选7天｜>｜今天｜从当前算｜刷新日
 ├─ 汇总卡：TOTAL TOKENS + 按价格预设横向排列的费用卡
-├─ 指标卡：Input / Cached / Uncached / Output / Reasoning / Cache Ratio / Events / Coding Time
-└─ 明细区：可拖高的时间轴（ScottPlot） + 明细表（DataGrid，冻结首列、行/列虚拟化）
+├─ 单行九项指标：Input / Cached / Cache Write / Uncached / Output / Reasoning / Cache Ratio / Events / Coding Time
+└─ 明细区：可拖高的时间轴（ScottPlot） + 明细表（DataGrid，冻结前两列、行/列虚拟化）
 ```
 
 - 每来源模块（`UsageSourceModule` 子类）保存自己的模式、选中日期、自定义起点和显示缓存；切换 Tab 时恢复各自状态。
@@ -155,7 +156,9 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 - 当前天/周/月范围会保存“跟随当前时间”标记；跨过午夜后自动滚动到新的当天/周/月，用户主动选择的历史范围不会被自动改写。
 - 时间轴“总 Token/缓存输入”柱状图 + “累计总 Token”右轴折线，`TimelineRow` 高度可拖拽调节。
 - 历史查询发现每日汇总与事件明细数量不一致时，所有来源读取器（Codex / Claude / ZCode / WorkBuddy / DSH）都会从当天起补扫并合并已有明细；本次返回结果与回填后的缓存同步重建，避免首轮刷新仍显示旧汇总。缓存层统一将时间边界归一到北京时间，避免不同 `DateTimeOffset` 偏移导致自然日错配。
-- 当前明细 CSV 由 WPF 层组装展示分桶、费用和额度列，Core 层 `CsvWriter` 负责统一处理逗号、引号和换行转义。
+- `Themes/MonitorTheme.xaml` 统一窗口底色、文字、强调色、按钮、输入框和表格样式；重置机会和套餐设置已使用原生 WPF 窗口并绑定主窗口 owner。
+- `CostCardControl.xaml/.xaml.cs` 封装费用卡片展示，调用方仍负责费用计算和格式化。
+- `MainWindow.DataTransfer.cs` 收纳导入导出、拖放和当前明细 CSV 构建；它是主窗口的 partial，仍共享其状态，属于分文件整理。CSV 由 WPF 层组装展示分桶、费用和额度列，Core 层 `CsvWriter` 负责统一处理逗号、引号和换行转义。
 
 ## 9. 线程模型
 

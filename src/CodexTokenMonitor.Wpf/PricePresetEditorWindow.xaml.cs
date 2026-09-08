@@ -35,6 +35,7 @@ internal partial class PricePresetEditorWindow : Window
             : "";
         OutputBox.Text = FormatDecimal(preset.Output);
         SourceBox.Text = preset.Source;
+        ScheduleText.Text = preset.ScheduleLabel;
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)

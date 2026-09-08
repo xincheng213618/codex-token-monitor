@@ -1,14 +1,11 @@
 using System.Windows;
-using WpfBrushes = System.Windows.Media.Brushes;
 using WpfButton = System.Windows.Controls.Button;
 using WpfCalendar = System.Windows.Controls.Calendar;
 using WpfCalendarSelectionMode = System.Windows.Controls.CalendarSelectionMode;
-using WpfColor = System.Windows.Media.Color;
 using WpfGrid = System.Windows.Controls.Grid;
 using WpfHorizontalAlignment = System.Windows.HorizontalAlignment;
 using WpfOrientation = System.Windows.Controls.Orientation;
 using WpfRowDefinition = System.Windows.Controls.RowDefinition;
-using WpfSolidColorBrush = System.Windows.Media.SolidColorBrush;
 using WpfStackPanel = System.Windows.Controls.StackPanel;
 using WpfVerticalAlignment = System.Windows.VerticalAlignment;
 
@@ -29,8 +26,10 @@ internal static class WeekWindowPicker
             ShowInTaskbar = false,
             Width = 520,
             Height = 320,
-            Background = new WpfSolidColorBrush(WpfColor.FromRgb(246, 248, 251))
+            FontFamily = owner.FontFamily
         };
+        dialog.SetResourceReference(Window.BackgroundProperty, "CanvasBrush");
+        dialog.SetResourceReference(Window.ForegroundProperty, "TextBrush");
 
         var root = new WpfGrid { Margin = new Thickness(14) };
         root.RowDefinitions.Add(new WpfRowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -80,11 +79,9 @@ internal static class WeekWindowPicker
             Content = "确定",
             Width = 84,
             Height = 32,
-            Margin = new Thickness(0, 0, 8, 0),
-            Background = new WpfSolidColorBrush(WpfColor.FromRgb(21, 128, 106)),
-            Foreground = WpfBrushes.White,
-            BorderThickness = new Thickness(0)
+            Margin = new Thickness(0, 0, 8, 0)
         };
+        okButton.SetResourceReference(FrameworkElement.StyleProperty, "PrimaryButton");
         okButton.Click += (_, _) =>
         {
             dialog.DialogResult = true;
@@ -94,11 +91,9 @@ internal static class WeekWindowPicker
         {
             Content = "取消",
             Width = 84,
-            Height = 32,
-            Background = new WpfSolidColorBrush(WpfColor.FromRgb(229, 234, 242)),
-            Foreground = new WpfSolidColorBrush(WpfColor.FromRgb(55, 65, 81)),
-            BorderThickness = new Thickness(0)
+            Height = 32
         };
+        cancelButton.SetResourceReference(FrameworkElement.StyleProperty, "ToolButton");
         cancelButton.Click += (_, _) =>
         {
             dialog.DialogResult = false;

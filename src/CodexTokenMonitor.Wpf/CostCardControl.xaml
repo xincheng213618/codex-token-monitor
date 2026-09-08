@@ -1,0 +1,13 @@
+<UserControl x:Class="CodexTokenMonitor.CostCardControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:ClassModifier="internal" MinHeight="96">
+    <Border x:Name="CardBorder" Background="{StaticResource SubtleBrush}" CornerRadius="7" Padding="14,10">
+        <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <TextBlock x:Name="ProviderText" Foreground="{StaticResource MutedBrush}" FontSize="11" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="ModelText" Grid.Row="1" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="0,3,0,5" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="AmountText" Grid.Row="2" Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI" FontSize="26" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+        </Grid>
+    </Border>
+</UserControl>

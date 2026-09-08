@@ -31,7 +31,7 @@
   - 会尝试从本地 Codex sqlite 数据库自动识别套餐记录；识别不到时保留手动设置。
 - 重置机会设置：
   - 可手动记录 Codex rate limit reset bank 的获得时间、过期时间、是否已用。
-  - 可一键从 OpenAI 账户接口同步重置卡（使用本机 `~/.codex/auth.json` 的 access_token，仅在你点击同步时发起）。
+  - 可一键从 OpenAI 账户接口同步重置卡（使用本机 `~/.codex/auth.json` 的 access_token）；程序启动完成首轮刷新后也会静默同步，同步成功立即保存。
   - 当前默认示例包含 `2026-06-16`、`2026-06-24`、`2026-06-27` 三次机会，过期默认按获得时间 + 30 天。
 - 缓存详情窗口：查看后台缓存预热进度（按来源分类的完成天数、进度条、最近活动日志），可在暂停后手动恢复。
 
@@ -40,7 +40,7 @@
 - Windows 10/11
 - .NET SDK 8.0+
 
-项目主界面使用 WPF，目标框架是 `net8.0-windows10.0.19041.0`。少量设置窗口仍复用 WinForms 对话框。
+项目主界面和设置窗口均使用 WPF，目标框架是 `net8.0-windows10.0.19041.0`，通过共享主题统一控件与配色。
 
 ## 构建
 
@@ -119,6 +119,8 @@ outputs/一键生成CodexTokenMonitor.cmd
 
 同一个账号在两台电脑使用时，两边先启动新版，各自从 Codex 原日志重新统计。在一台开启“数据管理 → 局域网共享”，另一台填写地址和密钥。第一次等两边缓存完成后，手动点“同步全部历史”：按双方已缓存日期分批双向合并，显示进度，最后刷新最近用量。日常点“双向同步最近 8 天”即可覆盖跨自然周的当前 7d 窗口。长期离线或补录旧数据后，可再次同步全部历史；中断后重新同步也不会重复计数。全量同步读取统计缓存，不重新遍历原始会话文件。
 
+共享服务默认随程序启动，监听端口默认 36666，可在共享窗口取消“启动程序时自动开启共享服务”；跨电脑同步由用户操作发起，不会定时自动执行。
+
 Codex 使用新的 `token-cache-v4.sqlite3`；旧统计缓存不迁移，原始会话日志不删除。模型 ID 随事件传输，费用在本机按价格库计算，价格设置不会随用量同步。
 
 
@@ -161,8 +163,7 @@ cost = uncached_input_millions * input_price
 
 ```text
 src/CodexTokenMonitor.Core/CodexTokenMonitor.Core.csproj   日志、缓存、统计与额度计算（net8.0）
-src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj    WPF 界面与本地对话框（net8.0-windows）
-src/CodexTokenMonitor.LegacyDialogs/*.cs                   WPF 暂时复用的 WinForms 设置对话框
+src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj    原生 WPF 界面与设置窗口（net8.0-windows）
 tests/CodexTokenMonitor.Core.Tests/                        核心回归测试
 ```
 
@@ -177,6 +178,8 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 关键文件：
 
 - `src/CodexTokenMonitor.Wpf/MainWindow.xaml(.cs)`：WPF 主界面（来源 Tab、额度面板、范围选择、指标卡、时间轴、明细表、数据管理）。
+- `src/CodexTokenMonitor.Wpf/MainWindow.DataTransfer.cs`：主窗口的数据导入导出、CSV 和拖放处理（partial 分文件整理）；`MainWindow.DataSharing.cs`：共享服务生命周期与数据交换入口。
+- `src/CodexTokenMonitor.Wpf/Themes/MonitorTheme.xaml`：共享颜色与控件样式；`CostCardControl.xaml(.cs)`：费用卡片展示组件。
 - `src/CodexTokenMonitor.Wpf/QuotaEstimateWindow.xaml(.cs)`：额度估算窗口（当前 5h/7d、历史周期表、手动估算、内嵌额度曲线）。
 - `src/CodexTokenMonitor.Wpf/QuotaCostCurveWindow.xaml(.cs)` + `QuotaCostCurveCalculator.cs` + `QuotaCostCurveControl.cs`：额度费用曲线窗口。
 - `src/CodexTokenMonitor.Wpf/WpfTokenTimelineControl.cs`：ScottPlot token 时间轴控件。
@@ -194,13 +197,15 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 - `src/CodexTokenMonitor.Core/PriceSettings.cs`：价格档案、分组默认值与价格库。
 - `src/CodexTokenMonitor.Core/SubscriptionPlan*.cs`：套餐/实际花费设置和导入。
 - `src/CodexTokenMonitor.Core/ResetOpportunities.cs`：rate limit reset bank 数据、汇总与接口同步。
-- `src/CodexTokenMonitor.LegacyDialogs/*.cs`：WPF 暂时复用的设置对话框。
+- `src/CodexTokenMonitor.Wpf/ResetOpportunityWindow.xaml(.cs)` / `SubscriptionPlanWindow.xaml(.cs)`：原生 WPF 重置机会与套餐设置，支持表格编辑、验证、导入或同步。
 
 ## 隐私
 
-这个工具的目标是本地观测，不会主动联网上传日志。公开仓库不包含个人日志、缓存数据库或发布产物。
+这个工具主要在本地读取和统计日志；跨电脑共享传输统计事件与额度快照，不传输原始会话日志正文。公开仓库不包含个人日志、缓存数据库或发布产物。
 
-唯一的联网行为是“重置设置 → 同步重置卡”时，使用本机 `~/.codex/auth.json` 中的 access_token 向 OpenAI `chatgpt.com` 后端接口查询 rate-limit reset credits，并仅把结果写入本地缓存；不点击同步就不会发起任何网络请求。额度读取通过本机 `codex app-server` 进程完成，属于本地回环通信。
+程序在首轮用量刷新后及手动同步重置卡时，使用本机 `~/.codex/auth.json` 中的 access_token 向 OpenAI `chatgpt.com` 后端接口查询 rate-limit reset credits，并把结果保存在本机。额度读取通过本机 `codex app-server --stdio` 进程完成；该进程负责访问账户服务。
+
+局域网共享按保存的自动启动选项监听端口，默认开启。其他设备必须提供共享密钥才能读取或合并统计数据；本机主动同步需要在共享窗口发起。
 
 ## 项目演进记录
 

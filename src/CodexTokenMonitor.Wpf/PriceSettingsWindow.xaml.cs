@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
@@ -60,10 +61,32 @@ internal partial class PriceSettingsWindow : Window
             return;
         }
 
+        if (activeView is not null)
+        {
+            activeView.CollectionChanged -= ActiveView_CollectionChanged;
+        }
+
         activeView = CollectionViewSource.GetDefaultView(rows);
         activeView.Filter = MatchesSearch;
+        activeView.CollectionChanged += ActiveView_CollectionChanged;
         PriceGrid.ItemsSource = activeView;
         UpdateCount();
+    }
+
+    private void ActiveView_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        // Column sorting preserves SelectedItem and does not raise SelectionChanged.
+        UpdateSelectionActions();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        if (activeView is not null)
+        {
+            activeView.CollectionChanged -= ActiveView_CollectionChanged;
+        }
+
+        base.OnClosed(e);
     }
 
     private bool MatchesSearch(object item)
@@ -95,9 +118,44 @@ internal partial class PriceSettingsWindow : Window
         }
 
         var visible = activeView.Cast<object>().Count();
-        CountText.Text = string.IsNullOrWhiteSpace(SearchBox.Text)
-            ? $"共 {rows.Count} 项；前 3 项优先展示"
-            : $"找到 {visible} / {rows.Count} 项";
+        var hasSearch = !string.IsNullOrWhiteSpace(SearchBox.Text);
+        CountText.Text = hasSearch ? $"找到 {visible} / {rows.Count} 条价格" : $"共 {rows.Count} 条价格";
+        ClearSearchButton.Visibility = hasSearch ? Visibility.Visible : Visibility.Collapsed;
+        EmptyStatePanel.Visibility = visible == 0 ? Visibility.Visible : Visibility.Collapsed;
+        EmptyStateTitle.Text = hasSearch ? "没有找到匹配的价格" : "这个来源还没有价格";
+        EmptyStateDescription.Text = hasSearch
+            ? "换个关键词，或清除搜索查看当前来源的全部价格。"
+            : "点击上方“新增价格”，添加第一个模型的计价信息。";
+        ClearEmptyFilterButton.Visibility = hasSearch ? Visibility.Visible : Visibility.Collapsed;
+        UpdateSelectionActions();
+    }
+
+    private void ClearSearchButton_Click(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Clear();
+        SearchBox.Focus();
+    }
+
+    private void PriceGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateSelectionActions();
+    }
+
+    private void UpdateSelectionActions()
+    {
+        if (EditPriceButton is null || activeView is null)
+        {
+            return;
+        }
+
+        var selected = PriceGrid.SelectedItem as PricePresetRow;
+        var visibleRows = activeView.Cast<PricePresetRow>().ToList();
+        var index = selected is null ? -1 : visibleRows.IndexOf(selected);
+        EditPriceButton.IsEnabled = index >= 0;
+        DeletePriceButton.IsEnabled = index >= 0;
+        PinPriceButton.IsEnabled = index >= 0 && selected!.Rank > 1;
+        MovePriceUpButton.IsEnabled = index > 0;
+        MovePriceDownButton.IsEnabled = index >= 0 && index < visibleRows.Count - 1;
     }
 
     private void PinButton_Click(object sender, RoutedEventArgs e)

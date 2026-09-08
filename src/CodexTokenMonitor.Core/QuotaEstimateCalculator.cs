@@ -3,6 +3,7 @@ namespace CodexTokenMonitor;
 internal static class QuotaEstimateCalculator
 {
     private const decimal MinimumStableQuotaDeltaPercent = 3m;
+    private static readonly TimeSpan WeeklyDurationDisplayTolerance = TimeSpan.FromMinutes(10);
 
     public static IReadOnlyList<QuotaCurrentWindowRow> BuildCurrentRows(
         CodexQuotaEstimate currentQuota,
@@ -134,13 +135,19 @@ internal static class QuotaEstimateCalculator
         };
     }
 
-    private static string FormatCycleDuration(CodexQuotaCycle period, DateTimeOffset now)
+    internal static string FormatCycleDuration(CodexQuotaCycle period, DateTimeOffset now)
     {
         var effectiveEnd = period.IsCurrent && now < period.PeriodEnd ? now : period.PeriodEnd;
         var duration = effectiveEnd - period.PeriodStart;
         if (duration < TimeSpan.Zero)
         {
             duration = TimeSpan.Zero;
+        }
+
+        if (!period.IsCurrent &&
+            (duration - TimeSpan.FromDays(7)).Duration() <= WeeklyDurationDisplayTolerance)
+        {
+            return "7天";
         }
 
         var prefix = period.IsCurrent ? "进行中 " : "";

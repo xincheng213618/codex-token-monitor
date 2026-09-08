@@ -97,6 +97,20 @@ public sealed class CodexQuotaCycleTests
         Assert.True(periods[1].IsCurrent);
     }
 
+    [Fact]
+    public void FormatCycleDurationRoundsResetJitterToSevenDays()
+    {
+        var period = new CodexQuotaCycle(
+            Start,
+            Start.AddDays(7).AddSeconds(-4),
+            Start.AddDays(7),
+            1,
+            99m,
+            false);
+
+        Assert.Equal("7天", QuotaEstimateCalculator.FormatCycleDuration(period, period.PeriodEnd));
+    }
+
     private static CodexQuotaSnapshot Snapshot(DateTimeOffset at, decimal usedPercent, DateTimeOffset reset)
     {
         return new CodexQuotaSnapshot(at, "codex", null, null, null, usedPercent, reset);

@@ -14,18 +14,41 @@ internal static class QuotaCycleAnalysisCalculator
         CodexQuotaCycle period,
         CancellationToken cancellationToken = default)
     {
+        return Build(period, currentWeek: null, cancellationToken);
+    }
+
+    public static QuotaCycleAnalysisResult Build(
+        CodexQuotaCycle period,
+        CodexQuotaWindowEstimate? currentWeek,
+        CancellationToken cancellationToken = default)
+    {
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        var end = period.IsCurrent && now < period.PeriodEnd ? now : period.PeriodEnd;
-        if (end <= period.PeriodStart)
+        var useCurrentWindow = period.IsCurrent && currentWeek is not null &&
+                               CodexQuotaCycleReader.IsSameQuotaReset(currentWeek.ResetAtLocal, period.ResetAt);
+        var start = useCurrentWindow ? currentWeek!.WindowStartLocal : period.PeriodStart;
+        var currentWindowEnd = useCurrentWindow ? currentWeek!.WindowEndLocal : now;
+        var end = period.IsCurrent && currentWindowEnd < period.PeriodEnd
+            ? currentWindowEnd
+            : period.PeriodEnd;
+        if (end <= start)
         {
             return QuotaCycleAnalysisResult.Empty(period, "周期时间范围无效");
         }
 
-        var usageRows = CodexUsageReader.ReadCachedDetailRows(
-                period.PeriodStart,
-                end,
-                cancellationToken)
-            .Where(item => item.StartLocal >= period.PeriodStart && item.StartLocal < end)
+        var usageRows = (period.IsCurrent
+                ? UsageBreakdownBuilder.ReadDetailRowsForRange(
+                    start,
+                    end,
+                    (dayStart, dayEnd) => CodexUsageReader.ReadDetailRows(
+                        dayStart,
+                        dayEnd,
+                        includeLiveToday: true,
+                        cancellationToken))
+                : CodexUsageReader.ReadCachedDetailRows(
+                    start,
+                    end,
+                    cancellationToken))
+            .Where(item => item.StartLocal >= start && item.StartLocal < end)
             .OrderBy(item => item.StartLocal)
             .ToList();
         if (usageRows.Count == 0)
@@ -43,14 +66,51 @@ internal static class QuotaCycleAnalysisCalculator
             .GroupBy(item => item.SnapshotLocal)
             .ToDictionary(group => group.Key, group => group.Last());
 
-        var samples = usageRows
-            .Where(row => timeline.ContainsKey(row.StartLocal))
-            .Select(row => new QuotaCycleAnalysisSample(
-                row.StartLocal,
-                timeline[row.StartLocal].WeekUsedPercent!.Value,
-                row))
-            .ToList();
-        return BuildFromSamples(period, samples, DefaultBandSizePercent, cancellationToken);
+        var samples = BuildSamples(start, usageRows, timeline);
+        return BuildFromSamples(period, samples, DefaultBandSizePercent, cancellationToken) with
+        {
+            // Forecast throughput uses original event times, not the accumulated
+            // usage assigned to a later quota anchor by the cost analysis.
+            UsageSamples = usageRows.Select(QuotaCycleUsageSample.From).ToArray()
+        };
+    }
+
+    private static IReadOnlyList<QuotaCycleAnalysisSample> BuildSamples(
+        DateTimeOffset periodStart,
+        IReadOnlyList<TokenUsageBucket> usageRows,
+        IReadOnlyDictionary<DateTimeOffset, CodexQuotaSnapshot> timeline)
+    {
+        var samples = new List<QuotaCycleAnalysisSample>
+        {
+            // A quota cycle starts at 0% used. This anchor also makes the first
+            // model record part of the same range counted by the outer 7d card.
+            new(periodStart, 0m, new TokenUsageBucket { StartLocal = periodStart })
+        };
+        var pending = new TokenUsageBucket { StartLocal = periodStart };
+        var lastUsedPercent = 0m;
+
+        foreach (var row in usageRows)
+        {
+            pending.MergeFrom(row);
+            if (!timeline.TryGetValue(row.StartLocal, out var quota) || quota.WeekUsedPercent is null)
+            {
+                continue;
+            }
+
+            lastUsedPercent = quota.WeekUsedPercent.Value;
+            samples.Add(new QuotaCycleAnalysisSample(row.StartLocal, lastUsedPercent, pending));
+            pending = new TokenUsageBucket { StartLocal = row.StartLocal };
+        }
+
+        if (pending.Events > 0 || pending.TotalTokens > 0)
+        {
+            samples.Add(new QuotaCycleAnalysisSample(
+                usageRows[^1].StartLocal,
+                lastUsedPercent,
+                pending));
+        }
+
+        return samples;
     }
 
     internal static QuotaCycleAnalysisResult BuildFromSamples(
@@ -69,16 +129,18 @@ internal static class QuotaCycleAnalysisCalculator
             .Where(item => item.Usage is not null)
             .OrderBy(item => item.TimestampLocal)
             .ToList();
+        var timeline = BuildTimeline(samples, DateTimeOffset.UtcNow, cancellationToken);
+        var usageSamples = samples.Select(item => QuotaCycleUsageSample.From(item.Usage, item.TimestampLocal)).ToArray();
         if (samples.Count < 2)
         {
-            return QuotaCycleAnalysisResult.Empty(period, "额度锚点不足，至少需要两个可对齐的时间点");
+            return QuotaCycleAnalysisResult.Empty(period, "额度锚点不足，至少需要两个可对齐的时间点") with { Timeline = timeline, UsageSamples = usageSamples };
         }
 
         var catalog = priceCatalog?.ToList();
         var intervals = BuildIntervals(samples, cancellationToken, catalog);
         if (intervals.Count == 0)
         {
-            return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可归因的额度下降区间");
+            return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可归因的额度下降区间") with { Timeline = timeline, UsageSamples = usageSamples };
         }
 
         var builders = new SortedDictionary<int, BandBuilder>();
@@ -95,7 +157,7 @@ internal static class QuotaCycleAnalysisCalculator
             .ToList();
         if (bands.Count == 0)
         {
-            return QuotaCycleAnalysisResult.Empty(period, "额度变化过小，暂时无法形成稳定分段");
+            return QuotaCycleAnalysisResult.Empty(period, "额度变化过小，暂时无法形成稳定分段") with { Timeline = timeline, UsageSamples = usageSamples };
         }
 
         var totalDrop = bands.Sum(item => item.QuotaDropPercent);
@@ -146,7 +208,59 @@ internal static class QuotaCycleAnalysisCalculator
             max,
             volatilityPercent,
             dominant,
-            "");
+            "")
+        {
+            Timeline = timeline,
+            UsageSamples = usageSamples
+        };
+    }
+
+    /// <summary>
+    /// Projects time-ordered aligned samples without changing the cost intervals.
+    /// The caller's anchor is authoritative: the live window can start before
+    /// the detected period boundary. No start/end points are manufactured here.
+    /// </summary>
+    internal static IReadOnlyList<QuotaCycleTimelinePoint> BuildTimeline(
+        IReadOnlyList<QuotaCycleAnalysisSample> orderedSamples,
+        DateTimeOffset asOfLocal,
+        CancellationToken cancellationToken = default)
+    {
+        var timeline = new List<QuotaCycleTimelinePoint>(orderedSamples.Count);
+        decimal? acceptedUsed = null;
+        foreach (var sample in orderedSamples)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (sample.TimestampLocal > asOfLocal)
+            {
+                break;
+            }
+            if (sample.Usage is null)
+            {
+                continue;
+            }
+
+            // Use exactly the same clamp and movement threshold as BuildIntervals.
+            // Regressions and unchanged quota retain their real timestamps as a
+            // plateau, including trailing samples that have no completed band.
+            var currentUsed = ClampPercent(sample.UsedPercent);
+            if (acceptedUsed is null || currentUsed > acceptedUsed.Value + MinimumQuotaMovement)
+            {
+                acceptedUsed = currentUsed;
+            }
+
+            var point = new QuotaCycleTimelinePoint(sample.TimestampLocal, acceptedUsed.Value);
+            if (timeline.Count > 0 && timeline[^1].TimestampLocal == sample.TimestampLocal)
+            {
+                // Multiple observations at one instant have no elapsed duration.
+                // Keep the last accepted monotonic value for that instant.
+                timeline[^1] = point;
+            }
+            else
+            {
+                timeline.Add(point);
+            }
+        }
+        return timeline.ToArray();
     }
 
     private static List<RawInterval> BuildIntervals(
@@ -187,6 +301,22 @@ internal static class QuotaCycleAnalysisCalculator
             previousTime = sample.TimestampLocal;
             previousUsed = currentUsed;
             pending = new TokenUsageBucket { StartLocal = sample.TimestampLocal };
+        }
+
+        // The current quota percentage can stay unchanged for hours. Keep that
+        // still-open usage in the latest observed quota interval so the current
+        // cycle total uses the same cutoff as the outer 7d estimate.
+        if (result.Count > 0 && (pending.Events > 0 || pending.TotalTokens > 0))
+        {
+            var trailingEstimate = CodexModelCost.Estimate(pending, priceCatalog);
+            var last = result[^1];
+            result[^1] = last with
+            {
+                EndLocal = samples[^1].TimestampLocal,
+                Tokens = TokenCountMath.AddNonNegative(last.Tokens, pending.TotalTokens),
+                EquivalentCost = last.EquivalentCost + trailingEstimate.QuotaEquivalentCost,
+                Models = last.Models.Concat(BuildModelSlices(pending, priceCatalog)).ToList()
+            };
         }
 
         return result;
@@ -434,6 +564,10 @@ internal sealed record QuotaCycleAnalysisSample(
     decimal UsedPercent,
     TokenUsageBucket Usage);
 
+internal sealed record QuotaCycleTimelinePoint(
+    DateTimeOffset TimestampLocal,
+    decimal UsedPercent);
+
 internal sealed record QuotaCycleAnalysisResult(
     CodexQuotaCycle Period,
     IReadOnlyList<QuotaCycleAnalysisBand> Bands,
@@ -449,6 +583,9 @@ internal sealed record QuotaCycleAnalysisResult(
     string DominantModel,
     string EmptyReason)
 {
+    public IReadOnlyList<QuotaCycleTimelinePoint> Timeline { get; init; } = Array.Empty<QuotaCycleTimelinePoint>();
+    public IReadOnlyList<QuotaCycleUsageSample> UsageSamples { get; init; } = Array.Empty<QuotaCycleUsageSample>();
+
     public bool HasData => Bands.Count > 0;
 
     public static QuotaCycleAnalysisResult Empty(CodexQuotaCycle period, string reason) => new(

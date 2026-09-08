@@ -24,6 +24,10 @@ public partial class QuotaEstimateWindow : Window
         this.usageReadGate = usageReadGate;
         InitializeComponent();
         EmbeddedCurveHost.Content = embeddedCurveControl;
+        FiveHourValue.Text = currentQuota.FiveHour is { } fiveHour ? $"{Math.Max(0m, 100m - fiveHour.UsedPercent):N0}%" : "未返回";
+        WeekValue.Text = currentQuota.Week is { } week ? $"{Math.Max(0m, 100m - week.UsedPercent):N0}%" : "未返回";
+        FiveHourDetail.Text = currentQuota.FiveHour is null ? "当前未返回 5h 限制；有额度数据后显示费用折算。" : "正在计算用量与费用…";
+        WeekDetail.Text = currentQuota.Week is null ? "当前没有 7d 额度数据。" : "正在计算用量与费用…";
         ApplyResetOpportunityPanel();
 
         Loaded += async (_, _) => await LoadRowsAsync();
@@ -48,6 +52,10 @@ public partial class QuotaEstimateWindow : Window
         {
             StatusText.Text = "正在加载估算...";
             WeeklyGrid.ItemsSource = null;
+            HistoryCountText.Text = "";
+            HistoryEmptyText.Text = "正在读取历史周期…";
+            LoadingProgress.Visibility = Visibility.Visible;
+            ShowCurveState("正在整理额度曲线", "将结合已保存的额度快照与用量记录绘制。");
 
             var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
             estimateTask = Task.Run(
@@ -69,6 +77,8 @@ public partial class QuotaEstimateWindow : Window
 
             ApplyCurrentRows(result.CurrentRows);
             WeeklyGrid.ItemsSource = result.WeeklyRows;
+            HistoryCountText.Text = $"{result.WeeklyRows.Count:N0} 个周期";
+            HistoryEmptyText.Text = "暂无历史周期，积累额度快照后可在这里回看。";
             if (result.WeeklyRows.Count > 0)
             {
                 WeeklyGrid.SelectedIndex = 0;
@@ -77,17 +87,7 @@ public partial class QuotaEstimateWindow : Window
 
             var curveResult = await curveTask;
             cancellationToken.ThrowIfCancellationRequested();
-            loadedCurveResult = curveResult;
-            var plans = curveResult.Curves
-                .Select(item => item.PlanName)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(item => string.Equals(item, curveResult.SelectedPlan, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                .ThenBy(item => item)
-                .ToList();
-            CurvePlanComboBox.ItemsSource = plans;
-            CurvePlanComboBox.SelectedItem = plans.FirstOrDefault(item =>
-                string.Equals(item, curveResult.SelectedPlan, StringComparison.OrdinalIgnoreCase));
-            ApplyEmbeddedCurvePlan();
+            ApplyCurveResult(curveResult);
             StatusText.Text = result.WeeklyRows.Count == 0
                 ? "没有可展示的历史周期"
                 : $"已加载 {result.WeeklyRows.Count:N0}/{result.PeriodCount:N0} 个历史周期";
@@ -97,6 +97,9 @@ public partial class QuotaEstimateWindow : Window
             if (IsLoaded)
             {
                 StatusText.Text = "加载已取消";
+                LoadingProgress.Visibility = Visibility.Collapsed;
+                HistoryEmptyText.Text = "加载已取消。";
+                ShowCurveState("加载已取消", "重新打开窗口可再次读取已保存的统计数据。");
             }
         }
         catch (Exception ex)
@@ -108,12 +111,41 @@ public partial class QuotaEstimateWindow : Window
             }
 
             StatusText.Text = "加载失败";
+            LoadingProgress.Visibility = Visibility.Collapsed;
+            HistoryEmptyText.Text = "历史数据未加载完成。";
+            ShowCurveState("额度曲线未加载完成", "关闭后重新打开窗口可重试；已读取的数据会继续显示。");
             System.Windows.MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
             await ObserveBackgroundTasksAsync(estimateTask, curveTask);
+            if (!cancellationToken.IsCancellationRequested)
+                LoadingProgress.Visibility = Visibility.Collapsed;
         }
+    }
+
+    private void ApplyCurveResult(QuotaCostCurveResult result)
+    {
+        loadedCurveResult = result;
+        var plans = result.Curves
+            .Select(item => item.PlanName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(item => string.Equals(item, result.SelectedPlan, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(item => item)
+            .ToList();
+        CurvePlanComboBox.ItemsSource = plans;
+        CurvePlanComboBox.IsEnabled = plans.Count > 0;
+        CurvePlanComboBox.SelectedItem = plans.FirstOrDefault(item =>
+            string.Equals(item, result.SelectedPlan, StringComparison.OrdinalIgnoreCase)) ?? plans.FirstOrDefault();
+        ApplyEmbeddedCurvePlan();
+    }
+
+    private void ShowCurveState(string title, string detail)
+    {
+        EmbeddedCurveHost.Visibility = Visibility.Collapsed;
+        CurveEmptyPanel.Visibility = Visibility.Visible;
+        CurveEmptyTitle.Text = title;
+        CurveEmptyDetail.Text = detail;
     }
 
     private static async Task ObserveBackgroundTasksAsync(
@@ -216,7 +248,11 @@ public partial class QuotaEstimateWindow : Window
             return;
         }
 
-        var window = new QuotaCycleAnalysisWindow(period)
+        var previousPeriod = knownWeeklyPeriods
+            .Where(item => item.PeriodStart < period.PeriodStart)
+            .OrderByDescending(item => item.PeriodStart)
+            .FirstOrDefault();
+        var window = new QuotaCycleAnalysisWindow(period, currentQuota.Week, previousPeriod)
         {
             Owner = this
         };
@@ -242,6 +278,8 @@ public partial class QuotaEstimateWindow : Window
     {
         if (loadedCurveResult is null || CurvePlanComboBox.SelectedItem is not string selectedPlan)
         {
+            if (loadedCurveResult is not null)
+                ShowCurveState("暂无可绘制的额度曲线", "需要同一周期内的用量记录与额度变化；积累数据后重新打开窗口查看。");
             return;
         }
 
@@ -250,6 +288,15 @@ public partial class QuotaEstimateWindow : Window
             .ToList();
         var selectedPeriodStart = (WeeklyGrid.SelectedItem as QuotaWeeklyCycleRow)?.PeriodStart;
         embeddedCurveControl.SetData(curves, selectedPeriodStart);
+        if (curves.Any(curve => curve.Points.Select(point => Math.Round(point.UsedPercent, 3)).Distinct().Take(2).Count() >= 2))
+        {
+            CurveEmptyPanel.Visibility = Visibility.Collapsed;
+            EmbeddedCurveHost.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            ShowCurveState("额度变化尚不足以绘制曲线", "保留当前记录，待出现更多额度变化后即可对比。");
+        }
     }
 
     private void ApplyCurrentRows(IReadOnlyList<QuotaCurrentWindowRow> rows)
@@ -258,16 +305,16 @@ public partial class QuotaEstimateWindow : Window
         {
             if (string.Equals(row.Label, "5h", StringComparison.OrdinalIgnoreCase))
             {
-                FiveHourValue.Text = row.RemainingText;
-                FiveHourDetail.Text = row.DetailText;
+                FiveHourValue.Text = row.RemainingText == "-" ? "未返回" : row.RemainingText;
+                FiveHourDetail.Text = row.DetailText == "-" ? "当前未返回 5h 限制；有额度数据后显示费用折算。" : row.DetailText;
                 FiveHourDetail.ToolTip = row.CostDetail;
                 FiveHourPlan.Text = row.PlanText;
                 FiveHourStable.Text = row.StableText;
             }
             else
             {
-                WeekValue.Text = row.RemainingText;
-                WeekDetail.Text = row.DetailText;
+                WeekValue.Text = row.RemainingText == "-" ? "未返回" : row.RemainingText;
+                WeekDetail.Text = row.DetailText == "-" ? "当前没有 7d 额度数据。" : row.DetailText;
                 WeekDetail.ToolTip = row.CostDetail;
                 WeekPlan.Text = row.PlanText;
                 WeekStable.Text = row.StableText;
@@ -284,7 +331,7 @@ public partial class QuotaEstimateWindow : Window
         AddResetText(
             ResetOpportunityFormatter.FormatPanelTitle(summary),
             FontWeights.Bold,
-            new SolidColorBrush(System.Windows.Media.Color.FromRgb(31, 41, 55)));
+            (System.Windows.Media.Brush)FindResource("TextBrush"));
 
         if (summary.AvailableRecords.Count == 0)
         {
@@ -294,7 +341,16 @@ public partial class QuotaEstimateWindow : Window
 
         foreach (var record in summary.AvailableRecords)
         {
-            AddResetText(ResetOpportunityFormatter.FormatRecordLine(record, now));
+            var line = new TextBlock
+            {
+                Text = $"{record.ExpiresLocal:MM-dd HH:mm} 到期 · 剩余 {ResetOpportunityFormatter.FormatRemaining(record.ExpiresLocal, now)}",
+                ToolTip = ResetOpportunityFormatter.FormatRecordLine(record, now),
+                FontSize = 11,
+                Margin = new Thickness(0, 6, 0, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            line.SetResourceReference(TextBlock.ForegroundProperty, "MutedBrush");
+            ResetOpportunityPanel.Children.Add(line);
         }
     }
 
@@ -304,7 +360,8 @@ public partial class QuotaEstimateWindow : Window
         {
             Text = text,
             FontWeight = fontWeight ?? FontWeights.Normal,
-            Foreground = foreground ?? new SolidColorBrush(System.Windows.Media.Color.FromRgb(87, 99, 116)),
+            Foreground = foreground ?? (System.Windows.Media.Brush)FindResource("MutedBrush"),
+            FontSize = 11,
             Margin = new Thickness(0, 0, 0, 5),
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis,

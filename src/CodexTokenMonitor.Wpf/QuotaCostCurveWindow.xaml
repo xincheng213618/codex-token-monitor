@@ -7,43 +7,58 @@
         MinWidth="920"
         MinHeight="640"
         WindowStartupLocation="CenterOwner"
-        Background="#F6F8FB"
-        FontFamily="Microsoft YaHei UI">
-    <Window.Resources>
-        <Style x:Key="PrimaryButton" TargetType="Button">
-            <Setter Property="MinHeight" Value="32" />
-            <Setter Property="MinWidth" Value="84" />
-            <Setter Property="Padding" Value="14,0" />
-            <Setter Property="Background" Value="#15806A" />
-            <Setter Property="Foreground" Value="White" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Cursor" Value="Hand" />
-        </Style>
-    </Window.Resources>
-
-    <Grid Margin="18">
+        Background="{StaticResource CanvasBrush}"
+        FontFamily="Microsoft YaHei UI" Foreground="{StaticResource TextBrush}">
+    <Grid Margin="20">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <DockPanel Grid.Row="0" Margin="0,0,0,10">
-            <TextBlock DockPanel.Dock="Left" Text="7d 额度与累计费用" FontSize="18" FontWeight="Bold" Foreground="#1F2937" />
-            <TextBlock x:Name="StatusText" DockPanel.Dock="Right" Text="正在读取数据库..." Foreground="#576374" VerticalAlignment="Center" />
-            <ComboBox x:Name="PlanComboBox" DockPanel.Dock="Right" Width="150" Height="32" Margin="0,0,14,0"
-                      VerticalContentAlignment="Center" SelectionChanged="PlanComboBox_SelectionChanged" />
-            <TextBlock DockPanel.Dock="Right" Text="套餐" Foreground="#576374" VerticalAlignment="Center" Margin="0,0,8,0" />
-        </DockPanel>
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock Text="7d 额度与累计费用" Style="{StaticResource PageTitle}" />
+            <TextBlock Text="对比不同周期的额度使用与累计换算代价。绿色粗线代表当前周期。"
+                       Style="{StaticResource PageSubtitle}" Margin="0,6,0,0" />
+        </StackPanel>
 
-        <Border Grid.Row="1" Background="White" BorderBrush="#E1E8F0" BorderThickness="1" CornerRadius="4" Padding="8">
-            <ContentControl x:Name="CurveHost" />
+        <Border Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="14,10" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="套餐" Style="{StaticResource SectionTitle}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <ComboBox x:Name="PlanComboBox" Grid.Column="1" MinHeight="36"
+                          VerticalContentAlignment="Center" SelectionChanged="PlanComboBox_SelectionChanged" />
+                <TextBlock x:Name="StatusText" Grid.Column="2" Text="正在读取数据库..." Style="{StaticResource PageSubtitle}"
+                           Margin="20,0,0,0" TextAlignment="Right" VerticalAlignment="Center" />
+            </Grid>
         </Border>
 
-        <DockPanel Grid.Row="2" Margin="0,12,0,0" LastChildFill="False">
-            <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="关闭" Click="CloseButton_Click" />
-            <TextBlock DockPanel.Dock="Left" Foreground="#576374" VerticalAlignment="Center"
+        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="12">
+            <Grid>
+                <ContentControl x:Name="CurveHost" Visibility="Collapsed" />
+                <StackPanel x:Name="CurveStatePanel" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="520" Margin="24">
+                    <ProgressBar x:Name="CurveLoadingProgress" IsIndeterminate="True" Width="96" Height="4" Margin="0,0,0,18"
+                                 Foreground="{StaticResource AccentBrush}" Background="{StaticResource AccentSoftBrush}" />
+                    <TextBlock x:Name="CurveStateTitle" Text="正在准备费用曲线" FontSize="18" FontWeight="SemiBold"
+                               TextAlignment="Center" TextWrapping="Wrap" />
+                    <TextBlock x:Name="CurveStateDetail" Text="读取额度快照与已缓存的用量记录。" Style="{StaticResource PageSubtitle}"
+                               TextAlignment="Center" Margin="0,8,0,0" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="3" Style="{StaticResource DialogFooter}" Margin="0,14,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Style="{StaticResource SectionDescription}" VerticalAlignment="Center" Margin="0,0,20,0"
                        Text="每种颜色代表一个周期，绿色粗线为当前周期。订阅基准中 Sol 按输入 $5 / 缓存 $0.50 / 输出 $30 每百万 Token 折算，不随 API 降价变化；Fast 另乘倍率，无速度标记默认 1x。折算值用于比较周期，不是官方美元余额。" />
-        </DockPanel>
+                <Button Grid.Column="1" Style="{StaticResource ToolButton}" MinWidth="88" Content="关闭" Click="CloseButton_Click" VerticalAlignment="Bottom" />
+            </Grid>
+        </Border>
     </Grid>
 </Window>

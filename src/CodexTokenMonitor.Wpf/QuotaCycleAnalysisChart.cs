@@ -37,7 +37,7 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
             Placement = PlacementMode.Relative,
             PlacementTarget = this,
             StaysOpen = true,
-            Background = new SolidColorBrush(Color.FromRgb(30, 41, 59)),
+            Background = new SolidColorBrush(Color.FromRgb(23, 43, 58)),
             Foreground = Brushes.White,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(10, 7, 10, 7)
@@ -45,6 +45,7 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
         MouseMove += OnChartMouseMove;
         MouseLeave += (_, _) => hoverTip.IsOpen = false;
         MouseLeftButtonDown += OnChartMouseLeftButtonDown;
+        IsVisibleChanged += (_, _) => { if (!IsVisible) hoverTip.IsOpen = false; };
     }
 
     public event EventHandler<QuotaCycleAnalysisBand>? BandSelected;
@@ -83,7 +84,7 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
             RenderSize.Height < PlotTop + PlotBottom + 40)
         {
             DrawText(drawingContext, result?.EmptyReason ?? "正在准备分析数据...", 14,
-                new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                new SolidColorBrush(Color.FromRgb(100, 118, 135)),
                 new Point(24, Math.Max(24, RenderSize.Height / 2 - 10)));
             return;
         }
@@ -93,9 +94,9 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
             PlotTop,
             RenderSize.Width - PlotLeft - PlotRight,
             RenderSize.Height - PlotTop - PlotBottom);
-        var gridPen = new Pen(new SolidColorBrush(Color.FromRgb(226, 232, 240)), 1);
-        var axisPen = new Pen(new SolidColorBrush(Color.FromRgb(148, 163, 184)), 1);
-        var labelBrush = new SolidColorBrush(Color.FromRgb(100, 116, 139));
+        var gridPen = new Pen(new SolidColorBrush(Color.FromRgb(237, 241, 245)), 1);
+        var axisPen = new Pen(new SolidColorBrush(Color.FromRgb(224, 232, 239)), 1);
+        var labelBrush = new SolidColorBrush(Color.FromRgb(100, 118, 135));
 
         var maximum = Math.Max(1m, analysis.MaximumBandEstimate * 1.12m);
         for (var tick = 0; tick <= 4; tick++)
@@ -124,13 +125,13 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
         if (average > 0m)
         {
             var averageY = MapCost(average, maximum, plotRect);
-            var averagePen = new Pen(new SolidColorBrush(Color.FromRgb(15, 118, 110)), 1.4)
+            var averagePen = new Pen(new SolidColorBrush(Color.FromRgb(20, 125, 112)), 1.4)
             {
                 DashStyle = DashStyles.Dash
             };
             drawingContext.DrawLine(averagePen, new Point(plotRect.Left, averageY), new Point(plotRect.Right, averageY));
             DrawText(drawingContext, $"全周期均值 {FormatMoney(average)}", 11,
-                new SolidColorBrush(Color.FromRgb(15, 118, 110)),
+                new SolidColorBrush(Color.FromRgb(20, 125, 112)),
                 new Point(plotRect.Right - 4, averageY - 5), TextAlignment.Right);
         }
 
@@ -166,7 +167,7 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
         }
 
         DrawText(drawingContext, "局部 100% 折算 ($)", 12,
-            new SolidColorBrush(Color.FromRgb(71, 85, 105)),
+            new SolidColorBrush(Color.FromRgb(23, 43, 58)),
             new Point(8, 18));
     }
 
@@ -177,7 +178,7 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
     {
         var railRect = new Rect(plotRect.Left, plotRect.Top - 28, plotRect.Width, 14);
         drawingContext.DrawRoundedRectangle(
-            new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+            new SolidColorBrush(Color.FromRgb(237, 241, 245)),
             null,
             railRect,
             4,

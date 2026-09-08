@@ -1,219 +1,119 @@
 <Window x:Class="CodexTokenMonitor.PriceSettingsWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:ClassModifier="internal"
-        Title="价格设置"
-        Width="1220"
-        Height="780"
-        MinWidth="980"
-        MinHeight="620"
-        WindowStartupLocation="CenterOwner"
-        Background="#F6F8FB"
-        FontFamily="Microsoft YaHei UI"
-        PreviewKeyDown="Window_PreviewKeyDown">
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:ClassModifier="internal" Title="价格设置" Width="1220" Height="780" MinWidth="980" MinHeight="620"
+        WindowStartupLocation="CenterOwner" Background="{StaticResource CanvasBrush}"
+        FontFamily="Microsoft YaHei UI" Foreground="{StaticResource TextBrush}" PreviewKeyDown="Window_PreviewKeyDown">
     <Window.Resources>
-        <Style x:Key="PanelBorder" TargetType="Border">
-            <Setter Property="Background" Value="White" />
-            <Setter Property="BorderBrush" Value="#E1E8F0" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="6" />
+        <Style x:Key="PriceTextCell" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
-        <Style x:Key="PrimaryButton" TargetType="Button">
-            <Setter Property="MinWidth" Value="88" />
-            <Setter Property="Height" Value="34" />
-            <Setter Property="Padding" Value="14,0" />
-            <Setter Property="Background" Value="#15806A" />
-            <Setter Property="Foreground" Value="White" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Cursor" Value="Hand" />
+        <Style x:Key="PriceNumericHeader" TargetType="DataGridColumnHeader" BasedOn="{StaticResource BaseDataGridColumnHeader}">
+            <Setter Property="HorizontalContentAlignment" Value="Right" />
         </Style>
-        <Style x:Key="SecondaryButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-            <Setter Property="Background" Value="#E5EAF2" />
-            <Setter Property="Foreground" Value="#263548" />
-        </Style>
-        <Style x:Key="SourceTabsStyle" TargetType="TabControl">
-            <Setter Property="Background" Value="#E8EEF5" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="3" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TabControl">
-                        <Border Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
-                            <TabPanel IsItemsHost="True" HorizontalAlignment="Left" Background="Transparent" />
-                        </Border>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style x:Key="SourceTabItemStyle" TargetType="TabItem">
-            <Setter Property="MinWidth" Value="112" />
-            <Setter Property="Height" Value="32" />
-            <Setter Property="Foreground" Value="#4D5C70" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TabItem">
-                        <Border x:Name="Root" Background="Transparent" CornerRadius="5" Padding="15,0">
-                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="White" />
-                                <Setter Property="Foreground" Value="#102033" />
-                            </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="#F6F8FB" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style TargetType="TextBox">
-            <Setter Property="Height" Value="34" />
-            <Setter Property="Padding" Value="10,4" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="BorderBrush" Value="#D6E0EA" />
-        </Style>
-        <Style TargetType="DataGrid">
-            <Setter Property="AutoGenerateColumns" Value="False" />
-            <Setter Property="CanUserAddRows" Value="False" />
-            <Setter Property="CanUserDeleteRows" Value="False" />
-            <Setter Property="CanUserResizeRows" Value="False" />
-            <Setter Property="IsReadOnly" Value="True" />
-            <Setter Property="SelectionMode" Value="Single" />
-            <Setter Property="SelectionUnit" Value="FullRow" />
-            <Setter Property="RowHeight" Value="32" />
-            <Setter Property="ColumnHeaderHeight" Value="36" />
-            <Setter Property="HeadersVisibility" Value="Column" />
-            <Setter Property="GridLinesVisibility" Value="Horizontal" />
-            <Setter Property="HorizontalGridLinesBrush" Value="#EEF3F8" />
-            <Setter Property="Background" Value="White" />
-            <Setter Property="RowBackground" Value="White" />
-            <Setter Property="AlternatingRowBackground" Value="#FAFCFE" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="EnableRowVirtualization" Value="True" />
-        </Style>
-        <Style TargetType="DataGridColumnHeader">
-            <Setter Property="Background" Value="#F6F8FB" />
-            <Setter Property="Foreground" Value="#5A6777" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Padding" Value="8,0" />
-            <Setter Property="BorderBrush" Value="#E1E8F0" />
-            <Setter Property="BorderThickness" Value="0,0,0,1" />
-        </Style>
-        <Style TargetType="DataGridRow">
+        <Style TargetType="DataGridRow" BasedOn="{StaticResource BaseDataGridRow}">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsPriority}" Value="True">
-                    <Setter Property="Background" Value="#EEF8F5" />
+                    <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
                     <Setter Property="FontWeight" Value="SemiBold" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
     </Window.Resources>
-
-    <Grid Margin="18">
+    <Grid Margin="20">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-
-        <StackPanel Grid.Row="0" Margin="2,0,0,14">
-            <TextBlock Text="价格设置" FontSize="21" FontWeight="Bold" Foreground="#172334" />
-            <TextBlock Text="此处价格用于 API 等价和换模型费用。Codex 订阅额度单独按 Sol $5 / $0.50 / $30 基准折算，不随 API 促销价变化。"
-                       Margin="0,5,0,0" Foreground="#576374" />
+        <StackPanel Margin="0,0,0,16">
+            <TextBlock Text="价格设置" Style="{StaticResource PageTitle}" />
+            <TextBlock Text="管理各来源的模型价格与展示顺序，用于 API 等价和换模型费用比较。"
+                       Style="{StaticResource PageSubtitle}" Margin="0,5,0,0" />
         </StackPanel>
-
-        <TabControl x:Name="SourceTabs"
-                    Grid.Row="1"
-                    Height="38"
-                    Margin="0,0,0,10"
-                    HorizontalAlignment="Left"
-                    Style="{StaticResource SourceTabsStyle}"
-                    ItemContainerStyle="{StaticResource SourceTabItemStyle}"
+        <TabControl x:Name="SourceTabs" Grid.Row="1" Height="38" Margin="0,0,0,12" HorizontalAlignment="Left"
+                    Style="{StaticResource SourceTabsStyle}" ItemContainerStyle="{StaticResource SourceTabItemStyle}"
                     SelectionChanged="SourceTabs_SelectionChanged">
-            <TabItem Header="Codex" />
-            <TabItem Header="Claude Code" />
-            <TabItem Header="ZCode" />
-            <TabItem Header="WorkBuddy" />
-            <TabItem Header="DSH" />
+            <TabItem Header="Codex" /><TabItem Header="Claude Code" /><TabItem Header="ZCode" /><TabItem Header="WorkBuddy" /><TabItem Header="DSH" />
         </TabControl>
-
         <Border Grid.Row="2" Style="{StaticResource PanelBorder}">
             <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <Grid Grid.Row="0" Margin="12,10">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="280" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <TextBox x:Name="SearchBox"
-                             Grid.Column="0"
-                             ToolTip="搜索供应商、模型或价格来源 (Ctrl+F)"
-                             TextChanged="SearchBox_TextChanged" />
-                    <TextBlock Grid.Column="0" Text="搜索供应商 / 模型 / 来源"
-                               Margin="11,0" Foreground="#8A96A6" IsHitTestVisible="False" VerticalAlignment="Center">
-                        <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding Text, ElementName=SearchBox}" Value="">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBlock.Style>
-                    </TextBlock>
-                    <TextBlock x:Name="CountText" Grid.Column="1" Margin="14,0" Foreground="#667387" VerticalAlignment="Center" />
-                    <StackPanel Grid.Column="2" Orientation="Horizontal">
-                        <Button Style="{StaticResource SecondaryButton}" Content="设为主价格" Click="PinButton_Click" />
-                        <Button Style="{StaticResource SecondaryButton}" Content="上移" Margin="8,0,0,0" Click="MoveUpButton_Click" />
-                        <Button Style="{StaticResource SecondaryButton}" Content="下移" Margin="8,0,0,0" Click="MoveDownButton_Click" />
-                        <Button Style="{StaticResource SecondaryButton}" Content="新增" Margin="8,0,0,0" Click="AddButton_Click" />
-                        <Button Style="{StaticResource SecondaryButton}" Content="编辑" Margin="8,0,0,0" Click="EditButton_Click" />
-                        <Button Style="{StaticResource SecondaryButton}" Content="删除" Margin="8,0,0,0" Click="DeleteButton_Click" />
-                    </StackPanel>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <Grid Margin="14,14,14,10">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <Grid MaxWidth="420" HorizontalAlignment="Left" Width="420">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBox x:Name="SearchBox" ToolTip="搜索供应商、模型、价格来源或计价单位 (Ctrl+F)" TextChanged="SearchBox_TextChanged" />
+                        <TextBlock Text="搜索供应商、模型或来源 · Ctrl+F" Margin="11,0" Foreground="{StaticResource MutedBrush}"
+                                   IsHitTestVisible="False" VerticalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers><DataTrigger Binding="{Binding Text, ElementName=SearchBox}" Value=""><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <Button x:Name="ClearSearchButton" Grid.Column="1" Content="清除" Style="{StaticResource StatusLinkButton}"
+                                Margin="6,0,0,0" Click="ClearSearchButton_Click" Visibility="Collapsed" />
+                    </Grid>
+                    <TextBlock x:Name="CountText" Grid.Column="1" Margin="20,0,0,0" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
                 </Grid>
-
-                <DataGrid x:Name="PriceGrid"
-                          Grid.Row="1"
-                          AllowDrop="True"
-                          MouseDoubleClick="PriceGrid_MouseDoubleClick"
-                          PreviewMouseLeftButtonDown="PriceGrid_PreviewMouseLeftButtonDown"
-                          PreviewMouseMove="PriceGrid_PreviewMouseMove"
-                          DragOver="PriceGrid_DragOver"
-                          Drop="PriceGrid_Drop"
-                          ScrollViewer.CanContentScroll="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling">
+                <Border Grid.Row="1" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Padding="14,0,14,12">
+                    <DockPanel LastChildFill="False">
+                        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                            <Button Content="＋ 新增价格" Style="{StaticResource PrimaryButton}" Click="AddButton_Click" />
+                            <Button x:Name="EditPriceButton" Content="编辑" Margin="8,0,0,0" IsEnabled="False" Click="EditButton_Click" />
+                            <Button x:Name="DeletePriceButton" Content="删除" Margin="8,0,0,0" IsEnabled="False" Click="DeleteButton_Click" />
+                            <Border Background="{StaticResource BorderBrush}" Width="1" Margin="16,6" />
+                            <Button x:Name="PinPriceButton" Content="设为主价格" IsEnabled="False" Click="PinButton_Click" />
+                            <Button x:Name="MovePriceUpButton" Content="上移" Margin="8,0,0,0" IsEnabled="False" Click="MoveUpButton_Click" />
+                            <Button x:Name="MovePriceDownButton" Content="下移" Margin="8,0,0,0" IsEnabled="False" Click="MoveDownButton_Click" />
+                        </StackPanel>
+                        <TextBlock DockPanel.Dock="Right" Text="前 3 项优先展示" Margin="14,0,0,0" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" />
+                    </DockPanel>
+                </Border>
+                <DataGrid x:Name="PriceGrid" Grid.Row="2" FrozenColumnCount="3"
+                          AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False"
+                          HeadersVisibility="Column" SelectionMode="Single" SelectionUnit="FullRow" AllowDrop="True"
+                          SelectionChanged="PriceGrid_SelectionChanged" MouseDoubleClick="PriceGrid_MouseDoubleClick"
+                          PreviewMouseLeftButtonDown="PriceGrid_PreviewMouseLeftButtonDown" PreviewMouseMove="PriceGrid_PreviewMouseMove"
+                          DragOver="PriceGrid_DragOver" Drop="PriceGrid_Drop" ScrollViewer.CanContentScroll="True"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto" VirtualizingPanel.VirtualizationMode="Recycling">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="展示" Binding="{Binding PriorityLabel}" Width="82" />
-                        <DataGridTextColumn Header="供应商" Binding="{Binding Provider}" Width="145" />
-                        <DataGridTextColumn Header="模型" Binding="{Binding Model}" Width="220" />
-                        <DataGridTextColumn Header="币种" Binding="{Binding CurrencySymbol}" Width="64" />
-                        <DataGridTextColumn Header="未缓存输入" Binding="{Binding UncachedInput, StringFormat={}{0:0.####}}" Width="108" />
-                        <DataGridTextColumn Header="缓存输入" Binding="{Binding CachedInput, StringFormat={}{0:0.####}}" Width="100" />
-                        <DataGridTextColumn Header="缓存创建" Binding="{Binding CacheWriteInput, StringFormat={}{0:0.####}}" Width="100" />
-                        <DataGridTextColumn Header="输出" Binding="{Binding Output, StringFormat={}{0:0.####}}" Width="90" />
-                        <DataGridTextColumn Header="计价单位" Binding="{Binding UnitLabel}" Width="145" />
-                        <DataGridTextColumn Header="时段" Binding="{Binding ScheduleLabel}" Width="82" />
-                        <DataGridTextColumn Header="价格来源" Binding="{Binding Source}" Width="*" MinWidth="170" />
+                        <DataGridTextColumn Header="展示" Binding="{Binding PriorityLabel}" Width="72" MinWidth="72" ElementStyle="{StaticResource PriceTextCell}" />
+                        <DataGridTextColumn Header="供应商" Binding="{Binding Provider}" Width="112" MinWidth="112" ElementStyle="{StaticResource PriceTextCell}" />
+                        <DataGridTextColumn Header="模型" Binding="{Binding Model}" Width="190" MinWidth="190" ElementStyle="{StaticResource PriceTextCell}" />
+                        <DataGridTextColumn Header="币种" Binding="{Binding CurrencySymbol}" Width="84" MinWidth="84" ElementStyle="{StaticResource PriceTextCell}" />
+                        <DataGridTextColumn Header="未缓存输入" Binding="{Binding UncachedInput, StringFormat={}{0:0.####}}" Width="108" MinWidth="108" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource PriceNumericHeader}" />
+                        <DataGridTextColumn Header="缓存输入" Binding="{Binding CachedInput, StringFormat={}{0:0.####}}" Width="100" MinWidth="100" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource PriceNumericHeader}" />
+                        <DataGridTextColumn Header="缓存创建" Binding="{Binding CacheWriteInput, StringFormat={}{0:0.####}}" Width="100" MinWidth="100" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource PriceNumericHeader}" />
+                        <DataGridTextColumn Header="输出" Binding="{Binding Output, StringFormat={}{0:0.####}}" Width="92" MinWidth="92" ElementStyle="{StaticResource NumericCellText}" HeaderStyle="{StaticResource PriceNumericHeader}" />
+                        <DataGridTextColumn Header="计价单位" Binding="{Binding UnitLabel}" Width="150" MinWidth="150" ElementStyle="{StaticResource PriceTextCell}" />
+                        <DataGridTextColumn Header="时段" Binding="{Binding ScheduleLabel}" Width="88" MinWidth="88" ElementStyle="{StaticResource PriceTextCell}" />
+                        <DataGridTextColumn Header="价格来源" Binding="{Binding Source}" Width="*" MinWidth="200" ElementStyle="{StaticResource PriceTextCell}" />
                     </DataGrid.Columns>
                 </DataGrid>
+                <Border x:Name="EmptyStatePanel" Grid.Row="2" Margin="0,33,0,0" Background="{StaticResource SurfaceBrush}" Visibility="Collapsed">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="440" Margin="24">
+                        <TextBlock x:Name="EmptyStateTitle" Text="没有找到匹配的价格" FontSize="17" FontWeight="SemiBold" TextAlignment="Center" />
+                        <TextBlock x:Name="EmptyStateDescription" Text="换个关键词，或清除搜索查看当前来源的全部价格。" Style="{StaticResource PageSubtitle}" TextAlignment="Center" Margin="0,8,0,14" />
+                        <Button x:Name="ClearEmptyFilterButton" Content="清除搜索" HorizontalAlignment="Center" Style="{StaticResource ToolButton}" Click="ClearSearchButton_Click" />
+                    </StackPanel>
+                </Border>
             </Grid>
         </Border>
-
-        <DockPanel Grid.Row="3" Margin="0,14,0,0" LastChildFill="False">
-            <Button DockPanel.Dock="Left" Style="{StaticResource SecondaryButton}" Content="恢复当前分组默认" Click="RestoreButton_Click" />
-            <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="保存" Margin="10,0,0,0" Click="SaveButton_Click" />
-            <Button DockPanel.Dock="Right" Style="{StaticResource SecondaryButton}" Content="取消" IsCancel="True" />
-            <TextBlock DockPanel.Dock="Right" Text="拖拽整行可排序，靠近上下边缘会自动滚动；双击可编辑" Margin="0,0,18,0" Foreground="#667387" VerticalAlignment="Center" />
-        </DockPanel>
+        <Border Grid.Row="3" Style="{StaticResource DialogFooter}" Margin="0,14,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,20,0">
+                    <TextBlock Text="拖拽可调整展示顺序，靠近表格上下边缘会自动滚动；双击一行可编辑。" Style="{StaticResource SectionDescription}" />
+                    <TextBlock Text="Codex 订阅额度另按 Sol $5 / $0.50 / $30 基准折算，不随 API 促销价变化。" Style="{StaticResource SectionDescription}" Margin="0,3,0,0" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="恢复当前分组默认" Style="{StaticResource StatusLinkButton}" Click="RestoreButton_Click" Margin="0,0,12,0" />
+                    <Button Content="取消" MinWidth="72" IsCancel="True" />
+                    <Button Content="保存设置" MinWidth="88" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" Click="SaveButton_Click" />
+                </StackPanel>
+            </Grid>
+        </Border>
     </Grid>
 </Window>

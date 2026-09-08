@@ -1,102 +1,96 @@
 <Window x:Class="CodexTokenMonitor.PricePresetEditorWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:ClassModifier="internal"
-        Width="620"
-        Height="680"
-        MinWidth="560"
-        MinHeight="610"
-        ResizeMode="CanResizeWithGrip"
-        WindowStartupLocation="CenterOwner"
-        Background="#F6F8FB"
-        FontFamily="Microsoft YaHei UI">
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:ClassModifier="internal" Width="680" Height="810" MinWidth="560" MinHeight="610"
+        ResizeMode="CanResizeWithGrip" WindowStartupLocation="CenterOwner"
+        Background="{StaticResource CanvasBrush}" FontFamily="Microsoft YaHei UI" Foreground="{StaticResource TextBrush}">
     <Window.Resources>
         <Style x:Key="FieldLabel" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#465568" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="Margin" Value="0,0,12,0" />
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Margin" Value="0,0,0,5" />
         </Style>
-        <Style TargetType="TextBox">
-            <Setter Property="Height" Value="34" />
-            <Setter Property="Padding" Value="9,4" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="BorderBrush" Value="#D6E0EA" />
-        </Style>
-        <Style TargetType="ComboBox">
-            <Setter Property="Height" Value="34" />
-            <Setter Property="Padding" Value="7,3" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="BorderBrush" Value="#D6E0EA" />
-        </Style>
-        <Style x:Key="PrimaryButton" TargetType="Button">
-            <Setter Property="MinWidth" Value="88" />
-            <Setter Property="Height" Value="34" />
-            <Setter Property="Padding" Value="14,0" />
-            <Setter Property="Background" Value="#15806A" />
-            <Setter Property="Foreground" Value="White" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Cursor" Value="Hand" />
+        <Style x:Key="EditorSection" TargetType="Border" BasedOn="{StaticResource PanelBorder}">
+            <Setter Property="Padding" Value="16" />
+            <Setter Property="Margin" Value="0,0,0,12" />
         </Style>
     </Window.Resources>
-
     <Grid Margin="20">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
-
-        <StackPanel Grid.Row="0" Margin="0,0,0,12">
-            <TextBlock x:Name="HeadingText" FontSize="19" FontWeight="Bold" Foreground="#172334" />
-            <TextBlock Text="缓存输入是 cache read；缓存创建是 cache write，留空时按未缓存输入价计算。"
-                       Margin="0,5,0,0" Foreground="#667387" TextWrapping="Wrap" />
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <StackPanel Margin="0,0,0,16">
+            <TextBlock x:Name="HeadingText" Style="{StaticResource PageTitle}" />
+            <TextBlock Text="设置模型身份、各类 Token 单价与价格来源。带 * 的字段为必填。" Style="{StaticResource PageSubtitle}" Margin="0,5,0,0" />
         </StackPanel>
-
-        <Border Grid.Row="1" Background="White" BorderBrush="#E1E8F0" BorderThickness="1" CornerRadius="6" Padding="18">
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+            <StackPanel>
+                <Border Style="{StaticResource EditorSection}">
+                    <StackPanel>
+                        <TextBlock Text="基本信息" Style="{StaticResource SectionTitle}" Margin="0,0,0,12" />
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="供应商" Style="{StaticResource FieldLabel}" />
+                                <TextBox x:Name="ProviderBox" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="模型名称 *" Style="{StaticResource FieldLabel}" />
+                                <TextBox x:Name="ModelBox" />
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock Text="模型 ID（可选）" Style="{StaticResource FieldLabel}" Margin="0,12,0,5" />
+                        <TextBox x:Name="ModelIdBox" ToolTip="日志中的模型 ID，如 gpt-5.6-sol；留空时自动匹配模型名称。" />
+                        <TextBlock Text="填写日志中的模型 ID 可精确匹配；留空时按模型名称自动匹配。" Style="{StaticResource SectionDescription}" Margin="0,6,0,0" />
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource EditorSection}">
+                    <StackPanel>
+                        <TextBlock Text="计价" Style="{StaticResource SectionTitle}" Margin="0,0,0,12" />
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="币种" Style="{StaticResource FieldLabel}" />
+                                <ComboBox x:Name="CurrencyBox" IsEditable="True" />
+                                <TextBlock Text="未缓存输入 *" Style="{StaticResource FieldLabel}" Margin="0,12,0,5" />
+                                <TextBox x:Name="InputBox" HorizontalContentAlignment="Right" />
+                                <TextBlock Text="缓存创建 · Cache write" Style="{StaticResource FieldLabel}" Margin="0,12,0,5" />
+                                <TextBox x:Name="CacheWriteBox" HorizontalContentAlignment="Right" ToolTip="留空时按未缓存输入价格计算。" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="计价单位" Style="{StaticResource FieldLabel}" />
+                                <ComboBox x:Name="UnitBox" IsEditable="True" />
+                                <TextBlock Text="缓存输入 · Cache read *" Style="{StaticResource FieldLabel}" Margin="0,12,0,5" />
+                                <TextBox x:Name="CachedBox" HorizontalContentAlignment="Right" />
+                                <TextBlock Text="输出 *" Style="{StaticResource FieldLabel}" Margin="0,12,0,5" />
+                                <TextBox x:Name="OutputBox" HorizontalContentAlignment="Right" />
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock Text="价格支持 0 和小数。缓存创建价格留空时，按未缓存输入价格计算。" Style="{StaticResource SectionDescription}" Margin="0,10,0,0" />
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource EditorSection}" Margin="0">
+                    <StackPanel>
+                        <TextBlock Text="来源与时段" Style="{StaticResource SectionTitle}" Margin="0,0,0,12" />
+                        <TextBlock Text="价格来源" Style="{StaticResource FieldLabel}" />
+                        <TextBox x:Name="SourceBox" ToolTip="价格说明、出处或网址。" />
+                        <Border Background="{StaticResource SubtleBrush}" CornerRadius="6" Padding="10" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <TextBlock Text="适用时段" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,14,0" />
+                                <TextBlock x:Name="ScheduleText" Grid.Column="1" FontWeight="SemiBold" TextWrapping="Wrap" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+        <Border Grid.Row="2" Style="{StaticResource DialogFooter}" Margin="0,14,0,0">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="118" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <TextBlock Grid.Row="9" Style="{StaticResource FieldLabel}" Text="模型 ID（可选）" />
-                <TextBox x:Name="ModelIdBox" Grid.Row="9" Grid.Column="1" ToolTip="日志中的模型 ID，如 gpt-5.6-sol；留空时自动匹配模型名称。" />
-                <TextBlock Grid.Row="0" Style="{StaticResource FieldLabel}" Text="供应商" />
-                <TextBox x:Name="ProviderBox" Grid.Row="0" Grid.Column="1" />
-                <TextBlock Grid.Row="1" Style="{StaticResource FieldLabel}" Text="模型名称 *" />
-                <TextBox x:Name="ModelBox" Grid.Row="1" Grid.Column="1" />
-                <TextBlock Grid.Row="2" Style="{StaticResource FieldLabel}" Text="币种" />
-                <ComboBox x:Name="CurrencyBox" Grid.Row="2" Grid.Column="1" IsEditable="True" />
-                <TextBlock Grid.Row="3" Style="{StaticResource FieldLabel}" Text="计价单位" />
-                <ComboBox x:Name="UnitBox" Grid.Row="3" Grid.Column="1" IsEditable="True" />
-                <TextBlock Grid.Row="4" Style="{StaticResource FieldLabel}" Text="未缓存输入" />
-                <TextBox x:Name="InputBox" Grid.Row="4" Grid.Column="1" HorizontalContentAlignment="Right" />
-                <TextBlock Grid.Row="5" Style="{StaticResource FieldLabel}" Text="缓存输入" />
-                <TextBox x:Name="CachedBox" Grid.Row="5" Grid.Column="1" HorizontalContentAlignment="Right" />
-                <TextBlock Grid.Row="6" Style="{StaticResource FieldLabel}" Text="缓存创建" />
-                <TextBox x:Name="CacheWriteBox" Grid.Row="6" Grid.Column="1" HorizontalContentAlignment="Right" />
-                <TextBlock Grid.Row="7" Style="{StaticResource FieldLabel}" Text="输出" />
-                <TextBox x:Name="OutputBox" Grid.Row="7" Grid.Column="1" HorizontalContentAlignment="Right" />
-                <TextBlock Grid.Row="8" Style="{StaticResource FieldLabel}" Text="价格来源" />
-                <TextBox x:Name="SourceBox" Grid.Row="8" Grid.Column="1" />
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Text="确认后返回价格列表，保存设置后生效。" Style="{StaticResource SectionDescription}" VerticalAlignment="Center" Margin="0,0,16,0" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="取消" MinWidth="80" IsCancel="True" />
+                    <Button Content="确认价格" MinWidth="88" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" IsDefault="True" Click="SaveButton_Click" />
+                </StackPanel>
             </Grid>
         </Border>
-
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-            <Button Style="{StaticResource PrimaryButton}" Background="#E5EAF2" Foreground="#263548" Content="取消" IsCancel="True" />
-            <Button Style="{StaticResource PrimaryButton}" Content="确定" Margin="10,0,0,0" IsDefault="True" Click="SaveButton_Click" />
-        </StackPanel>
     </Grid>
 </Window>

@@ -3,58 +3,33 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="缓存详情"
         Width="780"
-        Height="680"
-        MinWidth="680"
-        MinHeight="580"
+        Height="740"
+        MinWidth="640"
+        MinHeight="620"
         WindowStartupLocation="CenterOwner"
-        Background="#F6F8FB"
-        FontFamily="Microsoft YaHei UI">
+        Background="{StaticResource CanvasBrush}"
+        FontFamily="Microsoft YaHei UI" Foreground="{StaticResource TextBrush}">
     <Window.Resources>
-        <Style x:Key="Panel" TargetType="Border">
-            <Setter Property="Background" Value="White" />
-            <Setter Property="BorderBrush" Value="#E1E8F0" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="6" />
+        <Style x:Key="Panel" TargetType="Border" BasedOn="{StaticResource PanelBorder}">
             <Setter Property="Padding" Value="14" />
         </Style>
-        <Style x:Key="ActionButton" TargetType="Button">
-            <Setter Property="MinWidth" Value="88" />
-            <Setter Property="Height" Value="34" />
-            <Setter Property="Padding" Value="14,0" />
-            <Setter Property="Background" Value="#15806A" />
-            <Setter Property="Foreground" Value="White" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Cursor" Value="Hand" />
-        </Style>
-        <Style TargetType="DataGrid">
-            <Setter Property="AutoGenerateColumns" Value="False" />
-            <Setter Property="CanUserAddRows" Value="False" />
-            <Setter Property="CanUserDeleteRows" Value="False" />
-            <Setter Property="IsReadOnly" Value="True" />
-            <Setter Property="RowHeight" Value="32" />
-            <Setter Property="ColumnHeaderHeight" Value="34" />
-            <Setter Property="HeadersVisibility" Value="Column" />
-            <Setter Property="GridLinesVisibility" Value="Horizontal" />
-            <Setter Property="HorizontalGridLinesBrush" Value="#EEF3F8" />
-            <Setter Property="AlternatingRowBackground" Value="#FAFCFE" />
-            <Setter Property="BorderBrush" Value="#E1E8F0" />
+        <Style TargetType="DataGrid" BasedOn="{StaticResource BaseDataGrid}">
             <Setter Property="BorderThickness" Value="1" />
         </Style>
     </Window.Resources>
 
-    <Grid Margin="18">
+    <Grid Margin="20">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Margin="0,0,0,12">
-            <TextBlock Text="缓存详情" FontSize="20" FontWeight="Bold" Foreground="#172334" />
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock Text="缓存详情" Style="{StaticResource PageTitle}" />
             <TextBlock Text="Codex 优先，日期从新到旧；其他来源会在 Codex token、额度和曲线完成后继续。"
-                       Margin="0,5,0,0" Foreground="#576374" />
+                       Margin="0,5,0,0" Style="{StaticResource PageSubtitle}" />
         </StackPanel>
 
         <Border Grid.Row="1" Style="{StaticResource Panel}" Margin="0,0,0,12">
@@ -69,62 +44,81 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="PhaseText" FontSize="15" FontWeight="SemiBold" Foreground="#1F2937" />
-                    <TextBlock x:Name="OverallProgressText" Grid.Column="1" Foreground="#374151" FontWeight="SemiBold" />
+                    <TextBlock x:Name="PhaseText" Style="{StaticResource SectionTitle}" TextWrapping="Wrap" Margin="0,0,12,0" />
+                    <TextBlock x:Name="OverallProgressText" Grid.Column="1" Foreground="{StaticResource AccentBrush}"
+                               FontWeight="SemiBold" TextAlignment="Right" TextWrapping="Wrap" MaxWidth="240" />
                 </Grid>
                 <ProgressBar x:Name="OverallProgressBar" Grid.Row="1" Height="10" Margin="0,10,0,10"
-                             Minimum="0" Maximum="100" Foreground="#15806A" Background="#E5EAF2" />
-                <Grid Grid.Row="2">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel>
-                        <TextBlock x:Name="CurrentItemText" Foreground="#374151" FontWeight="SemiBold" TextWrapping="Wrap" />
-                        <TextBlock x:Name="TimingText" Margin="0,5,0,0" Foreground="#667387" />
-                    </StackPanel>
-                    <TextBlock x:Name="ResourceText" Grid.Column="1" Foreground="#667387" VerticalAlignment="Bottom" />
-                </Grid>
+                             Minimum="0" Maximum="100" Foreground="{StaticResource AccentBrush}" Background="{StaticResource SubtleBrush}" />
+                <StackPanel Grid.Row="2">
+                    <TextBlock x:Name="CurrentItemText" Foreground="{StaticResource TextBrush}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="TimingText" Margin="0,6,0,0" Style="{StaticResource SectionDescription}" />
+                    <TextBlock x:Name="ResourceText" Margin="0,3,0,0" Style="{StaticResource SectionDescription}" />
+                </StackPanel>
             </Grid>
         </Border>
 
-        <TextBlock Grid.Row="2" Text="分类进度" FontWeight="Bold" Foreground="#1F2937" Margin="0,0,0,8" />
-
-        <Grid Grid.Row="3">
+        <Grid Grid.Row="2">
             <Grid.RowDefinitions>
-                <RowDefinition Height="230" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
+                <RowDefinition Height="1.4*" MinHeight="140" />
+                <RowDefinition Height="*" MinHeight="96" />
             </Grid.RowDefinitions>
-            <DataGrid x:Name="CategoryGrid" Grid.Row="0" ItemsSource="{Binding CategoryRows}">
+            <Border Grid.Row="0" Style="{StaticResource Panel}" Margin="0,0,0,12">
+              <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="分类进度" Style="{StaticResource SectionTitle}" Margin="0,0,0,10" />
+                <DataGrid x:Name="CategoryGrid" Grid.Row="1" ItemsSource="{Binding CategoryRows}"
+                      AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False"
+                      HeadersVisibility="Column">
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="缓存类别" Binding="{Binding Name}" Width="*" />
-                    <DataGridTextColumn Header="已完成" Binding="{Binding Completed}" Width="88" />
-                    <DataGridTextColumn Header="剩余" Binding="{Binding Remaining}" Width="82" />
-                    <DataGridTextColumn Header="总天数" Binding="{Binding Total}" Width="82" />
-                    <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="110" />
+                    <DataGridTextColumn Header="缓存类别" Binding="{Binding Name}" Width="*" MinWidth="140" />
+                    <DataGridTextColumn Header="已完成" Binding="{Binding Completed}" Width="82" ElementStyle="{StaticResource NumericCellText}" />
+                    <DataGridTextColumn Header="剩余" Binding="{Binding Remaining}" Width="76" ElementStyle="{StaticResource NumericCellText}" />
+                    <DataGridTextColumn Header="总天数" Binding="{Binding Total}" Width="82" ElementStyle="{StaticResource NumericCellText}" />
+                    <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="90" />
                 </DataGrid.Columns>
-            </DataGrid>
-            <TextBlock Grid.Row="1"
+                </DataGrid>
+                <TextBlock Grid.Row="2"
                        Text="说明：一个日任务表示“某个数据源的一天”或“某天的额度/曲线缓存”，不是一个文件。"
-                       Margin="0,10,0,8" Foreground="#667387" TextWrapping="Wrap" />
-            <Border Grid.Row="2" Style="{StaticResource Panel}" Padding="10" MinHeight="100">
+                       Margin="0,10,0,0" Style="{StaticResource SectionDescription}" />
+              </Grid>
+            </Border>
+            <Border Grid.Row="1" Style="{StaticResource Panel}">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <TextBlock Text="最近活动" FontWeight="SemiBold" Foreground="#1F2937" Margin="0,0,0,6" />
+                    <TextBlock Text="最近活动" Style="{StaticResource SectionTitle}" Margin="0,0,0,8" />
                     <ListBox x:Name="ActivityList" Grid.Row="1" ItemsSource="{Binding ActivityRows}"
-                             BorderThickness="0" Background="Transparent" FontFamily="Consolas" FontSize="12" />
+                             BorderThickness="0" Background="Transparent" FontSize="12"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="Padding" Value="0,3" />
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" />
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
                 </Grid>
             </Border>
         </Grid>
 
-        <DockPanel Grid.Row="4" Margin="0,14,0,0" LastChildFill="False">
-            <Button DockPanel.Dock="Right" Style="{StaticResource ActionButton}" Content="关闭" Click="CloseButton_Click" />
-            <Button x:Name="ResumeButton" DockPanel.Dock="Right" Style="{StaticResource ActionButton}" Background="#E5EAF2" Foreground="#374151"
-                    Content="立即继续" Margin="0,0,10,0" Click="ResumeButton_Click" />
-        </DockPanel>
+        <Border Grid.Row="3" Style="{StaticResource DialogFooter}" Margin="0,14,0,0">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="ResumeButton" Style="{StaticResource PrimaryButton}" MinWidth="96"
+                        Content="立即继续" Margin="0,0,10,0" Click="ResumeButton_Click" />
+                <Button Style="{StaticResource ToolButton}" MinWidth="88" Content="关闭" Click="CloseButton_Click" />
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>

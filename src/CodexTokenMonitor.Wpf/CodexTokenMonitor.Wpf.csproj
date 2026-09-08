@@ -5,11 +5,10 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
-    <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CodexTokenMonitor</AssemblyName>
     <RootNamespace>CodexTokenMonitor</RootNamespace>
-    <Version>2026.9.6</Version>
+    <Version>2026.9.8</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -39,8 +38,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CodexTokenMonitor.Core\CodexTokenMonitor.Core.csproj" />
-    <Compile Include="..\CodexTokenMonitor.LegacyDialogs\ResetOpportunityForm.cs" Link="LegacyDialogs\ResetOpportunityForm.cs" />
-    <Compile Include="..\CodexTokenMonitor.LegacyDialogs\SubscriptionPlanForm.cs" Link="LegacyDialogs\SubscriptionPlanForm.cs" />
   </ItemGroup>
 
 </Project>

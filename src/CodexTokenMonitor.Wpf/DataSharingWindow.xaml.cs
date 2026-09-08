@@ -249,6 +249,8 @@ internal partial class DataSharingWindow : Window
 
     private void CancelButton_Click(object sender, RoutedEventArgs e) => operation?.Cancel();
 
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+
     private void SetTransferBusy(bool busy)
     {
         TestButton.IsEnabled = SyncButton.IsEnabled = HistorySyncButton.IsEnabled = UploadButton.IsEnabled = DownloadButton.IsEnabled = !busy;

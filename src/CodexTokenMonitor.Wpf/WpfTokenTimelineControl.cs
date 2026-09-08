@@ -17,7 +17,7 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
     public WpfTokenTimelineControl()
     {
         Background = WpfBrushes.White;
-        MinHeight = 110;
+        MinHeight = 60;
 
         wpfPlot.Margin = new System.Windows.Thickness(0);
         wpfPlot.Background = WpfBrushes.White;
@@ -91,25 +91,27 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
             Position = x,
             Value = barValues[i],
             Size = barWidthDays,
+            LineWidth = 0,
         }).ToArray();
         var cachedBars = xValues.Select((x, i) => new Bar
         {
             Position = x,
             Value = cachedValues[i],
             Size = barWidthDays,
+            LineWidth = 0,
         }).ToArray();
 
         var totalPlot = plot.Add.Bars(totalBars);
-        totalPlot.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(92, 119, 183, 171));
+        totalPlot.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(201, 230, 222));
         totalPlot.LegendText = "总 Token";
         var cachedPlot = plot.Add.Bars(cachedBars);
-        cachedPlot.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(210, 32, 148, 128));
+        cachedPlot.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(20, 125, 112));
         cachedPlot.LegendText = "缓存输入";
 
         var cumulativePlot = plot.Add.ScatterLine(
             xValues,
             cumulativeValues,
-            PlotColor.FromSDColor(DrawingColor.FromArgb(241, 115, 55)));
+            PlotColor.FromSDColor(DrawingColor.FromArgb(219, 152, 82)));
         cumulativePlot.Axes.YAxis = plot.Axes.Right;
         cumulativePlot.LineWidth = 2.2f;
         cumulativePlot.MarkerSize = 0;
@@ -122,7 +124,7 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         var bottom = plot.Axes.DateTimeTicksBottom();
         bottom.TickLabelStyle.FontName = "Segoe UI";
         bottom.TickLabelStyle.FontSize = 11;
-        bottom.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(86, 100, 118));
+        bottom.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
 
         var leftMax = Math.Max(0.001, barValues.Max() * 1.12);
         var rightMax = Math.Max(0.001, cumulativeValues.Last() * 1.08);
@@ -133,10 +135,10 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
 
         plot.Axes.Left.TickLabelStyle.FontName = "Segoe UI";
         plot.Axes.Left.TickLabelStyle.FontSize = 10;
-        plot.Axes.Left.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(116, 128, 145));
+        plot.Axes.Left.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
         plot.Axes.Right.TickLabelStyle.FontName = "Segoe UI";
         plot.Axes.Right.TickLabelStyle.FontSize = 10;
-        plot.Axes.Right.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(116, 128, 145));
+        plot.Axes.Right.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
         ApplyAxisLabels(plot);
 
         wpfPlot.Refresh();
@@ -165,22 +167,33 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         plot.Axes.Right.Label.Text = "累计 Token（M）";
         plot.Axes.Left.Label.FontName = "Microsoft YaHei UI";
         plot.Axes.Right.Label.FontName = "Microsoft YaHei UI";
+        plot.Axes.Left.Label.FontSize = 12;
+        plot.Axes.Right.Label.FontSize = 12;
+        plot.Axes.Left.Label.Bold = false;
+        plot.Axes.Right.Label.Bold = false;
+        plot.Axes.Left.Label.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
+        plot.Axes.Right.Label.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
     }
 
     private static void ApplyPlotStyle(Plot plot)
     {
         plot.FigureBackground.Color = PlotColor.FromSDColor(DrawingColor.White);
-        plot.DataBackground.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(248, 251, 254));
-        plot.Grid.MajorLineColor = PlotColor.FromSDColor(DrawingColor.FromArgb(222, 229, 238));
-        plot.Grid.MinorLineColor = PlotColor.FromSDColor(DrawingColor.FromArgb(238, 243, 248));
+        plot.DataBackground.Color = PlotColor.FromSDColor(DrawingColor.White);
+        plot.Grid.MajorLineColor = PlotColor.FromSDColor(DrawingColor.FromArgb(237, 241, 245));
+        plot.Grid.MinorLineColor = PlotColor.FromSDColor(DrawingColor.Transparent);
         plot.Grid.MajorLineWidth = 1;
-        plot.Grid.MinorLineWidth = 1;
-        plot.Axes.Left.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(178, 191, 208));
-        plot.Axes.Bottom.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(178, 191, 208));
-        plot.Axes.Right.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(214, 223, 235));
-        plot.Axes.Top.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(238, 243, 248));
+        plot.Grid.MinorLineWidth = 0;
+        plot.Axes.Left.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(224, 232, 239));
+        plot.Axes.Bottom.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(224, 232, 239));
+        plot.Axes.Right.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(224, 232, 239));
+        plot.Axes.Top.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(237, 241, 245));
         plot.Axes.Right.IsVisible = true;
         plot.Axes.Top.IsVisible = false;
+        plot.Legend.IsVisible = false;
+        plot.Legend.BackgroundColor = PlotColor.FromSDColor(DrawingColor.White);
+        plot.Legend.FontColor = PlotColor.FromSDColor(DrawingColor.FromArgb(23, 43, 58));
+        plot.Legend.OutlineWidth = 0;
+        plot.Legend.ShadowColor = PlotColor.FromSDColor(DrawingColor.Transparent);
     }
 
     private IEnumerable<TimelineBar> BuildBars(IReadOnlyList<TokenUsageBucket> rows)

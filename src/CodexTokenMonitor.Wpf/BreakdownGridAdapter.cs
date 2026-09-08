@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using WpfBinding = System.Windows.Data.Binding;
 
@@ -81,12 +82,11 @@ internal sealed class BreakdownGridAdapter : IDisposable
             {
                 Header = definition.Title,
                 Binding = new WpfBinding(definition.BindingPath),
-                Width = definition.Width
+                Width = definition.Width,
+                MinWidth = 76,
+                HeaderStyle = HeaderStyle(definition.Title),
+                ElementStyle = CellTextStyle(definition.RightAlign)
             };
-            if (definition.RightAlign)
-            {
-                column.ElementStyle = RightAlignedTextStyle();
-            }
 
             grid.Columns.Add(column);
         }
@@ -106,23 +106,25 @@ internal sealed class BreakdownGridAdapter : IDisposable
             new("Cached", nameof(BreakdownRow.Cached), 82, true),
             new("Cache Write", nameof(BreakdownRow.CacheWrite), 92, true),
             new("Uncached", nameof(BreakdownRow.Uncached), 88, true),
-            new("Output", nameof(BreakdownRow.Output), 72, true)
+            new("Output", nameof(BreakdownRow.Output), 76, true)
         };
 
         if (includeQuota)
         {
             columns.Insert(1, new("实际模型", nameof(BreakdownRow.Model), 132, false));
-            columns.Add(new("模型费用 ($)", nameof(BreakdownRow.ActualCost), 132, true));
+            columns.Add(new("模型费用 ($)", nameof(BreakdownRow.ActualCost), 112, true));
         }
         for (var i = 0; i < tablePresets.Count; i++)
         {
             var bindingPath = $"{nameof(BreakdownRow.Prices)}[{i}]";
-            columns.Add(new BreakdownColumnDefinition((includeQuota ? "换用 " : "") + FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}"), bindingPath, 92, true));
+            var title = (includeQuota ? "换用 " : "") + FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}");
+            const double width = 112;
+            columns.Add(new BreakdownColumnDefinition(title, bindingPath, width, true));
         }
 
         if (includeQuota)
         {
-            columns.Add(new BreakdownColumnDefinition("额度(5h/7d)", nameof(BreakdownRow.Quota), 108, true));
+            columns.Add(new BreakdownColumnDefinition("额度 (5h / 7d)", nameof(BreakdownRow.Quota), 112, true));
         }
 
         return columns;
@@ -222,25 +224,41 @@ internal sealed class BreakdownGridAdapter : IDisposable
     {
         if (eventBreakdown && range.Mode != RangeMode.Day && !range.IsCustomStart)
         {
-            return 116;
+            return 128;
         }
 
         if (range.IsCustomStart)
         {
-            return 132;
+            return 144;
         }
 
-        return range.Mode == RangeMode.Day ? 76 : 88;
+        return range.Mode == RangeMode.Day ? 92 : 104;
     }
 
-    private static Style RightAlignedTextStyle()
+    private Style HeaderStyle(string title)
     {
-        return new Style(typeof(TextBlock))
+        return new Style(typeof(DataGridColumnHeader), grid.TryFindResource(typeof(DataGridColumnHeader)) as Style)
         {
             Setters =
             {
-                new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Right),
-                new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis)
+                new Setter(FrameworkElement.ToolTipProperty, title)
+            }
+        };
+    }
+
+    private static Style CellTextStyle(bool rightAlign)
+    {
+        return new Style(typeof(TextBlock), DataGridTextColumn.DefaultElementStyle)
+        {
+            Setters =
+            {
+                new Setter(TextBlock.TextAlignmentProperty, rightAlign ? TextAlignment.Right : TextAlignment.Left),
+                new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center),
+                new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis),
+                new Setter(FrameworkElement.ToolTipProperty, new WpfBinding(nameof(TextBlock.Text))
+                {
+                    RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.Self)
+                })
             }
         };
     }
@@ -248,12 +266,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
     private static string FormatPresetColumnTitle(PricePreset preset, string fallback)
     {
         var text = string.IsNullOrWhiteSpace(preset.Model) ? preset.Provider : preset.Model;
-        return string.IsNullOrWhiteSpace(text) ? fallback : ShortenColumnTitle(text);
-    }
-
-    private static string ShortenColumnTitle(string text)
-    {
-        return text.Length <= 18 ? text : $"{text[..16]}...";
+        return string.IsNullOrWhiteSpace(text) ? fallback : text;
     }
 
     private static T? FindVisualChild<T>(DependencyObject root)

@@ -25,8 +25,8 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
     ];
 
     private readonly WpfPlot wpfPlot = new();
-    private static readonly PlotColor CurrentColor = PlotColor.FromSDColor(DrawingColor.FromArgb(0, 112, 82));
-    private static readonly PlotColor SelectedColor = PlotColor.FromSDColor(DrawingColor.FromArgb(217, 119, 6));
+    private static readonly PlotColor CurrentColor = PlotColor.FromSDColor(DrawingColor.FromArgb(20, 125, 112));
+    private static readonly PlotColor SelectedColor = PlotColor.FromSDColor(DrawingColor.FromArgb(219, 152, 82));
     private static readonly PlotColor SelectedHaloColor = PlotColor.FromSDColor(DrawingColor.White);
 
     public QuotaCostCurveControl()
@@ -193,9 +193,11 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
     private static void ApplyStyle(Plot plot)
     {
         plot.FigureBackground.Color = PlotColor.FromSDColor(DrawingColor.White);
-        plot.DataBackground.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(248, 251, 254));
-        plot.Grid.MajorLineColor = PlotColor.FromSDColor(DrawingColor.FromArgb(222, 229, 238));
-        plot.Grid.MinorLineColor = PlotColor.FromSDColor(DrawingColor.FromArgb(238, 243, 248));
+        plot.DataBackground.Color = PlotColor.FromSDColor(DrawingColor.White);
+        plot.Grid.MajorLineColor = PlotColor.FromSDColor(DrawingColor.FromArgb(237, 241, 245));
+        plot.Grid.MinorLineColor = PlotColor.FromSDColor(DrawingColor.Transparent);
+        plot.Grid.MajorLineWidth = 1;
+        plot.Grid.MinorLineWidth = 0;
         var symbol = "$";
         plot.Axes.Left.Label.Text = string.Equals(symbol, "Credits", StringComparison.OrdinalIgnoreCase)
             ? "累计等价费用 (Credits)"
@@ -203,11 +205,28 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
         plot.Axes.Bottom.Label.Text = "7d 已用额度 (%)";
         plot.Axes.Left.Label.FontName = "Microsoft YaHei UI";
         plot.Axes.Bottom.Label.FontName = "Microsoft YaHei UI";
+        plot.Axes.Left.Label.FontSize = 12;
+        plot.Axes.Bottom.Label.FontSize = 12;
+        plot.Axes.Left.Label.Bold = false;
+        plot.Axes.Bottom.Label.Bold = false;
+        plot.Axes.Left.Label.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
+        plot.Axes.Bottom.Label.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
         plot.Axes.Left.TickLabelStyle.FontName = "Segoe UI";
         plot.Axes.Bottom.TickLabelStyle.FontName = "Segoe UI";
-        plot.Axes.Left.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(86, 100, 118));
-        plot.Axes.Bottom.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(86, 100, 118));
+        plot.Axes.Left.TickLabelStyle.FontSize = 11;
+        plot.Axes.Bottom.TickLabelStyle.FontSize = 11;
+        plot.Axes.Left.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
+        plot.Axes.Bottom.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
+        plot.Axes.Left.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(224, 232, 239));
+        plot.Axes.Bottom.FrameLineStyle.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(224, 232, 239));
         plot.Axes.Top.IsVisible = false;
         plot.Axes.Right.IsVisible = false;
+        plot.Legend.IsVisible = false;
+        plot.Legend.FontName = "Microsoft YaHei UI";
+        plot.Legend.FontSize = 11;
+        plot.Legend.FontColor = PlotColor.FromSDColor(DrawingColor.FromArgb(23, 43, 58));
+        plot.Legend.BackgroundColor = PlotColor.FromSDColor(DrawingColor.White);
+        plot.Legend.OutlineWidth = 0;
+        plot.Legend.ShadowColor = PlotColor.FromSDColor(DrawingColor.Transparent);
     }
 }

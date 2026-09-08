@@ -4,47 +4,39 @@
         x:ClassModifier="internal"
         Title="局域网共享 · Codex 数据同步"
         Width="810" Height="830" MinWidth="650" MinHeight="630"
-        WindowStartupLocation="CenterOwner" Background="#F6F8FB"
-        FontFamily="Microsoft YaHei UI" ResizeMode="CanResizeWithGrip">
+        WindowStartupLocation="CenterOwner" Background="{StaticResource CanvasBrush}"
+        FontFamily="Microsoft YaHei UI" Foreground="{StaticResource TextBrush}" ResizeMode="CanResizeWithGrip">
     <Window.Resources>
-        <Style TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#26364A" />
-        </Style>
-        <Style TargetType="TextBox">
-            <Setter Property="MinHeight" Value="32" />
-            <Setter Property="Padding" Value="8,5" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
-            <Setter Property="BorderBrush" Value="#D6E0EA" />
-        </Style>
-        <Style TargetType="Button">
-            <Setter Property="MinHeight" Value="32" />
+        <Style TargetType="Button" BasedOn="{StaticResource BaseButton}">
             <Setter Property="MinWidth" Value="85" />
-            <Setter Property="Padding" Value="12,4" />
-            <Setter Property="Background" Value="White" />
-            <Setter Property="BorderBrush" Value="#D6E0EA" />
-            <Setter Property="Cursor" Value="Hand" />
         </Style>
-        <Style x:Key="Card" TargetType="Border">
-            <Setter Property="Background" Value="White" />
-            <Setter Property="BorderBrush" Value="#DDE5ED" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="8" />
+        <Style x:Key="Card" TargetType="Border" BasedOn="{StaticResource PanelBorder}">
             <Setter Property="Padding" Value="16" />
             <Setter Property="Margin" Value="0,0,0,12" />
         </Style>
     </Window.Resources>
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="20">
-            <TextBlock Text="跨电脑同步 Codex 数据" FontSize="22" FontWeight="SemiBold" />
-            <TextBlock Margin="0,7,0,16" TextWrapping="Wrap" Foreground="#65758A"
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel Margin="0,0,0,16">
+            <TextBlock Text="跨电脑同步 Codex 数据" Style="{StaticResource PageTitle}" />
+            <TextBlock Margin="0,6,0,0" Style="{StaticResource PageSubtitle}"
                        Text="只合并同一个 Codex 账户的数据。第一次等两台电脑缓存完成后，点‘同步全部历史’；以后日常同步最近 8 天即可。重复同步不会重复计数。" />
-
+        </StackPanel>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,8,0">
+          <StackPanel>
             <Border Style="{StaticResource Card}">
                 <StackPanel>
-                    <DockPanel Margin="0,0,0,12">
-                        <TextBlock Text="本机作为服务器" FontSize="16" FontWeight="SemiBold" />
-                        <TextBlock x:Name="ServerStateText" Text="未开启" Foreground="#65758A" HorizontalAlignment="Right" />
-                    </DockPanel>
+                    <Grid Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="本机作为服务器" Style="{StaticResource SectionTitle}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                        <Border Grid.Column="1" Background="{StaticResource AccentSoftBrush}" CornerRadius="10" Padding="10,4" MaxWidth="220">
+                            <TextBlock x:Name="ServerStateText" Text="未开启" Foreground="{StaticResource AccentBrush}" FontSize="11" TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="80" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" />
@@ -54,51 +46,75 @@
                         </Grid.RowDefinitions>
                         <TextBlock Text="监听端口" VerticalAlignment="Center" />
                         <TextBox x:Name="PortBox" Grid.Column="1" Text="36666" Width="100" HorizontalAlignment="Left" MaxLength="5" />
-                        <Button x:Name="ServerToggleButton" Grid.Column="2" Content="开启服务" Click="ServerToggleButton_Click" />
+                        <Button x:Name="ServerToggleButton" Grid.Column="2" Style="{StaticResource ToolButton}" MinWidth="88" Content="开启服务" Click="ServerToggleButton_Click" />
                         <TextBlock Grid.Row="1" Text="访问密钥" VerticalAlignment="Center" Margin="0,10,0,0" />
-                        <TextBox x:Name="LocalKeyBox" Grid.Row="1" Grid.Column="1" IsReadOnly="True" Margin="0,10,10,0" />
+                        <TextBox x:Name="LocalKeyBox" Grid.Row="1" Grid.Column="1" IsReadOnly="True" Margin="0,10,10,0"
+                                 TextWrapping="Wrap" MaxHeight="88" VerticalScrollBarVisibility="Auto" />
                         <Button Grid.Row="1" Grid.Column="2" Content="复制密钥" Margin="0,10,0,0" Click="CopyKeyButton_Click" />
                         <TextBlock Grid.Row="2" Text="连接地址" VerticalAlignment="Top" Margin="0,16,0,0" />
                         <TextBox x:Name="LocalAddressesBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2"
-                                 IsReadOnly="True" TextWrapping="Wrap" Margin="0,10,0,0" MinHeight="52"
+                                 IsReadOnly="True" TextWrapping="Wrap" Margin="0,10,0,0" MinHeight="52" MaxHeight="112" VerticalScrollBarVisibility="Auto"
                                  Text="开启服务后显示可供其他电脑连接的地址" />
                     </Grid>
                     <CheckBox x:Name="AutoStartBox" Content="启动程序时自动开启共享服务" Margin="0,12,0,0" />
-                    <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#65758A" FontSize="12"
+                    <TextBlock Margin="0,8,0,0" Style="{StaticResource SectionDescription}"
                                Text="开启后，本机接受上传与下载。关闭此窗口仍保持服务；退出程序即停止。数据同步由按钮手动执行。" />
-                    <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#65758A" FontSize="12"
+                    <TextBlock Margin="0,6,0,0" Style="{StaticResource SectionDescription}"
                                Text="连接不上时，请在 Windows 防火墙中允许此程序访问专用网络。HTTP 传输适用于可信局域网或 VPN。" />
                 </StackPanel>
             </Border>
 
             <Border Style="{StaticResource Card}">
                 <StackPanel>
-                    <TextBlock Text="连接另一台服务器" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12" />
+                    <TextBlock Text="连接另一台服务器" Style="{StaticResource SectionTitle}" Margin="0,0,0,14" />
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="80" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                         <TextBlock Text="服务器地址" VerticalAlignment="Center" />
-                        <TextBox x:Name="RemoteAddressBox" Grid.Column="1" ToolTip="例如 192.168.1.10:36666" />
+                        <TextBox x:Name="RemoteAddressBox" Grid.Column="1" ToolTip="例如 192.168.1.10:36666" TextWrapping="Wrap" MaxHeight="88" VerticalScrollBarVisibility="Auto" />
                         <TextBlock Grid.Row="1" Text="访问密钥" VerticalAlignment="Center" Margin="0,10,0,0" />
-                        <TextBox x:Name="RemoteKeyBox" Grid.Row="1" Grid.Column="1" Margin="0,10,0,0" MaxLength="128" />
+                        <TextBox x:Name="RemoteKeyBox" Grid.Row="1" Grid.Column="1" Margin="0,10,0,0" MaxLength="128"
+                                 TextWrapping="Wrap" MaxHeight="88" VerticalScrollBarVisibility="Auto" />
                     </Grid>
                     <WrapPanel Margin="0,14,0,0">
-                        <Button x:Name="TestButton" Content="测试连接" Click="TestButton_Click" Margin="0,0,10,6" />
-                        <Button x:Name="HistorySyncButton" Content="同步全部历史" Click="HistorySyncButton_Click" Margin="0,0,10,6" />
-                        <Button x:Name="SyncButton" Content="双向同步最近 8 天" Click="SyncButton_Click" Margin="0,0,10,6" />
+                        <Button x:Name="SyncButton" Content="双向同步最近 8 天" Style="{StaticResource PrimaryButton}" Click="SyncButton_Click" Margin="0,0,10,6" />
+                        <Button x:Name="HistorySyncButton" Content="同步全部历史" Style="{StaticResource ToolButton}" Click="HistorySyncButton_Click" Margin="0,0,10,6" />
+                        <Button x:Name="TestButton" Content="测试连接" Click="TestButton_Click" Margin="0,0,0,6" />
+                    </WrapPanel>
+                    <WrapPanel Margin="0,2,0,0">
                         <Button x:Name="UploadButton" Content="上传最近 8 天" Click="UploadButton_Click" Margin="0,0,10,6" />
                         <Button x:Name="DownloadButton" Content="下载并合并最近 8 天" Click="DownloadButton_Click" Margin="0,0,10,6" />
-                        <Button x:Name="CancelButton" Content="取消" IsEnabled="False" Click="CancelButton_Click" Margin="0,0,0,6" />
                     </WrapPanel>
-                    <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#65758A" FontSize="12"
+                    <TextBlock Margin="0,6,0,0" Style="{StaticResource SectionDescription}"
                                Text="全部历史：分批上传本机已缓存记录，再下载并合并服务器记录，最后刷新最近用量。日常最近 8 天：覆盖当前 7d 额度窗口。长期离线或补录旧数据后，可再次同步全部历史；套餐与价格设置在各自电脑管理。" />
                 </StackPanel>
             </Border>
 
-            <TextBlock x:Name="OperationText" Text="就绪。选择开启本机服务，或填写另一台服务器的地址。" TextWrapping="Wrap" Margin="0,0,0,10" />
-            <TextBlock Text="最近活动" FontWeight="SemiBold" Margin="0,0,0,6" />
-            <TextBox x:Name="ActivityBox" IsReadOnly="True" Height="95" TextWrapping="Wrap"
-                     VerticalScrollBarVisibility="Auto" FontSize="12" />
-        </StackPanel>
-    </ScrollViewer>
+            <Border Style="{StaticResource Card}" Margin="0">
+                <StackPanel>
+                    <TextBlock Text="最近活动" Style="{StaticResource SectionTitle}" Margin="0,0,0,10" />
+                    <TextBox x:Name="ActivityBox" IsReadOnly="True" Height="132" TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                             FontSize="12" Background="{StaticResource SubtleBrush}" />
+                </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+        <Border Grid.Row="2" Style="{StaticResource DialogFooter}" Margin="0,14,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                    <TextBlock Text="同步状态" Style="{StaticResource SectionDescription}" Margin="0,0,0,3" />
+                    <ScrollViewer MaxHeight="90" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <TextBlock x:Name="OperationText" Text="就绪。选择开启本机服务，或填写另一台服务器的地址。"
+                                   FontSize="12" TextWrapping="Wrap" />
+                    </ScrollViewer>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                    <Button x:Name="CancelButton" Content="取消操作" IsEnabled="False" Click="CancelButton_Click" Margin="0,0,10,0" />
+                    <Button Content="关闭" Style="{StaticResource ToolButton}" MinWidth="85" Click="CloseButton_Click" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
 </Window>

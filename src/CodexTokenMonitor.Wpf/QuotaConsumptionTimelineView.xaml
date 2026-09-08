@@ -1,0 +1,33 @@
+<UserControl x:Class="CodexTokenMonitor.QuotaConsumptionTimelineView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Foreground="{StaticResource TextBrush}" FontFamily="Microsoft YaHei UI" FontSize="12"
+             UseLayoutRounding="True">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Grid Margin="4,2,4,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel Margin="0,0,14,0" VerticalAlignment="Center">
+                <TextBlock x:Name="SummaryText" Text="等待可对齐的额度记录" FontWeight="SemiBold"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                <TextBlock x:Name="FastestSummaryText" Text="最快完整 5%：样本不足" Foreground="{StaticResource MutedBrush}"
+                           FontSize="11" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <ComboBox x:Name="RangeBox" Width="128" SelectedIndex="0" IsEnabled="False"
+                          ToolTip="选择时间线范围" SelectionChanged="RangeBox_SelectionChanged">
+                    <ComboBoxItem Content="已有记录" /><ComboBoxItem Content="最近 1 小时" /><ComboBoxItem Content="完整周期" />
+                    <ComboBoxItem Content="所选时段" IsEnabled="{Binding IsEnabled, ElementName=FocusBandButton}" />
+                    <ComboBoxItem Content="预测到目标" />
+                    <ComboBoxItem Content="近期预测" />
+                </ComboBox>
+                <Button x:Name="FocusBandButton" Content="聚焦所选" Style="{StaticResource ToolButton}"
+                        Margin="8,0,0,0" IsEnabled="False" Click="FocusBandButton_Click" />
+            </StackPanel>
+        </Grid>
+        <TextBlock x:Name="RangeText" Grid.Row="1" Margin="4,8,4,4" Style="{StaticResource SectionDescription}"
+                   Text="横轴为北京时间，分段耗时包含空闲" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                   ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+        <ContentControl x:Name="TimelineHost" Grid.Row="2" />
+    </Grid>
+</UserControl>
