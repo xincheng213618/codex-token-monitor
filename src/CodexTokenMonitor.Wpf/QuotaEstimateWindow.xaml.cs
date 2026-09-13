@@ -8,121 +8,169 @@ namespace CodexTokenMonitor;
 public partial class QuotaEstimateWindow : Window
 {
     private readonly CodexQuotaEstimate currentQuota;
-    private readonly IReadOnlyList<CodexQuotaCycle> knownWeeklyPeriods;
-    private readonly SemaphoreSlim? usageReadGate;
+    private readonly AnalysisQuerySession querySession;
     private readonly QuotaCostCurveControl embeddedCurveControl = new();
+    private IReadOnlyList<CodexQuotaCycle> loadedWeeklyPeriods;
+    private QuotaEstimateLoadResult? loadedEstimateResult;
     private QuotaCostCurveResult? loadedCurveResult;
-    private CancellationTokenSource? loadCancellation;
+    private ResetOpportunitySummary? loadedResetSummary;
+    private string? lastManualResult;
+    private string? loadFailureStatus;
+    private string? loadFailureDetail;
+    private bool isLoading;
+    private bool isManualEstimating;
+    private bool isLocatingPeriod;
 
     internal QuotaEstimateWindow(
         CodexQuotaEstimate currentQuota,
         IReadOnlyList<CodexQuotaCycle>? knownWeeklyPeriods = null,
-        SemaphoreSlim? usageReadGate = null)
+        MonitorRuntime? runtime = null)
     {
         this.currentQuota = currentQuota;
-        this.knownWeeklyPeriods = knownWeeklyPeriods ?? Array.Empty<CodexQuotaCycle>();
-        this.usageReadGate = usageReadGate;
+        loadedWeeklyPeriods = knownWeeklyPeriods ?? Array.Empty<CodexQuotaCycle>();
+        querySession = new AnalysisQuerySession(runtime);
         InitializeComponent();
         EmbeddedCurveHost.Content = embeddedCurveControl;
         FiveHourValue.Text = currentQuota.FiveHour is { } fiveHour ? $"{Math.Max(0m, 100m - fiveHour.UsedPercent):N0}%" : "未返回";
         WeekValue.Text = currentQuota.Week is { } week ? $"{Math.Max(0m, 100m - week.UsedPercent):N0}%" : "未返回";
         FiveHourDetail.Text = currentQuota.FiveHour is null ? "当前未返回 5h 限制；有额度数据后显示费用折算。" : "正在计算用量与费用…";
         WeekDetail.Text = currentQuota.Week is null ? "当前没有 7d 额度数据。" : "正在计算用量与费用…";
-        ApplyResetOpportunityPanel();
+        AddResetText("正在读取重置卡…");
 
         Loaded += async (_, _) => await LoadRowsAsync();
-        Closed += (_, _) =>
-        {
-            loadCancellation?.Cancel();
-            loadCancellation?.Dispose();
-            loadCancellation = null;
-        };
+        Closed += (_, _) => querySession.Dispose();
     }
 
     private async Task LoadRowsAsync()
     {
-        loadCancellation?.Cancel();
-        loadCancellation?.Dispose();
-        loadCancellation = new CancellationTokenSource();
-        var cancellationToken = loadCancellation.Token;
-        Task<QuotaEstimateLoadResult>? estimateTask = null;
-        Task<QuotaCostCurveResult>? curveTask = null;
+        if (isLoading || querySession.IsStopping) return;
+        isLoading = true;
 
         try
         {
-            StatusText.Text = "正在加载估算...";
-            WeeklyGrid.ItemsSource = null;
-            HistoryCountText.Text = "";
-            HistoryEmptyText.Text = "正在读取历史周期…";
+            SetStatus("正在加载估算...");
+            if (loadedEstimateResult is null)
+                HistoryEmptyText.Text = "正在读取历史周期…";
             LoadingProgress.Visibility = Visibility.Visible;
-            ShowCurveState("正在整理额度曲线", "将结合已保存的额度快照与用量记录绘制。");
+            if (loadedCurveResult is null)
+                ShowCurveState("正在整理额度曲线", "将结合已保存的额度快照与用量记录绘制。");
 
             var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-            estimateTask = Task.Run(
-                () => QuotaEstimateCalculator.BuildLoadResult(
-                    currentQuota,
-                    now,
-                    knownWeeklyPeriods,
-                    cancellationToken),
-                cancellationToken);
-            curveTask = Task.Run(
-                () => QuotaCostCurveCalculator.Build(
-                    currentQuota,
-                    knownWeeklyPeriods,
-                    cancellationToken,
-                    usageReadGate),
-                cancellationToken);
-            var result = await estimateTask;
-            cancellationToken.ThrowIfCancellationRequested();
+            var periods = loadedWeeklyPeriods;
+            var estimateTask = ObserveQueryAsync(querySession.RunAsync(
+                "额度估算窗口加载",
+                token => QuotaEstimateCalculator.BuildLoadResult(currentQuota, now, periods, token),
+                requiresSharedIo: false));
+            var curveTask = ObserveQueryAsync(querySession.RunAsync(
+                "额度估算窗口曲线",
+                token => QuotaCostCurveCalculator.Build(currentQuota, periods, token),
+                requiresSharedIo: false));
+            var resetTask = ObserveQueryAsync(querySession.RunAsync(
+                "额度估算窗口重置卡",
+                _ => ResetOpportunityStore.Summarize(now),
+                requiresSharedIo: false));
+            await Task.WhenAll(estimateTask, curveTask, resetTask);
+            if (querySession.IsStopping || !IsLoaded) return;
 
-            ApplyCurrentRows(result.CurrentRows);
-            WeeklyGrid.ItemsSource = result.WeeklyRows;
-            HistoryCountText.Text = $"{result.WeeklyRows.Count:N0} 个周期";
-            HistoryEmptyText.Text = "暂无历史周期，积累额度快照后可在这里回看。";
-            if (result.WeeklyRows.Count > 0)
-            {
-                WeeklyGrid.SelectedIndex = 0;
-            }
-            StatusText.Text = "历史周期已加载，正在统计额度曲线...";
+            var estimate = await estimateTask;
+            var curve = await curveTask;
+            var reset = await resetTask;
+            if (querySession.IsStopping || !IsLoaded) return;
+            var failures = new List<string>();
+            var details = new List<string>();
+            loadFailureStatus = null;
+            loadFailureDetail = null;
 
-            var curveResult = await curveTask;
-            cancellationToken.ThrowIfCancellationRequested();
-            ApplyCurveResult(curveResult);
-            StatusText.Text = result.WeeklyRows.Count == 0
-                ? "没有可展示的历史周期"
-                : $"已加载 {result.WeeklyRows.Count:N0}/{result.PeriodCount:N0} 个历史周期";
-        }
-        catch (OperationCanceledException)
-        {
-            if (IsLoaded)
+            if (estimate.Result is { CacheWarnings.Count: 0 } estimateResult)
             {
-                StatusText.Text = "加载已取消";
-                LoadingProgress.Visibility = Visibility.Collapsed;
-                HistoryEmptyText.Text = "加载已取消。";
-                ShowCurveState("加载已取消", "重新打开窗口可再次读取已保存的统计数据。");
+                var result = estimateResult.Value;
+                loadedEstimateResult = result;
+                loadedWeeklyPeriods = result.Periods;
+                ApplyCurrentRows(result.CurrentRows);
+                WeeklyGrid.ItemsSource = result.WeeklyRows;
+                HistoryCountText.Text = $"{result.WeeklyRows.Count:N0} 个周期";
+                HistoryEmptyText.Text = "暂无历史周期，积累额度快照后可在这里回看。";
+                if (result.WeeklyRows.Count > 0) WeeklyGrid.SelectedIndex = 0;
             }
+            else
+            {
+                failures.Add("用量估算：" + FailureSummary(estimate.Result?.CacheWarnings, estimate.Error, loadedEstimateResult is not null));
+                details.Add(FailureDetail(estimate.Result?.CacheWarnings, estimate.Error));
+                if (loadedEstimateResult is null)
+                {
+                    HistoryEmptyText.Text = "历史用量暂不可用，恢复缓存后重新打开此窗口重试。";
+                    FiveHourDetail.Text = "费用估算暂不可用，当前额度仍显示已取得的快照。";
+                    WeekDetail.Text = "费用估算暂不可用，当前额度仍显示已取得的快照。";
+                }
+            }
+
+            if (reset.Result is { CacheWarnings.Count: 0 } resetResult)
+            {
+                loadedResetSummary = resetResult.Value;
+                ApplyResetOpportunityPanel(resetResult.Value, now);
+            }
+            else
+            {
+                failures.Add("重置卡：" + FailureSummary(reset.Result?.CacheWarnings, reset.Error, loadedResetSummary is not null));
+                details.Add(FailureDetail(reset.Result?.CacheWarnings, reset.Error));
+                if (loadedResetSummary is null)
+                {
+                    ResetOpportunityPanel.Children.Clear();
+                    AddResetText("重置卡统计暂不可用，请稍后重新打开此窗口。");
+                }
+            }
+
+            if (curve.Result is { CacheWarnings.Count: 0 } curveResult)
+                ApplyCurveResult(curveResult.Value);
+            else
+            {
+                failures.Add("额度曲线：" + FailureSummary(curve.Result?.CacheWarnings, curve.Error, loadedCurveResult is not null));
+                details.Add(FailureDetail(curve.Result?.CacheWarnings, curve.Error));
+                if (loadedCurveResult is null)
+                    ShowCurveState("额度曲线暂不可用", "恢复缓存后，重新打开此窗口重试。");
+            }
+
+            if (failures.Count > 0)
+            {
+                loadFailureStatus = string.Join(" ", failures);
+                loadFailureDetail = string.Join(Environment.NewLine, details);
+            }
+            SetStatus(loadedEstimateResult is { WeeklyRows.Count: > 0 } loaded
+                ? $"已加载 {loaded.WeeklyRows.Count:N0}/{loaded.PeriodCount:N0} 个历史周期"
+                : "没有可展示的历史周期");
         }
         catch (Exception ex)
         {
-            loadCancellation?.Cancel();
-            if (!IsLoaded)
-            {
-                return;
-            }
-
-            StatusText.Text = "加载失败";
-            LoadingProgress.Visibility = Visibility.Collapsed;
-            HistoryEmptyText.Text = "历史数据未加载完成。";
-            ShowCurveState("额度曲线未加载完成", "关闭后重新打开窗口可重试；已读取的数据会继续显示。");
-            System.Windows.MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            if (querySession.IsStopping || !IsLoaded) return;
+            loadFailureStatus = "加载失败；已成功读取的结果会继续显示，重新打开此窗口可重试。";
+            loadFailureDetail = ex.ToString();
+            SetStatus(loadFailureStatus);
+            if (loadedEstimateResult is null) HistoryEmptyText.Text = "历史用量暂不可用，请稍后重新打开此窗口。";
+            if (loadedCurveResult is null) ShowCurveState("额度曲线暂不可用", "请稍后重新打开此窗口。");
         }
         finally
         {
-            await ObserveBackgroundTasksAsync(estimateTask, curveTask);
-            if (!cancellationToken.IsCancellationRequested)
+            isLoading = false;
+            if (!querySession.IsStopping && IsLoaded)
                 LoadingProgress.Visibility = Visibility.Collapsed;
         }
     }
+
+    private void SetStatus(string text, string? detail = null)
+    {
+        StatusText.Text = loadFailureStatus ?? text;
+        StatusText.ToolTip = loadFailureDetail ?? detail;
+    }
+
+    private static string FailureSummary(IReadOnlyList<CacheWarning>? warnings, Exception? error, bool hasPreviousResult) =>
+        warnings is { Count: > 0 }
+            ? CacheFailureText.Summary(warnings, hasPreviousResult)
+            : $"读取失败：{error?.Message ?? "查询未完成"}；" + (hasPreviousResult
+                ? "当前显示上次成功结果，重新打开此窗口可重试。"
+                : "本次统计暂不可用，重新打开此窗口可重试。");
+
+    private static string FailureDetail(IReadOnlyList<CacheWarning>? warnings, Exception? error) =>
+        warnings is { Count: > 0 } ? CacheFailureText.Detail(warnings) : error?.ToString() ?? "查询未完成";
 
     private void ApplyCurveResult(QuotaCostCurveResult result)
     {
@@ -148,45 +196,30 @@ public partial class QuotaEstimateWindow : Window
         CurveEmptyDetail.Text = detail;
     }
 
-    private static async Task ObserveBackgroundTasksAsync(
-        Task<QuotaEstimateLoadResult>? estimateTask,
-        Task<QuotaCostCurveResult>? curveTask)
+    private static async Task<(AnalysisQueryResult<T>? Result, Exception? Error)> ObserveQueryAsync<T>(
+        Task<AnalysisQueryResult<T>> task)
     {
-        if (estimateTask is not null)
+        try
         {
-            try
-            {
-                await estimateTask;
-            }
-            catch
-            {
-                // The foreground load path reports the first failure. This await
-                // observes any later exception so the parallel curve task cannot
-                // become an unobserved fault after the window has handled an error.
-            }
+            return (await task, null);
         }
-
-        if (curveTask is not null)
+        catch (Exception ex)
         {
-            try
-            {
-                await curveTask;
-            }
-            catch
-            {
-                // See the estimate task comment above.
-            }
+            // Each parallel query is observed independently so one failure
+            // cannot discard another query's successful result.
+            return (null, ex);
         }
     }
 
     private void CurvePlanComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (querySession.IsStopping) return;
         ApplyEmbeddedCurvePlan();
     }
 
     private void WeeklyGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (loadedCurveResult is null || WeeklyGrid.SelectedItem is not QuotaWeeklyCycleRow selectedRow)
+        if (querySession.IsStopping || loadedCurveResult is null || WeeklyGrid.SelectedItem is not QuotaWeeklyCycleRow selectedRow)
         {
             return;
         }
@@ -204,7 +237,7 @@ public partial class QuotaEstimateWindow : Window
 
     private void WeeklyGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (FindVisualParent<DataGridRow>(e.OriginalSource as DependencyObject) is not { } row)
+        if (querySession.IsStopping || FindVisualParent<DataGridRow>(e.OriginalSource as DependencyObject) is not { } row)
         {
             return;
         }
@@ -215,48 +248,70 @@ public partial class QuotaEstimateWindow : Window
 
     private async void AnalyzeCycleMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        if (WeeklyGrid.SelectedItem is not QuotaWeeklyCycleRow selectedRow)
+        if (isLocatingPeriod || querySession.IsStopping || WeeklyGrid.SelectedItem is not QuotaWeeklyCycleRow selectedRow)
         {
             return;
         }
 
-        var period = knownWeeklyPeriods.FirstOrDefault(item => item.PeriodStart == selectedRow.PeriodStart);
-        if (period is null)
+        isLocatingPeriod = true;
+        try
         {
-            var cancellationToken = loadCancellation?.Token ?? CancellationToken.None;
-            StatusText.Text = "正在定位所选周期...";
-            var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-            try
+            var period = loadedWeeklyPeriods.FirstOrDefault(item => item.PeriodStart == selectedRow.PeriodStart);
+            if (period is null)
             {
-                var periods = await Task.Run(
-                    () => CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now, cancellationToken),
-                    cancellationToken);
-                period = periods.FirstOrDefault(item => item.PeriodStart == selectedRow.PeriodStart);
+                SetStatus("正在定位所选周期...");
+                var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+                var result = await querySession.RunAsync(
+                    "额度估算定位周期",
+                    token => CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now, token),
+                    requiresSharedIo: false);
+                if (querySession.IsStopping || !IsLoaded || !ReferenceEquals(WeeklyGrid.SelectedItem, selectedRow)) return;
+                if (result.CacheWarnings.Count > 0)
+                {
+                    SetStatus(CacheFailureText.Summary(result.CacheWarnings, loadedEstimateResult is not null),
+                        CacheFailureText.Detail(result.CacheWarnings));
+                    return;
+                }
+
+                loadedWeeklyPeriods = loadedWeeklyPeriods.Concat(result.Value)
+                    .GroupBy(item => item.PeriodStart)
+                    .Select(group => group.Last())
+                    .OrderBy(item => item.PeriodStart)
+                    .ToArray();
+                period = loadedWeeklyPeriods.FirstOrDefault(item => item.PeriodStart == selectedRow.PeriodStart);
             }
-            catch (OperationCanceledException)
+
+            if (querySession.IsStopping || !IsLoaded || !ReferenceEquals(WeeklyGrid.SelectedItem, selectedRow)) return;
+            if (period is null)
             {
+                SetStatus("无法定位所选周期");
                 return;
             }
-        }
 
-        if (period is null || !IsLoaded)
-        {
-            if (IsLoaded)
+            var previousPeriod = loadedWeeklyPeriods
+                .Where(item => item.PeriodStart < period.PeriodStart)
+                .OrderByDescending(item => item.PeriodStart)
+                .FirstOrDefault();
+            var window = new QuotaCycleAnalysisWindow(period, currentQuota.Week, previousPeriod, runtime: querySession.Runtime)
             {
-                StatusText.Text = "无法定位所选周期";
-            }
-            return;
+                Owner = this
+            };
+            window.Show();
+            SetStatus("已打开所选周期分析");
         }
-
-        var previousPeriod = knownWeeklyPeriods
-            .Where(item => item.PeriodStart < period.PeriodStart)
-            .OrderByDescending(item => item.PeriodStart)
-            .FirstOrDefault();
-        var window = new QuotaCycleAnalysisWindow(period, currentQuota.Week, previousPeriod)
+        catch (OperationCanceledException)
         {
-            Owner = this
-        };
-        window.Show();
+            // The session cancels lookup when its window or application closes.
+        }
+        catch (Exception ex)
+        {
+            if (!querySession.IsStopping && IsLoaded && ReferenceEquals(WeeklyGrid.SelectedItem, selectedRow))
+                SetStatus($"周期定位失败：{ex.Message}；请稍后重试。", ex.ToString());
+        }
+        finally
+        {
+            isLocatingPeriod = false;
+        }
     }
 
     private static T? FindVisualParent<T>(DependencyObject? child) where T : DependencyObject
@@ -322,11 +377,9 @@ public partial class QuotaEstimateWindow : Window
         }
     }
 
-    private void ApplyResetOpportunityPanel()
+    private void ApplyResetOpportunityPanel(ResetOpportunitySummary summary, DateTimeOffset now)
     {
         ResetOpportunityPanel.Children.Clear();
-        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        var summary = ResetOpportunityStore.Summarize(now);
 
         AddResetText(
             ResetOpportunityFormatter.FormatPanelTitle(summary),
@@ -371,44 +424,57 @@ public partial class QuotaEstimateWindow : Window
 
     private async void ManualEstimateButton_Click(object sender, RoutedEventArgs e)
     {
+        if (isManualEstimating || querySession.IsStopping) return;
+        isManualEstimating = true;
         ManualEstimateButton.IsEnabled = false;
-        ManualResultText.Text = "正在估算...";
-        var cancellationToken = loadCancellation?.Token ?? CancellationToken.None;
+        if (lastManualResult is null) ManualResultText.Text = "正在估算...";
 
         try
         {
             var fromRemaining = ManualFromBox.Value ?? 90m;
             var toRemaining = ManualToBox.Value ?? 85m;
-            var result = await Task.Run(
-                () => QuotaEstimateCalculator.BuildManualWeekEstimate(
+            var result = await querySession.RunAsync(
+                "手动额度估算",
+                token => QuotaEstimateCalculator.BuildManualWeekEstimate(
                     currentQuota,
                     fromRemaining,
                     toRemaining,
-                    cancellationToken),
-                cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!IsLoaded)
+                    token),
+                requiresSharedIo: false);
+            if (querySession.IsStopping || !IsLoaded)
             {
                 return;
             }
 
-            ManualResultText.Text = result;
+            if (result.CacheWarnings.Count > 0)
+            {
+                var warning = CacheFailureText.Summary(result.CacheWarnings, lastManualResult is not null);
+                ManualResultText.Text = lastManualResult is null ? warning : $"{lastManualResult}{Environment.NewLine}{warning}";
+                ManualResultText.ToolTip = CacheFailureText.Detail(result.CacheWarnings);
+                return;
+            }
+
+            lastManualResult = result.Value;
+            ManualResultText.Text = result.Value;
+            ManualResultText.ToolTip = null;
         }
         catch (OperationCanceledException)
         {
-            // Closing the window cancels the shared load token. Do not write
-            // status text back into a window that is already being torn down.
+            // Closing the session cancels this query without publishing a result.
         }
         catch (Exception ex)
         {
-            if (IsLoaded)
+            if (!querySession.IsStopping && IsLoaded)
             {
-                ManualResultText.Text = $"估算失败：{ex.Message}";
+                var failure = FailureSummary(null, ex, lastManualResult is not null);
+                ManualResultText.Text = lastManualResult is null ? failure : $"{lastManualResult}{Environment.NewLine}{failure}";
+                ManualResultText.ToolTip = ex.ToString();
             }
         }
         finally
         {
-            if (IsLoaded)
+            isManualEstimating = false;
+            if (!querySession.IsStopping && IsLoaded)
             {
                 ManualEstimateButton.IsEnabled = true;
             }
@@ -417,7 +483,8 @@ public partial class QuotaEstimateWindow : Window
 
     private void QuotaCurveButton_Click(object sender, RoutedEventArgs e)
     {
-        var window = new QuotaCostCurveWindow(currentQuota, knownWeeklyPeriods, usageReadGate)
+        if (querySession.IsStopping) return;
+        var window = new QuotaCostCurveWindow(currentQuota, loadedWeeklyPeriods, runtime: querySession.Runtime)
         {
             Owner = this
         };

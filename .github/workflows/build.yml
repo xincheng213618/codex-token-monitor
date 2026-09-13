@@ -13,7 +13,10 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          # .slnx needs SDK 9.0.200 or newer; keep .NET 8 for the test runtime.
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Restore
         run: dotnet restore .\CodexTokenMonitor.slnx -r win-x64

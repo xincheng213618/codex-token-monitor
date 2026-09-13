@@ -64,6 +64,59 @@ public sealed class CodexModelUsageTests
         Assert.Contains("1 条", partial.MissingPriceDescription);
     }
 
+    [Fact]
+    public void ReserveUsesLunaPriceAndDoesNotCreateAZeroPlaceholder()
+    {
+        var settings = new PriceSettings();
+        Assert.Equal(0, CodexModelCost.AddMissingPresets(settings, new[] { CodexModelCost.ReserveModelId }));
+
+        var usage = new TokenUsageBucket();
+        usage.Add(Event(Day, "reserve", CodexModelCost.ReserveModelId));
+        var estimate = CodexModelCost.Estimate(usage, settings.CodexPresets);
+
+        Assert.True(estimate.IsComplete);
+        Assert.Equal(.157m, estimate.KnownCost);
+        Assert.Equal(.157m, Assert.Single(estimate.Models).Cost);
+        Assert.Equal(2.5m, CodexModelCost.FastQuotaMultiplier(CodexModelCost.ReserveModelId));
+    }
+
+    [Fact]
+    public void ReserveFallsBackToLunaWhenAnOlderZeroPlaceholderIsPersisted()
+    {
+        var settings = new PriceSettings();
+        settings.CodexPresets.Add(new PricePreset
+        {
+            Provider = "OpenAI",
+            Model = CodexModelCost.ReserveModelId,
+            ModelId = CodexModelCost.ReserveModelId,
+            CurrencySymbol = "$",
+            UnitLabel = "USD / 1M tokens",
+            Divisor = 1_000_000m,
+            Source = CodexModelCost.PlaceholderPriceSource
+        });
+        var usage = new TokenUsageBucket();
+        usage.Add(Event(Day, "reserve", CodexModelCost.ReserveModelId));
+
+        var estimate = CodexModelCost.Estimate(usage, settings.CodexPresets);
+
+        Assert.True(estimate.IsComplete);
+        Assert.Equal(.157m, estimate.KnownCost);
+    }
+
+    [Fact]
+    public void FindModelUsageMergesDateSuffixedReserveIds()
+    {
+        var usage = new TokenUsageBucket();
+        usage.Add(Event(Day, "reserve-a", "gpt-reserve-2026-09-12"));
+        usage.Add(Event(Day.AddMinutes(1), "reserve-b", CodexModelCost.ReserveModelId));
+
+        var reserve = CodexModelCost.FindModelUsage(usage, CodexModelCost.ReserveModelId);
+
+        Assert.NotNull(reserve);
+        Assert.Equal(2, reserve.Events);
+        Assert.Equal(2_100_000, reserve.TotalTokens);
+    }
+
     private static readonly DateTimeOffset Day = new(2001, 4, 9, 0, 0, 0, TimeSpan.FromHours(8));
 
     [Theory]

@@ -76,9 +76,23 @@ internal static class ResetOpportunityFormatter
 internal static class ResetOpportunityStore
 {
     private const string CreditsEndpoint = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
-    private static readonly object SyncRoot = new();
-    private static string? initializedPath;
-    private static IReadOnlyList<ResetOpportunityRecord>? cachedRecords;
+    private static readonly MonitorSettingsTable<ResetOpportunityRecord> Table = new(
+        "reset_opportunities",
+        """
+        CREATE TABLE IF NOT EXISTS reset_opportunities (
+            id TEXT PRIMARY KEY,
+            granted_local TEXT NOT NULL,
+            expires_local TEXT NOT NULL,
+            is_used INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_reset_opportunities_expires ON reset_opportunities(expires_local);
+        """,
+        ReadRecords,
+        WriteRecords,
+        Defaults,
+        CloneRecords,
+        NormalizeRecords);
 
     public static IReadOnlyList<ResetOpportunityRecord> Defaults()
     {
@@ -90,21 +104,15 @@ internal static class ResetOpportunityStore
         };
     }
 
-    public static IReadOnlyList<ResetOpportunityRecord> Load()
-    {
-        EnsureInitialized();
-        lock (SyncRoot)
-        {
-            cachedRecords ??= CloneRecords(ReadRecords());
-            return CloneRecords(cachedRecords);
-        }
-    }
+    public static IReadOnlyList<ResetOpportunityRecord> Load(bool forceReload = false) => Table.Load(forceReload);
 
-    public static void Save(IReadOnlyList<ResetOpportunityRecord> records)
+    public static void Save(IReadOnlyList<ResetOpportunityRecord> records) => Table.Save(records);
+
+    private static IReadOnlyList<ResetOpportunityRecord> NormalizeRecords(IReadOnlyList<ResetOpportunityRecord> records)
     {
-        EnsureInitialized();
-        var normalizedRecords = records
-            .Where(item => item.ExpiresLocal > item.GrantedLocal)
+        ArgumentNullException.ThrowIfNull(records);
+        foreach (var record in records) ValidateRecord(record);
+        return records
             .OrderBy(item => item.GrantedLocal)
             .Select(item => new ResetOpportunityRecord
             {
@@ -115,36 +123,31 @@ internal static class ResetOpportunityStore
                 Note = item.Note?.Trim() ?? ""
             })
             .ToList();
+    }
 
-        lock (SyncRoot)
+    private static void ValidateRecord(ResetOpportunityRecord record)
+    {
+        if (record.ExpiresLocal <= record.GrantedLocal)
+            throw new InvalidDataException("重置卡过期时间必须晚于获得时间。");
+    }
+
+    private static void WriteRecords(SqliteConnection connection, SqliteTransaction transaction, IReadOnlyList<ResetOpportunityRecord> records)
+    {
+        MonitorSettingsDatabase.ExecuteNonQuery(connection, transaction, "DELETE FROM reset_opportunities");
+        foreach (var record in records)
         {
-            using var connection = OpenConnection();
-            using var transaction = connection.BeginTransaction();
-            using (var deleteCommand = connection.CreateCommand())
-            {
-                deleteCommand.Transaction = transaction;
-                deleteCommand.CommandText = "DELETE FROM reset_opportunities";
-                deleteCommand.ExecuteNonQuery();
-            }
-
-            foreach (var record in normalizedRecords)
-            {
-                using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText = """
-                    INSERT INTO reset_opportunities (id, granted_local, expires_local, is_used, note)
-                    VALUES ($id, $granted_local, $expires_local, $is_used, $note)
-                    """;
-                command.Parameters.AddWithValue("$id", record.Id);
-                command.Parameters.AddWithValue("$granted_local", FormatDateTimeOffset(record.GrantedLocal));
-                command.Parameters.AddWithValue("$expires_local", FormatDateTimeOffset(record.ExpiresLocal));
-                command.Parameters.AddWithValue("$is_used", record.IsUsed ? 1 : 0);
-                command.Parameters.AddWithValue("$note", record.Note);
-                command.ExecuteNonQuery();
-            }
-
-            transaction.Commit();
-            cachedRecords = CloneRecords(normalizedRecords);
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO reset_opportunities (id, granted_local, expires_local, is_used, note)
+                VALUES ($id, $granted_local, $expires_local, $is_used, $note)
+                """;
+            command.Parameters.AddWithValue("$id", record.Id);
+            command.Parameters.AddWithValue("$granted_local", FormatDateTimeOffset(record.GrantedLocal));
+            command.Parameters.AddWithValue("$expires_local", FormatDateTimeOffset(record.ExpiresLocal));
+            command.Parameters.AddWithValue("$is_used", record.IsUsed ? 1 : 0);
+            command.Parameters.AddWithValue("$note", record.Note);
+            command.ExecuteNonQuery();
         }
     }
 
@@ -164,6 +167,7 @@ internal static class ResetOpportunityStore
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var accessToken = ReadCodexAccessToken();
             if (string.IsNullOrWhiteSpace(accessToken))
             {
@@ -194,6 +198,7 @@ internal static class ResetOpportunityStore
             var records = ReadApiRecords(doc.RootElement)
                 .OrderBy(item => item.GrantedLocal)
                 .ToList();
+            cancellationToken.ThrowIfCancellationRequested();
             Save(records);
 
             return new ResetOpportunitySyncResult(true, records.Count, $"已同步 {records.Count:N0} 张重置卡", records);
@@ -226,36 +231,46 @@ internal static class ResetOpportunityStore
             : null;
     }
 
-    private static IEnumerable<ResetOpportunityRecord> ReadApiRecords(JsonElement root)
+    internal static IReadOnlyList<ResetOpportunityRecord> ReadApiRecords(JsonElement root)
     {
-        if (!root.TryGetProperty("credits", out var credits) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("credits", out var credits) ||
             credits.ValueKind != JsonValueKind.Array)
         {
-            yield break;
+            throw new JsonException("重置卡响应缺少有效的 credits 数组，未更改本地记录。");
         }
 
+        var records = new List<ResetOpportunityRecord>();
         foreach (var credit in credits.EnumerateArray())
         {
+            if (credit.ValueKind != JsonValueKind.Object)
+                throw new JsonException("重置卡记录必须是对象，未更改本地记录。");
             var id = GetString(credit, "id");
             var grantedUtc = ParseUtc(GetString(credit, "granted_at"));
             var expiresUtc = ParseUtc(GetString(credit, "expires_at"));
             if (grantedUtc is null || expiresUtc is null || expiresUtc <= grantedUtc)
             {
-                continue;
+                throw new JsonException("重置卡记录的获得或过期时间无效，未更改本地记录。");
             }
 
-            var status = GetString(credit, "status") ?? "";
+            var status = GetString(credit, "status");
+            if (string.IsNullOrWhiteSpace(status))
+                throw new JsonException("重置卡记录缺少有效状态，未更改本地记录。");
             var title = GetString(credit, "title") ?? "Codex 重置卡";
-            yield return new ResetOpportunityRecord
+            var redeemedAt = GetString(credit, "redeemed_at");
+            if (!string.IsNullOrWhiteSpace(redeemedAt) && ParseUtc(redeemedAt) is null)
+                throw new JsonException("重置卡记录的兑换时间无效，未更改本地记录。");
+            records.Add(new ResetOpportunityRecord
             {
                 Id = $"codex-api-{HashId(id ?? $"{grantedUtc:O}|{expiresUtc:O}")}",
                 GrantedLocal = grantedUtc.Value.ToOffset(CodexUsageReader.BeijingOffset),
                 ExpiresLocal = expiresUtc.Value.ToOffset(CodexUsageReader.BeijingOffset),
                 IsUsed = !string.Equals(status, "available", StringComparison.OrdinalIgnoreCase) ||
-                         !string.IsNullOrWhiteSpace(GetString(credit, "redeemed_at")),
+                         !string.IsNullOrWhiteSpace(redeemedAt),
                 Note = $"Codex 接口同步：{title}"
-            };
+            });
         }
+        return records;
     }
 
     private static string HashId(string value)
@@ -277,10 +292,11 @@ internal static class ResetOpportunityStore
 
     private static string? GetString(JsonElement element, string propertyName)
     {
-        return element.TryGetProperty(propertyName, out var property) &&
-               property.ValueKind != JsonValueKind.Null
-            ? property.GetString()
-            : null;
+        if (!element.TryGetProperty(propertyName, out var property) || property.ValueKind == JsonValueKind.Null)
+            return null;
+        if (property.ValueKind != JsonValueKind.String)
+            throw new JsonException($"重置卡字段 {propertyName} 必须是字符串，未更改本地记录。");
+        return property.GetString();
     }
 
     private static ResetOpportunityRecord Record(string id, DateTimeOffset grantedLocal, string note)
@@ -294,102 +310,33 @@ internal static class ResetOpportunityStore
         };
     }
 
-    private static IReadOnlyList<ResetOpportunityRecord> ReadRecords()
-    {
-        try
-        {
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT id, granted_local, expires_local, is_used, note
-                FROM reset_opportunities
-                ORDER BY granted_local
-                """;
-            var result = new List<ResetOpportunityRecord>();
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
-            {
-                var record = new ResetOpportunityRecord
-                {
-                    Id = reader.GetString(0),
-                    GrantedLocal = ParseDateTimeOffset(reader.GetString(1)),
-                    ExpiresLocal = ParseDateTimeOffset(reader.GetString(2)),
-                    IsUsed = reader.GetInt32(3) != 0,
-                    Note = reader.GetString(4)
-                };
-                if (record.ExpiresLocal > record.GrantedLocal)
-                {
-                    result.Add(record);
-                }
-            }
-
-            return result;
-        }
-        catch
-        {
-            return Defaults();
-        }
-    }
-
-    private static void EnsureInitialized()
-    {
-        lock (SyncRoot)
-        {
-            if (initializedPath == MonitorSettingsDatabase.Path)
-            {
-                return;
-            }
-
-            using var connection = OpenConnection();
-            ExecuteNonQuery(connection, """
-                CREATE TABLE IF NOT EXISTS reset_opportunities (
-                    id TEXT PRIMARY KEY,
-                    granted_local TEXT NOT NULL,
-                    expires_local TEXT NOT NULL,
-                    is_used INTEGER NOT NULL DEFAULT 0,
-                    note TEXT NOT NULL DEFAULT ''
-                )
-                """);
-            ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS idx_reset_opportunities_expires ON reset_opportunities(expires_local)");
-
-            using var countCommand = connection.CreateCommand();
-            countCommand.CommandText = "SELECT COUNT(*) FROM reset_opportunities";
-            var count = Convert.ToInt32(countCommand.ExecuteScalar(), CultureInfo.InvariantCulture);
-            initializedPath = MonitorSettingsDatabase.Path;
-            cachedRecords = null;
-            if (count == 0)
-            {
-                Save(Defaults());
-            }
-        }
-    }
-
-    private static SqliteConnection OpenConnection()
-    {
-        var path = MonitorSettingsDatabase.Path;
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var builder = new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = true
-        };
-        var connection = new SqliteConnection(builder.ToString());
-        connection.Open();
-        ExecuteNonQuery(connection, "PRAGMA busy_timeout=5000;");
-        return connection;
-    }
-
-    private static void ExecuteNonQuery(SqliteConnection connection, string commandText)
+    private static IReadOnlyList<ResetOpportunityRecord> ReadRecords(SqliteConnection connection, SqliteTransaction? transaction)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = commandText;
-        command.ExecuteNonQuery();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT id, granted_local, expires_local, is_used, note
+            FROM reset_opportunities
+            ORDER BY granted_local
+            """;
+        var result = new List<ResetOpportunityRecord>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (reader.GetValue(3) is not long used || used is not (0 or 1))
+                throw new FormatException("重置卡使用状态必须为 0 或 1。");
+            var record = new ResetOpportunityRecord
+            {
+                Id = reader.GetString(0),
+                GrantedLocal = ParseDateTimeOffset(reader.GetString(1)),
+                ExpiresLocal = ParseDateTimeOffset(reader.GetString(2)),
+                IsUsed = used != 0,
+                Note = reader.GetString(4)
+            };
+            ValidateRecord(record);
+            result.Add(record);
+        }
+        return result;
     }
 
     private static DateTimeOffset Local(int year, int month, int day, int hour, int minute)

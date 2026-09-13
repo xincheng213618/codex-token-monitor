@@ -1,6 +1,6 @@
 namespace CodexTokenMonitor;
 
-/// <summary>Refreshes this page's original cycle; never follows a successor cycle.</summary>
+/// <summary>Refreshes the originally selected cycle; never follows a successor cycle.</summary>
 internal sealed record QuotaAnalysisRefreshRange(
     CodexQuotaCycle Period,
     CodexQuotaWindowEstimate? CurrentWeek,

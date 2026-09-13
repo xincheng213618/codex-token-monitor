@@ -1,0 +1,49 @@
+name: desktop regression
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: WPF regression suite
+        type: choice
+        default: all
+        options:
+          - all
+          - main
+          - settings
+          - analysis
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Build and run isolated WPF regression
+        shell: pwsh
+        env:
+          DESKTOP_SUITE: ${{ inputs.suite }}
+        run: |
+          if ($env:DESKTOP_SUITE -eq 'all') {
+            .\Scripts\Test-Desktop.ps1
+          } else {
+            .\Scripts\Test-Desktop.ps1 -Suite $env:DESKTOP_SUITE
+          }
+      - name: Core regression
+        shell: pwsh
+        run: dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.csproj -c Release --no-build --no-restore
+      - name: Runner and CLI self-checks
+        shell: pwsh
+        run: .\Scripts\Test-DesktopRunner.ps1 -IncludeProbeCli
+      - name: Upload desktop reports and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-regression
+          path: artifacts/desktop-probes/
+          if-no-files-found: warn

@@ -9,6 +9,7 @@ internal static class LastDisplayStore
     private static readonly JsonSerializerOptions JsonOptions = new();
     private static readonly object SyncRoot = new();
     private static readonly SemaphoreSlim WriteGate = new(1, 1);
+    private static readonly AsyncLocal<WriteTestHooks?> TestHooks = new();
     private static LastDisplaySnapshot? pendingSnapshot;
     private static CancellationTokenSource? pendingSave;
     private static long saveVersion;
@@ -55,24 +56,42 @@ internal static class LastDisplayStore
 
     public static void Flush()
     {
-        LastDisplaySnapshot? snapshot;
+        // Compatibility for non-async callers. Both the writer and this flush
+        // release their gate independently of any UI SynchronizationContext.
+        FlushAsync().GetAwaiter().GetResult();
+    }
+
+    public static async Task FlushAsync(CancellationToken cancellationToken = default)
+    {
         lock (SyncRoot)
         {
             pendingSave?.Cancel();
-            snapshot = pendingSnapshot;
+            if (pendingSnapshot is null)
+            {
+                return;
+            }
         }
 
-        if (snapshot is not null)
+        await WriteGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            WriteGate.Wait();
-            try
+            LastDisplaySnapshot? snapshot;
+            lock (SyncRoot)
             {
-                WriteSnapshot(snapshot);
+                // A newer Save can arrive while the previous writer owns the
+                // gate. Flush the newest snapshot and cancel its debounce too.
+                pendingSave?.Cancel();
+                snapshot = pendingSnapshot;
             }
-            finally
+
+            if (snapshot is not null)
             {
-                WriteGate.Release();
+                await Task.Run(() => WriteSnapshot(snapshot), cancellationToken).ConfigureAwait(false);
             }
+        }
+        finally
+        {
+            WriteGate.Release();
         }
     }
 
@@ -80,8 +99,8 @@ internal static class LastDisplayStore
     {
         try
         {
-            await Task.Delay(500, token);
-            await WriteGate.WaitAsync(token);
+            await (TestHooks.Value?.DebounceDelay(token) ?? Task.Delay(500, token)).ConfigureAwait(false);
+            await WriteGate.WaitAsync(token).ConfigureAwait(false);
             try
             {
                 if (version != Volatile.Read(ref saveVersion))
@@ -89,7 +108,7 @@ internal static class LastDisplayStore
                     return;
                 }
 
-                await Task.Run(() => WriteSnapshot(snapshot), token);
+                await Task.Run(() => WriteSnapshot(snapshot), token).ConfigureAwait(false);
             }
             finally
             {
@@ -107,7 +126,24 @@ internal static class LastDisplayStore
 
     private static void WriteSnapshot(LastDisplaySnapshot snapshot)
     {
+        TestHooks.Value?.BeforeWrite();
         WriteState(FromSnapshot(snapshot));
+    }
+
+    // Test scheduling is local to the caller's execution context. The hooks
+    // allow a writer to pause while owning its gate without timing-based sleeps.
+    internal static IDisposable PushWriteTestHooks(Func<CancellationToken, Task> debounceDelay, Action beforeWrite)
+    {
+        var previous = TestHooks.Value;
+        TestHooks.Value = new WriteTestHooks(debounceDelay, beforeWrite);
+        return new WriteTestHookScope(previous);
+    }
+
+    private sealed record WriteTestHooks(Func<CancellationToken, Task> DebounceDelay, Action BeforeWrite);
+
+    private sealed class WriteTestHookScope(WriteTestHooks? previous) : IDisposable
+    {
+        public void Dispose() => TestHooks.Value = previous;
     }
 
     private static void WriteState(LastDisplayState state)

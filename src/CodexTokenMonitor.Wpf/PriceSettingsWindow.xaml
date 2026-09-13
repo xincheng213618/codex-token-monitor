@@ -33,9 +33,8 @@
         <TabControl x:Name="SourceTabs" Grid.Row="1" Height="38" Margin="0,0,0,12" HorizontalAlignment="Left"
                     Style="{StaticResource SourceTabsStyle}" ItemContainerStyle="{StaticResource SourceTabItemStyle}"
                     SelectionChanged="SourceTabs_SelectionChanged">
-            <TabItem Header="Codex" /><TabItem Header="Claude Code" /><TabItem Header="ZCode" /><TabItem Header="WorkBuddy" /><TabItem Header="DSH" />
         </TabControl>
-        <Border Grid.Row="2" Style="{StaticResource PanelBorder}">
+        <Border x:Name="PriceEditor" Grid.Row="2" Style="{StaticResource PanelBorder}">
             <Grid>
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                 <Grid Margin="14,14,14,10">
@@ -105,13 +104,15 @@
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                 <StackPanel Margin="0,0,20,0">
+                    <TextBlock x:Name="StatusText" Text="正在读取价格设置…" Style="{StaticResource SectionDescription}" TextWrapping="Wrap" Margin="0,0,0,5" />
                     <TextBlock Text="拖拽可调整展示顺序，靠近表格上下边缘会自动滚动；双击一行可编辑。" Style="{StaticResource SectionDescription}" />
                     <TextBlock Text="Codex 订阅额度另按 Sol $5 / $0.50 / $30 基准折算，不随 API 促销价变化。" Style="{StaticResource SectionDescription}" Margin="0,3,0,0" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="恢复当前分组默认" Style="{StaticResource StatusLinkButton}" Click="RestoreButton_Click" Margin="0,0,12,0" />
+                    <Button x:Name="RetryLoadButton" Content="重新读取" Style="{StaticResource StatusLinkButton}" Click="RetryLoadButton_Click" Margin="0,0,12,0" />
+                    <Button x:Name="RestoreButton" Content="恢复当前分组默认" Style="{StaticResource StatusLinkButton}" Click="RestoreButton_Click" Margin="0,0,12,0" />
                     <Button Content="取消" MinWidth="72" IsCancel="True" />
-                    <Button Content="保存设置" MinWidth="88" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" Click="SaveButton_Click" />
+                    <Button x:Name="SaveButton" Content="保存设置" MinWidth="88" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" Click="SaveButton_Click" />
                 </StackPanel>
             </Grid>
         </Border>

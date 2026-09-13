@@ -53,7 +53,10 @@ internal static class QuotaEstimateCalculator
             }
         }
 
-        return new QuotaEstimateLoadResult(currentRows, weeklyRows, periods.Count);
+        return new QuotaEstimateLoadResult(currentRows, weeklyRows, periods.Count)
+        {
+            Periods = periods.ToArray()
+        };
     }
 
     private static bool HasCurrentPeriod(
@@ -472,7 +475,10 @@ internal sealed record QuotaCurrentWindowRow(
 internal sealed record QuotaEstimateLoadResult(
     IReadOnlyList<QuotaCurrentWindowRow> CurrentRows,
     IReadOnlyList<QuotaWeeklyCycleRow> WeeklyRows,
-    int PeriodCount);
+    int PeriodCount)
+{
+    public IReadOnlyList<CodexQuotaCycle> Periods { get; init; } = Array.Empty<CodexQuotaCycle>();
+}
 
 internal sealed record QuotaWeeklyCycleRow(
     DateTimeOffset PeriodStart,

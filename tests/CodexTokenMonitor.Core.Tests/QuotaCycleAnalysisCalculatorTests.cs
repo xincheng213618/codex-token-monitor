@@ -140,6 +140,46 @@ public sealed class QuotaCycleAnalysisCalculatorTests
     }
 
     [Fact]
+    public void FailedPlanReadCannotOverwriteModelCalibrationAndRecoversOnNextBuild()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "CalibrationSettings-" + Guid.NewGuid().ToString("N"));
+        using var caches = MonitorCachePaths.PushLocalAppDataRoot(root);
+        using var logs = UsageLogPaths.PushRoot(Path.Combine(root, "logs"));
+        var period = Period();
+        SubscriptionPlanStore.Save(new[] { new SubscriptionPlanRecord
+        {
+            Id = "probe-plan", StartLocal = period.PeriodStart, EndLocal = period.PeriodEnd.AddDays(1),
+            PlanName = "Probe plan", AmountCny = 1234m
+        } });
+        QuotaModelCapacityCalibrationStore.Upsert("Probe plan", period,
+            new[] { CapacityEstimate("gpt-6-astra", 999m, period.PeriodStart) });
+        SetPlanStart("invalid date");
+        var result = ResultWithBands(CapacityBand(0, "gpt-6-astra", 100m, 1350m));
+        using (var failed = CacheOperationDiagnostics.Begin())
+        {
+            QuotaModelCapacityCalibrationService.Build(period, result, previousPeriod: null, CancellationToken.None);
+            Assert.NotEmpty(failed.Warnings);
+            Assert.Equal(999m, ReadCapacity());
+        }
+        SetPlanStart(period.PeriodStart.ToString("O"));
+        using var recovered = CacheOperationDiagnostics.Begin();
+        QuotaModelCapacityCalibrationService.Build(period, result, previousPeriod: null, CancellationToken.None);
+        Assert.Empty(recovered.Warnings);
+        Assert.Equal(1350m, ReadCapacity());
+
+        decimal ReadCapacity() => Assert.Single(QuotaModelCapacityCalibrationStore.LoadExact(
+            "Probe plan", period.PeriodStart, QuotaModelCapacitySource.CurrentPeriodApproved)).AverageFullQuotaCost;
+        static void SetPlanStart(string value)
+        {
+            using var connection = MonitorSettingsDatabase.OpenConnection(MonitorSettingsDatabase.Path);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE subscription_plans SET start_local = $start WHERE id = 'probe-plan'";
+            command.Parameters.AddWithValue("$start", value);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    [Fact]
     public void InferMixedModelUsesApprovedModelAsTheKnownPart()
     {
         var band = new QuotaCycleAnalysisBand(
@@ -220,6 +260,68 @@ public sealed class QuotaCycleAnalysisCalculatorTests
     }
 
     [Fact]
+    public void FitFullQuotaCostUsesEachModelsCostShare()
+    {
+        var band = MixedCapacityBand(
+            1_600m,
+            ("gpt-6-astra", 50m),
+            ("gpt-5.6-sol", 30m),
+            ("gpt-5.6-luna", 20m));
+        var capacities = new[]
+        {
+            CapacityEstimate("gpt-6-astra", 2_000m, Start),
+            CapacityEstimate("gpt-5.6-sol", 1_000m, Start),
+            CapacityEstimate("gpt-5.6-luna", 500m, Start)
+        };
+
+        var fitted = QuotaModelCapacityEstimator.FitFullQuotaCost(band, capacities);
+
+        Assert.NotNull(fitted);
+        Assert.Equal(1_052.632m, fitted.Value, 3);
+    }
+
+    [Fact]
+    public void CalibrationBuildUsesLatestPriorValuesAndDynamicallyBlendsAllModels()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "QuotaModelFallback-" + Guid.NewGuid().ToString("N"));
+        using var caches = MonitorCachePaths.PushLocalAppDataRoot(root);
+        using var logs = UsageLogPaths.PushRoot(Path.Combine(root, "logs"));
+        var current = Period();
+        var older = current with
+        {
+            PeriodStart = current.PeriodStart.AddDays(-14),
+            PeriodEnd = current.PeriodStart.AddDays(-7),
+            ResetAt = current.PeriodStart.AddDays(-7)
+        };
+        SubscriptionPlanStore.Save(new[] { new SubscriptionPlanRecord
+        {
+            Id = "plan", StartLocal = older.PeriodStart, EndLocal = current.PeriodEnd.AddDays(1),
+            PlanName = "Pro 20x", AmountCny = 1_380m
+        } });
+        QuotaModelCapacityCalibrationStore.Upsert("Pro 20x", older, new[]
+        {
+            CapacityEstimate("gpt-5.6-sol", 1_000m, older.PeriodStart),
+            CapacityEstimate("gpt-5.6-luna", 500m, older.PeriodStart)
+        });
+        var mixed = MixedCapacityBand(
+            1_600m,
+            ("gpt-6-astra", 50m),
+            ("gpt-5.6-sol", 30m),
+            ("gpt-5.6-luna", 20m));
+        var result = ResultWithBandsAndModels(
+            new[] { CapacityBand(0, "gpt-6-astra", 100m, 2_000m), mixed },
+            mixed.Models.ToArray());
+
+        var report = QuotaModelCapacityCalibrationService.Build(current, result, previousPeriod: null);
+
+        Assert.Equal(3, report.Estimates.Count);
+        Assert.All(report.Estimates, item => Assert.Equal(QuotaModelCapacitySource.CurrentPeriodBlended, item.Source));
+        Assert.All(report.Estimates, item => Assert.Equal(current.PeriodStart, item.CalibrationPeriodStart));
+        Assert.NotEqual(1_000m, report.Estimates.Single(item => item.ModelId == "gpt-5.6-sol").AverageFullQuotaCost);
+        Assert.NotEqual(500m, report.Estimates.Single(item => item.ModelId == "gpt-5.6-luna").AverageFullQuotaCost);
+    }
+
+    [Fact]
     public void CalibrationStoreLoadsOnlyTheExactRequestedPeriod()
     {
         var root = Path.Combine(Path.GetTempPath(), "QuotaModelCapacity-" + Guid.NewGuid().ToString("N"));
@@ -246,6 +348,14 @@ public sealed class QuotaCycleAnalysisCalculatorTests
             "Pro 20x",
             Start,
             QuotaModelCapacitySource.CurrentPeriodApproved));
+
+        var latest = Assert.Single(QuotaModelCapacityCalibrationStore.LoadLatestBefore(
+            "Pro 20x",
+            Start,
+            new[] { "gpt-5.6-sol" },
+            QuotaModelCapacitySource.PreviousPeriodApproved));
+        Assert.Equal(2_400m, latest.AverageFullQuotaCost);
+        Assert.Equal(previous.PeriodStart, latest.CalibrationPeriodStart);
     }
 
     [Fact]
@@ -324,6 +434,33 @@ public sealed class QuotaCycleAnalysisCalculatorTests
             {
                 new QuotaCycleModelShare(model, drop, modelShare, 1, cost, modelShare, true)
             });
+    }
+
+    private static QuotaCycleAnalysisBand MixedCapacityBand(
+        decimal observedFullQuotaCost,
+        params (string Model, decimal CostSharePercent)[] models)
+    {
+        const decimal drop = 5m;
+        var totalCost = observedFullQuotaCost * drop / 100m;
+        return new QuotaCycleAnalysisBand(
+            1,
+            5m,
+            10m,
+            Start.AddMinutes(1),
+            Start.AddMinutes(2),
+            drop,
+            100,
+            totalCost,
+            observedFullQuotaCost,
+            models[0].Model,
+            models.Select(item => new QuotaCycleModelShare(
+                item.Model,
+                drop * item.CostSharePercent / 100m,
+                item.CostSharePercent,
+                1,
+                totalCost * item.CostSharePercent / 100m,
+                item.CostSharePercent,
+                true)).ToList());
     }
 
     private static QuotaModelCapacityEstimate CapacityEstimate(

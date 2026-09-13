@@ -19,6 +19,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\CodexTokenMonitor.Core\CodexTokenMonitor.Core.csproj" />
+    <Compile Include="..\..\src\CodexTokenMonitor.Wpf\LastDisplayStore.cs" Link="DesktopPersistence\LastDisplayStore.cs" />
+    <Compile Include="..\..\src\CodexTokenMonitor.Wpf\UsageDisplayViewModel.cs" Link="DesktopPresentation\UsageDisplayViewModel.cs" />
+    <Compile Include="..\..\src\CodexTokenMonitor.Wpf\UsageSourceModule.cs" Link="DesktopPresentation\UsageSourceModule.cs" />
   </ItemGroup>
 
 </Project>

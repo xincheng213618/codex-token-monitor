@@ -62,7 +62,7 @@ internal static class UsageBreakdownBuilder
     }
 
     public static TimeSpan EstimateCodingTimeForRange(
-        IUsageSourceReader reader,
+        IUsageQuery reader,
         SelectedRange range,
         IReadOnlyList<TokenUsageBucket> breakdownRows,
         IReadOnlyList<TokenUsageBucket> detailRows,

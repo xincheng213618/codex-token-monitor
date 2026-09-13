@@ -40,8 +40,10 @@ internal static class CodexQuotaCycleReader
     private static readonly TimeSpan WeeklyQuotaWindow = TimeSpan.FromDays(7);
     private static readonly TimeSpan TransientCycleMaxDuration = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan TransientResetRunMaxDuration = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan EstablishedResetRunMinDuration = TimeSpan.FromMinutes(10);
     private const int TransientResetRunMaxSnapshots = 5;
     private const decimal TransientResetMaxUsedPercent = 5m;
+    private const decimal HistoricalReplayUsedTolerance = 3m;
     private static readonly object CycleCacheSync = new();
     private static CycleCacheKey? cachedKey;
     private static DateTimeOffset cycleCachedAtUtc;
@@ -53,6 +55,7 @@ internal static class CodexQuotaCycleReader
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        using var diagnostics = CacheOperationDiagnostics.Begin(propagateToParent: true);
         var cacheKey = CycleCacheKey.From(currentQuota);
         if (cacheKey is not null)
         {
@@ -113,7 +116,9 @@ internal static class CodexQuotaCycleReader
             .Where(item => item.PeriodEnd > item.PeriodStart)
             .OrderByDescending(item => item.PeriodStart)
             .ToList();
-        if (cacheKey is not null)
+        // A fallback produced after a storage failure must not turn into an
+        // apparently successful cache hit on the next query.
+        if (cacheKey is not null && diagnostics.Warnings.Count == 0)
         {
             lock (CycleCacheSync)
             {
@@ -225,6 +230,22 @@ internal static class CodexQuotaCycleReader
                 }
             }
 
+            // The account endpoint can temporarily replay the preceding quota
+            // window after a newer window has already been established. While
+            // the bug is still active there is no following run to form the
+            // usual A-B-A sandwich, so recognize a trailing replay only when it
+            // matches a reset window that was genuinely observed earlier.
+            if (removeIndexes.Count == 0 && IsTrailingHistoricalResetReplay(runs))
+            {
+                var run = runs[^1];
+                for (var snapshotIndex = run.StartIndex; snapshotIndex <= run.EndIndex; snapshotIndex++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    removeIndexes.Add(snapshotIndex);
+                    anomalies.Add(current[snapshotIndex]);
+                }
+            }
+
             if (removeIndexes.Count == 0)
             {
                 break;
@@ -288,6 +309,14 @@ internal static class CodexQuotaCycleReader
             return false;
         }
 
+        // A weekly reset cannot move backward and then return to the already
+        // established newer reset. This is a stale-window replay even when it
+        // lasts tens of minutes or reports a high used percentage.
+        if (ResetMovedBackward(previous.ResetAt, run.ResetAt))
+        {
+            return true;
+        }
+
         var duration = run.Last.SnapshotLocal - run.First.SnapshotLocal;
         var isTinyRun =
             run.Count <= TransientResetRunMaxSnapshots ||
@@ -298,6 +327,37 @@ internal static class CodexQuotaCycleReader
         }
 
         return run.MaxWeekUsedPercent <= TransientResetMaxUsedPercent;
+    }
+
+    private static bool IsTrailingHistoricalResetReplay(IReadOnlyList<ResetRun> runs)
+    {
+        if (runs.Count < 3)
+        {
+            return false;
+        }
+
+        var replay = runs[^1];
+        var established = runs[^2];
+        if (!ResetMovedBackward(established.ResetAt, replay.ResetAt) ||
+            established.Count < 2 ||
+            established.Last.SnapshotLocal - established.First.SnapshotLocal < EstablishedResetRunMinDuration ||
+            replay.FirstWeekUsedPercent is not { } replayFirstUsed)
+        {
+            return false;
+        }
+
+        var historical = runs
+            .Take(runs.Count - 2)
+            .LastOrDefault(candidate => IsSameTransientReset(candidate.ResetAt, replay.ResetAt));
+        return historical?.LastWeekUsedPercent is { } historicalLastUsed &&
+               Math.Abs(replayFirstUsed - historicalLastUsed) <= HistoricalReplayUsedTolerance;
+    }
+
+    private static bool ResetMovedBackward(DateTimeOffset? established, DateTimeOffset? candidate)
+    {
+        return established is not null &&
+               candidate is not null &&
+               candidate.Value < established.Value.Subtract(ResetClusterTolerance);
     }
 
     private static bool IsSameTransientReset(DateTimeOffset? first, DateTimeOffset? second)
@@ -443,6 +503,8 @@ internal static class CodexQuotaCycleReader
                 .Select(item => item!.Value)
                 .DefaultIfEmpty(100m)
                 .Max();
+            FirstWeekUsedPercent = First.WeekUsedPercent;
+            LastWeekUsedPercent = Last.WeekUsedPercent;
         }
 
         public int StartIndex { get; }
@@ -460,9 +522,14 @@ internal static class CodexQuotaCycleReader
         public int Count => EndIndex - StartIndex + 1;
 
         public decimal MaxWeekUsedPercent { get; }
+
+        public decimal? FirstWeekUsedPercent { get; }
+
+        public decimal? LastWeekUsedPercent { get; }
     }
 
     private sealed record CycleCacheKey(
+        string CachePath,
         string? LimitId,
         DateTimeOffset WeekStartLocal,
         DateTimeOffset WeekEndLocal,
@@ -473,6 +540,7 @@ internal static class CodexQuotaCycleReader
             return quota?.Week is not { } week || week.ResetAtLocal is null
                 ? null
                 : new CycleCacheKey(
+                    UsageCacheStore.GetCachePath("CodexTokenMonitor"),
                     quota.LimitId,
                     week.WindowStartLocal,
                     week.WindowEndLocal,

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace CodexTokenMonitor;
@@ -11,30 +12,16 @@ internal static class PricePresetGroups
     public const string WorkBuddy = "WorkBuddy";
     public const string Dsh = "DSH";
 
-    public static readonly IReadOnlyList<string> All = new[] { Codex, ClaudeCode, ZCode, WorkBuddy, Dsh };
+    public static IReadOnlyList<string> All => UsageSourceRegistry.PriceGroups;
 
     public static string ForSource(UsageSource source)
     {
-        return source switch
-        {
-            UsageSource.ClaudeCode => ClaudeCode,
-            UsageSource.ZCode => ZCode,
-            UsageSource.WorkBuddy => WorkBuddy,
-            UsageSource.Dsh => Dsh,
-            _ => Codex
-        };
+        return UsageSourceRegistry.For(source).PriceGroup;
     }
 
     public static string Normalize(string group)
     {
-        return group.Trim().ToLowerInvariant() switch
-        {
-            "claude" or "claude code" or "claudecode" => ClaudeCode,
-            "zcode" or "glm" or "z.ai" or "zai" or "智谱" => ZCode,
-            "workbuddy" or "work buddy" or "buddy" => WorkBuddy,
-            "dsh" or "deepseek harness" or "deepseek-harness" or "harness" => Dsh,
-            _ => Codex
-        };
+        return UsageSourceRegistry.ForPriceGroup(group).PriceGroup;
     }
 }
 
@@ -372,13 +359,10 @@ internal static class PriceSettingsStore
     private const string FolderName = "CodexTokenMonitor";
     private const string FileName = "price-settings.json";
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly object SyncRoot = new();
+    private static readonly Dictionary<string, SettingsState> States = new(StringComparer.OrdinalIgnoreCase);
 
-    static PriceSettingsStore()
-    {
-        Current = Load();
-    }
-
-    public static PriceSettings Current { get; private set; }
+    public static PriceSettings Current => Load();
 
     public static PriceSettings Defaults()
     {
@@ -407,16 +391,39 @@ internal static class PriceSettingsStore
 
     public static void Save(PriceSettings settings)
     {
+        ArgumentNullException.ThrowIfNull(settings);
         var normalized = Normalize(settings);
         var path = GetPath();
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(directory))
+        lock (SyncRoot)
         {
-            Directory.CreateDirectory(directory);
+            var state = GetState(path);
+            try
+            {
+                // A default/fallback editor snapshot is not permission to replace
+                // an unreadable user file. Validate before the atomic replacement.
+                state.HadFile |= File.Exists(path);
+                var existing = ReadFile(path);
+                if (existing is null && state.HadFile)
+                    throw new FileNotFoundException("Previously observed price settings are missing.", path);
+                if (existing is not null) _ = Normalize(Deserialize(existing));
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+                var json = JsonSerializer.Serialize(normalized, JsonOptions);
+                WriteAtomically(path, json);
+                state.LastGood = normalized;
+                state.LastJson = json;
+                state.HadFile = true;
+                state.Failure = null;
+                RememberOperation(state);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                state.Failure = ex;
+                RememberOperation(state);
+                CacheOperationDiagnostics.Report(path, nameof(Save), ex);
+                throw;
+            }
         }
-
-        WriteAtomically(path, JsonSerializer.Serialize(normalized, JsonOptions));
-        Current = normalized;
     }
 
     public static string GptSubtitle()
@@ -460,34 +467,109 @@ internal static class PriceSettingsStore
         return value.Contains(pattern, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static PriceSettings Load()
+    public static PriceSettings Load(bool forceReload = false)
     {
-        try
+        var path = GetPath();
+        lock (SyncRoot)
         {
-            var path = GetPath();
-            if (File.Exists(path))
+            var state = GetState(path);
+            var operation = CacheOperationDiagnostics.CurrentOperation;
+            if (!forceReload && operation is not null && state.Operations.TryGetValue(operation, out var snapshot))
             {
-                var json = File.ReadAllText(path);
-                var settings = JsonSerializer.Deserialize<PriceSettings>(json);
-                if (settings is not null)
+                if (snapshot.Failure is not null)
+                    CacheOperationDiagnostics.Report(path, nameof(Load), snapshot.Failure);
+                return snapshot.Settings;
+            }
+            if (!forceReload && operation is null && (state.LastGood is not null || state.Failure is not null))
+            {
+                if (state.Failure is not null)
+                    CacheOperationDiagnostics.Report(path, nameof(Load), state.Failure);
+                return state.LastGood ?? state.Fallback;
+            }
+
+            try
+            {
+                state.HadFile |= File.Exists(path);
+                var json = ReadFile(path);
+                if (json is null)
                 {
-                    var normalized = Normalize(settings);
+                    if (state.HadFile)
+                        throw new FileNotFoundException("Previously loaded price settings are missing.", path);
+                    state.LastGood ??= Defaults();
+                    state.LastJson = null;
+                }
+                else if (state.LastGood is null || !string.Equals(json, state.LastJson, StringComparison.Ordinal))
+                {
+                    var normalized = Normalize(Deserialize(json));
                     var normalizedJson = JsonSerializer.Serialize(normalized, JsonOptions);
                     if (!string.Equals(json.Trim(), normalizedJson.Trim(), StringComparison.Ordinal))
                     {
                         WriteAtomically(path, normalizedJson);
+                        json = normalizedJson;
                     }
-
-                    return normalized;
+                    state.LastGood = normalized;
+                    state.LastJson = json;
+                    state.HadFile = true;
                 }
+
+                state.Failure = null;
+                RememberOperation(state);
+                return state.LastGood!;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                state.Failure = ex;
+                RememberOperation(state);
+                CacheOperationDiagnostics.Report(path, nameof(Load), ex);
+                // Keep a stable last-good object for model-cost catalogs. Failed
+                // reads are never installed as a successful pricing configuration.
+                return state.LastGood ?? state.Fallback;
             }
         }
-        catch
-        {
-            // Invalid local settings should not prevent the monitor from opening.
-        }
+    }
 
-        return Defaults();
+    private static PriceSettings Deserialize(string json)
+    {
+        var settings = JsonSerializer.Deserialize<PriceSettings>(json)
+            ?? throw new JsonException("Price settings must contain a settings object.");
+        List<PricePreset>?[] groups = [settings.Presets, settings.CodexPresets, settings.ClaudeCodePresets,
+            settings.ZCodePresets, settings.WorkBuddyPresets, settings.DshPresets];
+        if (groups.Any(group => group is null || group.Any(preset => preset is null)))
+            throw new JsonException("Price preset collections and their entries must not be null.");
+        return settings;
+    }
+
+    private static string? ReadFile(string path)
+    {
+        try { return File.ReadAllText(path); }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+    }
+
+    private static SettingsState GetState(string path)
+    {
+        if (!States.TryGetValue(path, out var state)) States[path] = state = new SettingsState();
+        return state;
+    }
+
+    private static void RememberOperation(SettingsState state)
+    {
+        if (CacheOperationDiagnostics.CurrentOperation is not { } operation) return;
+        state.Operations.Remove(operation);
+        state.Operations.Add(operation, new ReadSnapshot(state.LastGood ?? state.Fallback, state.Failure));
+    }
+
+    private sealed record ReadSnapshot(PriceSettings Settings, Exception? Failure);
+
+    private sealed class SettingsState
+    {
+        public PriceSettings? LastGood { get; set; }
+        private PriceSettings? fallback;
+        public PriceSettings Fallback => fallback ??= Defaults();
+        public string? LastJson { get; set; }
+        public bool HadFile { get; set; }
+        public ConditionalWeakTable<CacheOperationDiagnostics, ReadSnapshot> Operations { get; } = new();
+        public Exception? Failure { get; set; }
     }
 
     private static void WriteAtomically(string path, string contents)

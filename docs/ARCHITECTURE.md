@@ -2,6 +2,8 @@
 
 本文面向想了解或修改本项目的开发者。文档中的类名均为源码中的实际命名，便于对照阅读。
 
+2026-09-12 的职责拆分、查询/并发契约与后续优先级见 [架构基线与迭代路线](ARCHITECTURE-REVIEW.md)。本文继续保留各子系统的实现说明。
+
 ## 1. 项目分层
 
 ```text
@@ -12,16 +14,23 @@ CodexTokenMonitor.slnx
 │  │   │            WorkBuddyUsageReader、LiveFileTailReader
 │  │   ├─ 额度读取：CodexAppServerQuotaReader、CodexCliLocator
 │  │   ├─ 额度分析：CodexQuotaCycle、QuotaEstimateCalculator、QuotaPace、
-│  │   │            QuotaSnapshotLookup、QuotaFreshness
-│  │   ├─ 统计聚合：UsageSourceReader、UsageModules、UsageBreakdownBuilder、
+│  │   │            QuotaSnapshotLookup、QuotaFreshness、QuotaCostCurveCalculator
+│  │   ├─ 查询运行：UsageQueryService、QuotaCycleAnalysisQueryService、
+│  │   │            MonitorRuntime、AnalysisQuerySession
+│  │   ├─ 来源注册：UsageSourceRegistry（来源顺序、标题、价格组、延迟 Reader 工厂）
+│  │   │            UsageSourceCapabilities（缓存查询、扫描查询、维护能力）
+│  │   ├─ 统计聚合：UsageSourceReader、UsageQueryModels、UsageBreakdownBuilder、
 │  │   │            UsageModels（TokenUsageBucket/Summary/Event）
 │  │   ├─ 设置存储：PriceSettings、SubscriptionPlans、SubscriptionPlanImporter、
-│  │   │            ResetOpportunities
+│  │   │            ResetOpportunities、MonitorSettingsTable、QuotaModelCapacityCalibrationStore
+│  │   ├─ 缓存存储：UsageCacheStore、QuotaSnapshotCacheStore、UsageLogScanning
 │  │   └─ 数据交换：CodexDataTransferService、CodexDataSharingServer/Client
 │  └─ CodexTokenMonitor.Wpf/        # 原生 WPF 界面与设置窗口（net8.0-windows10.0.19041.0）
-│      ├─ MainWindow、MainWindow.DataTransfer、MainWindow.DataSharing
+│      ├─ MainWindow、MainWindow.DataTransfer、MainWindow.DataSharing、MainWindow.Settings
+│      ├─ UsageDisplayViewModel（统计快照、空/错误状态、复制可用性）
+│      ├─ UsageSourceModule（每来源页面选择、周期状态、显示 LRU 与每窗工厂）
 │      ├─ QuotaEstimateWindow、QuotaCostCurveWindow、CacheDetailsWindow
-│      ├─ WpfTokenTimelineControl、QuotaCostCurveControl、QuotaCostCurveCalculator
+│      ├─ WpfTokenTimelineControl、QuotaCostCurveControl
 │      ├─ BackgroundCacheWarmer、LastDisplayStore、WeekWindowPicker
 │      ├─ PriceSettingsWindow、PricePresetEditorWindow
 │      ├─ ResetOpportunityWindow、SubscriptionPlanWindow
@@ -39,7 +48,7 @@ CodexTokenMonitor.slnx
 
 ### 2.1 五种来源
 
-`UsageSource` 枚举：`Codex`、`ClaudeCode`、`ZCode`、`WorkBuddy`、`Dsh`。每种来源由 `IUsageSourceReader` 实现包装，对外暴露统一接口（`ReadRange`、`ReadDetailRows`、`ReadCachedRange`、`RefreshCachedDay`、`ClearCache` 等）。`UsageSourceReaders.For(source)` 按来源取单例。
+`UsageSource` 枚举：`Codex`、`ClaudeCode`、`ZCode`、`WorkBuddy`、`Dsh`。`UsageSourceRegistry` 统一来源元数据及延迟工厂。每种来源由 `IUsageSourceReader` 包装，它组合 `IUsageCacheQuery`、`IUsageQuery`、`IUsageCacheMaintenance`；查询服务不再持有清理/预热方法，后台维护显式取得维护能力。`UsageSourceReaders.For(source)` 保留按来源取单例的入口，Registry 的窄接口视图指向同一个 Reader。
 
 只有 Codex 支持额度（`SupportsQuota == true`）。
 
@@ -81,10 +90,12 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 
 - **SQLite 缓存**（`UsageCacheStore`）：按“日”为单位，存每日汇总（`CachedDayRecord`）和明细事件（`CachedUsageEvent`）；`IsComplete` 标记完整日，且明细事件数量必须覆盖汇总事件数，否则会整日重扫并替换明细。五个来源的文件扫描会同步传播完整性状态；普通文件异常或 DSH 截断 zstd 尾帧产生的可读前缀不会被永久标记为 complete，后续读取仍会补扫。读取缓存记录时会校验并归一化非负计数、缓存读取/创建输入上限、派生字段和长上下文/峰时子计数；发现损坏记录会拒绝缓存命中并回到补扫路径。新增缓存创建列时会把旧日标记为 incomplete，让后台从仍保留的源日志重建。整日范围的缓存快速读取同样要求 `IsComplete` 且明细覆盖汇总，遇到不完整日会从已落盘明细重建，避免缓存汇总绕过完整性状态。历史日查询直接读缓存，今天（未完整日）叠加实时读取。用量与额度快照的缓存命中读取和可取消扫描都接受生命周期令牌；写入事务在提交前检查取消并回滚当前日，不会留下半写入缓存。事件、额度快照和导入稳定键在批量写入时复用参数化命令，减少历史预热与数据包导入的短生命周期分配。
 - **时间边界**：所有来源读取器的实时汇总/明细入口先将输入范围转换为北京时间（UTC+8），再进行自然日切分、缓存命中和结果元数据填充；缓存层的范围查询使用同一规则，避免跨午夜输入造成漏日或多日。
-- **显示缓存**：`UsageSourceModule` 内维护容量 8 的 LRU 显示缓存（`DisplayCacheKey = 起止时间 + 模式 + 自定义起点`），快速来回切换历史窗口。
+- **显示缓存**：WPF 的 `UsageSourceModule` 内维护容量 8 的 LRU 显示缓存（`DisplayCacheKey = 起止时间 + 模式 + 自定义起点`），快速来回切换历史窗口。每个窗口创建独立的五来源页面状态；模块仅复制来源元数据，不持有 Reader，Core 注册表也不再依赖页面工厂。
 - **Coding Time**：`UsageBreakdownBuilder.EstimateCodingTime` 把相邻事件间隔 ≤10 分钟的视为同一活跃会话，累加会话时长。
 - **后台预热**：`BackgroundCacheWarmer` 每 120 秒检查一次，按 7 天一批从 2026-01-01 回填 Codex 用量、quota 快照、quota 时间线三类缓存；状态通过 `CacheWarmStatus` 暴露给“缓存详情”窗口，可暂停/恢复。未完成日期预检先统一到北京时间，实时读取、时间线物化都绑定同一取消令牌，并在 SQLite 事务提交前检查；每个任务结束后还会回查持久化 incomplete 状态，只有真正完成的日期才计入 UI 进度，若本轮仍有待补扫项则明确显示待重试数量。
 - **I/O 闸门**：后台预热与前台刷新共用闸门，避免同时扫描同一批文件。
+- **查询服务**：`UsageQueryService.ExecuteCached` 接收只含 `IUsageCacheQuery` 的 `UsageCacheQueryRequest`，普通 `Execute` 请求使用 `IUsageQuery`。缓存查询不扫描原始来源日志；应用自有额度历史缓存继续参与回退及额度锚点物化。服务查询、价格补充与周期完整性判定共用同一个 I/O 临界区，只有已完成的内存显示缓存命中直接返回。旧 `Execute(CacheOnly: true)` 委托缓存入口。
+- **故障状态**：用量与额度 SQLite store 通过 `CacheOperationDiagnostics` 收集操作级故障，`UsageQueryResult.CacheWarnings` 返回给调用方。主窗口保留成功显示或提示统计暂不可用，有警告的结果不进入显示/LRU 缓存；下一次操作可重新初始化同一 store。严格写入及导入导出失败会抛出异常，不自动删除数据库。
 
 ## 4. 额度读取（实时）
 
@@ -109,7 +120,8 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 - 周期对象只保留周期边界、reset、快照数量和最大周用量百分比，不把几十万条历史快照继续挂在 UI 模块和周期缓存上；需要逐条快照的曲线/明细路径仍从 SQLite/历史源按范围读取。
 - **额度估算**（`QuotaEstimateCalculator`）：把“周期内 token 消耗的估算费用”与“额度百分比变化”关联，反推 100% 额度对应的费用/token 数；`MinimumStableQuotaDeltaPercent = 3%` 以下的变化视为不稳定，不参与估算。费用和 token 上限缩放统一通过 `QuotaMath` 做百分比校验、下溢/除零防护和上限饱和。
 - **重置评估**（`QuotaPaceAnalyzer`）：对每个 5h/7d 窗口比较“已用 % vs 按时间线性推进的应耗 %”，输出预计耗尽时间、自然重置前剩余、重置浪费评估和评级（`QuotaPaceReport`）。
-- **额度费用曲线**（`QuotaCostCurveCalculator`）：对每个已知周期，取周期内明细行累计费用（按日志中的实际模型及当前价格库），与同一时刻的周额度快照配对，得到 `(时间, 已用%, 累计费用)` 曲线；最多 1800 点/周期，剔除额度回退点，基线归零，并按套餐分组。当前周期读取当天实时明细时复用主窗口的 I/O 闸门，与自动刷新和后台预热串行，避免并发扫描同一批活动日志；周期识别和快照聚合接收同一取消令牌，费用区间的插值点索引按曲线复用。
+- **额度费用曲线**（Core 的 `QuotaCostCurveCalculator`）：对每个已知周期，取已缓存明细行累计费用（按日志中的实际模型及当前价格库），与同一时刻的周额度快照配对，得到 `(时间, 已用%, 累计费用)` 曲线；最多 1800 点/周期，剔除额度回退点，基线归零，并按套餐分组。通过 `ReadCachedQuotaTimeline` 在内存投影缺失额度点，不保存锚点、不扫描原始日志，因此不等待后台预热闸门。周期识别和快照聚合接收同一取消令牌，费用区间的插值点索引按曲线复用。
+- **周期分析查询**：`QuotaCycleAnalysisQueryService` 组合原周期范围判定、分析及校准；当前周期会读取实时明细，历史分析也可能写模型校准，两者均通过 `AnalysisQuerySession` 获取共享 I/O 闸门。缓存警告阻止后续校准及界面结果替换，周期列表的失败结果也不会进入两分钟内存缓存。
 
 ## 6. 跨电脑数据交换
 
@@ -162,13 +174,15 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 
 ## 9. 线程模型
 
-- 所有文件扫描、SQLite 读写都在后台任务中执行（`Task.Run`），UI 线程只做绑定与展示。
+- 主窗口用量/额度查询和预热通过后台任务执行文件扫描与 SQLite 访问，UI 线程负责输入快照与展示；分析页及设置仍有独立入口，需要按入口检查其调度约束。
+- `MonitorRuntime` 持有共用 I/O 闸门与生命周期令牌，登记主窗口、缓存预热、共享及导入导出任务。`Closing` 暂缓关闭、停止定时器并关闭所属窗口，登记最后保存和服务停止后拒绝新任务并取消已有工作；使用一个 3 秒总等待预算，期间保持 UI 消息泵。超时后仍在使用的锁延迟至已登记任务和取消回调结束后释放。
+- 最近数据与历史数据 HTTP 存储操作均登记到运行时；历史请求将请求取消与运行时取消链接，等待 I/O 闸门也可取消。三个分析窗口的 `AnalysisQuerySession` 同时登记到窗口自身与父运行时；单窗口关闭只取消自身任务，应用关停则等待分析工作退出。缓存读取不等闸门，扫描或校准写入等待共享闸门。
 - `LiveFileTailReader` 每文件一把锁；额度读取有 `SyncRoot` 锁 + 20s/10s 缓存。
-- 用量读取器会把窗口生命周期取消令牌传入 JSONL/Zstd 文件扫描、尾读和后台预热，关闭或 supersede 的查询不会继续完整扫完大日志。
+- 用量读取器会把窗口生命周期取消令牌传入 JSONL/Zstd 文件扫描、尾读和后台预热；关闭会取消读取。被新选择替代的查询在取得 I/O 锁后检查版本并可跳过扫描；已经开始的扫描允许完成，其旧结果不会发布到界面。
 - 主窗口额度刷新也在后台读取缓存额度和实时额度，并复用用量 I/O 闸门；缓存快照/估算读取、app-server 的标准输入/输出等待和额度明细扫描接收同一个生命周期令牌，窗口关闭后会结束临时额度进程并丢弃尚未回到 UI 的结果。
-- 额度估算窗口的历史估算与实时曲线并行加载；窗口关闭或任一任务失败后会取消同批任务，并等待、观察另一任务，避免后台异常脱离 UI 生命周期。
-- `LastDisplayStore` 使用防抖写（`SemaphoreSlim` 写闸门 + 版本号，取消过期保存）。
-- 查询带 `requestVersion`，过期请求的结果会被丢弃，避免快速切换时旧结果覆盖新结果。
+- 额度估算窗口的历史估算与缓存曲线并行加载，分别收集结果、异常和缓存警告，失败区域保留上次成功显示。所有任务都登记运行时，窗口关闭会取消它们，迟到异常仍被观察。主加载、手动估算与右键定位分别限制重复执行，关闭后不发布结果。
+- `LastDisplayStore` 使用防抖写（`SemaphoreSlim` 写闸门 + 版本号，取消过期保存），关停调用 `FlushAsync`。存储 await 不捕获 UI 上下文，取得写锁后读取最新待保存状态，避免同步兼容入口死锁或较旧保存覆盖较新状态；保持 v5 内容格式。
+- `LatestRequestRunner` 串行执行主窗口用量刷新，只保留最新等待请求；查询带版本，过期请求的结果被丢弃。协调器在成功、异常及取消后恢复空闲，生命周期取消后不再接收新请求。回调在请求方的同步上下文开始执行。
 
 ## 10. 测试
 
@@ -177,6 +191,9 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 - 各来源读取器与增量读取（`LiveFileTailReaderTests`、`UsageSourceModuleTests`、`DshUsageReaderTests`：zstd 多帧样例、稳定 key 去重、时间过滤、截断尾帧容错）
 - app-server 额度响应解析（`CodexAppServerQuotaReaderTests`）、CLI 发现（`CodexCliLocatorTests`）
 - 数据包导入/导出与幂等（`CodexDataTransferServiceTests`）
+- 查询策略与调度（`UsageQueryServiceTests`、`LatestRequestRunnerTests`）：用 fake reader 和受控任务覆盖缓存边界、历史修复、请求合并与取消，不依赖真实来源日志。
+- 故障恢复与关停（`CacheOperationDiagnosticsTests`、`MonitorRuntimeTests`、`CodexHistorySharingLifetimeTests`、`LastDisplayStoreTests`）：真实临时 SQLite 锁定/损坏及同实例恢复、作用域隔离、总等待预算与延迟释放、共享等锁取消、显示保存上下文与版本竞争。
+- 分析会话与只读投影（`AnalysisQuerySessionTests`、`QuotaCycleAnalysisQueryServiceTests`、`QuotaCachedQueryTests`）：窗口独立取消与父运行时排空、只读查询绕过预热、警告阻止校准、缓存投影一致且不写锚点、周期缓存恢复与跨目录隔离。
 - 缓存一致性、实时范围策略、分桶汇总、价格、额度查询、用量模型、时间轴预聚合与子代理过滤（`UsageCacheStoreTests`、`ReaderCacheConsistencyTests`、`UsageRangePolicyTests`、`UsageSummaryBuilderTests`、`PriceSettingsTests`、`QuotaSnapshotLookupTests`、`UsageModelTests`、`UsageTimelineBuilderTests`、`SubagentReplayFilterTests`）
 
 GitHub Actions 在每次 push / PR 中先构建解决方案，再执行这组 Core 回归测试。

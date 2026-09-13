@@ -15,6 +15,7 @@ internal partial class DataSharingWindow : Window
     private readonly CodexHistorySharingStore historyStore;
     private readonly CodexDataSharingSettings settings = CodexDataSharingSettings.Load();
     private readonly CancellationTokenSource lifetime;
+    private readonly MonitorRuntime? runtime;
     private readonly Queue<string> activity = new();
     private CancellationTokenSource? operation;
     private bool closed;
@@ -24,13 +25,15 @@ internal partial class DataSharingWindow : Window
         Func<string, CancellationToken, Task<CodexDataExportResult>> exportWeek,
         Func<string, CancellationToken, Task<CodexDataImportResult>> importWeek,
         CodexHistorySharingStore historyStore,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        MonitorRuntime? runtime = null)
     {
         InitializeComponent();
         this.server = server;
         this.exportWeek = exportWeek;
         this.importWeek = importWeek;
         this.historyStore = historyStore;
+        this.runtime = runtime;
         lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         PortBox.Text = settings.Port.ToString(CultureInfo.InvariantCulture);
         LocalKeyBox.Text = settings.AccessKey;
@@ -58,6 +61,11 @@ internal partial class DataSharingWindow : Window
     }
 
     private async void ServerToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        await RunWindowOperationAsync("共享服务启停", ToggleServerAsync);
+    }
+
+    private async Task ToggleServerAsync()
     {
         changingServer = true;
         UpdateServerState();
@@ -199,7 +207,21 @@ internal partial class DataSharingWindow : Window
         return FormatResult("本机已合并", result);
     });
 
-    private async Task RunTransferAsync(string label, Func<CodexDataSharingClient, CancellationToken, Task<string>> action)
+    private Task RunTransferAsync(string label, Func<CodexDataSharingClient, CancellationToken, Task<string>> action)
+        => RunWindowOperationAsync(label, () => RunTransferCoreAsync(label, action));
+
+    private async Task RunWindowOperationAsync(string label, Func<Task> action)
+    {
+        if (closed || runtime?.IsStopping == true) return;
+        try
+        {
+            if (runtime is null) await action();
+            else await runtime.Run(label, _ => action());
+        }
+        catch (OperationCanceledException) when (closed || runtime?.IsStopping == true) { }
+    }
+
+    private async Task RunTransferCoreAsync(string label, Func<CodexDataSharingClient, CancellationToken, Task<string>> action)
     {
         if (operation is not null)
         {

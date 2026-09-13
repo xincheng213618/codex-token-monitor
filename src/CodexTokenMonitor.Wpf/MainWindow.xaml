@@ -3,12 +3,13 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:CodexTokenMonitor"
         xmlns:xctk="http://schemas.xceed.com/wpf/xaml/toolkit"
-        Title="Codex Token 额度监控器" Width="1380" Height="940" MinWidth="1060" MinHeight="800"
+        Title="{Binding WindowTitle}" Width="1380" Height="940" MinWidth="1060" MinHeight="800"
         WindowStartupLocation="CenterScreen" Background="{StaticResource CanvasBrush}"
         Foreground="{StaticResource TextBrush}" FontFamily="Microsoft YaHei UI" FontSize="12"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
         AllowDrop="True" PreviewDragOver="MainWindow_PreviewDragOver" PreviewDrop="MainWindow_PreviewDrop">
     <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="UsageVisibility" />
         <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource ToolButton}">
             <Setter Property="Margin" Value="0,2,8,2" />
         </Style>
@@ -63,7 +64,6 @@
         <Grid Grid.Row="1" Margin="0,0,0,10">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
             <TabControl x:Name="SourceTabs" HorizontalAlignment="Left" Style="{StaticResource SourceTabsStyle}" ItemContainerStyle="{StaticResource SourceTabItemStyle}" SelectionChanged="SourceTabs_SelectionChanged">
-                <TabItem Header="Codex" /><TabItem Header="Claude Code" /><TabItem Header="ZCode" /><TabItem Header="WorkBuddy" /><TabItem Header="DSH" />
             </TabControl>
             <Button x:Name="CacheStatusButton" Grid.Column="1" Style="{StaticResource StatusLinkButton}" MaxWidth="330" Content="缓存详情" ToolTip="查看后台缓存进度与运行信息" Click="CacheStatusButton_Click" />
         </Grid>
@@ -71,7 +71,7 @@
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1*" /><ColumnDefinition Width="1.25*" /><ColumnDefinition Width=".9*" />
-                    <ColumnDefinition Width="1.25*" /><ColumnDefinition Width="1.3*" /><ColumnDefinition Width="88" />
+                    <ColumnDefinition Width="1.25*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="1.3*" /><ColumnDefinition Width="88" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,16,0">
                     <TextBlock Text="5h 剩余额度" Style="{StaticResource QuotaCaption}" />
@@ -93,12 +93,17 @@
                     <TextBlock x:Name="ResetOpportunityValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                     <TextBlock x:Name="ResetOpportunityDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <StackPanel Grid.Column="4" Margin="0,0,16,0">
+                <StackPanel x:Name="ReserveUsagePanel" Grid.Column="4" Margin="0,0,16,0" Visibility="Collapsed">
+                    <TextBlock Text="Reserve 已用" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ReserveUsageValue" Text="-" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="ReserveUsageDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="5" Margin="0,0,16,0">
                     <TextBlock Text="重置评估" Style="{StaticResource QuotaCaption}" />
                     <TextBlock x:Name="ResetPaceValue" Text="-" Style="{StaticResource QuotaValue}" />
                     <TextBlock x:Name="ResetPaceDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <Button x:Name="QuotaEstimateButton" Grid.Column="5" Style="{StaticResource PrimaryButton}" Content="额度估算" VerticalAlignment="Center" Click="QuotaEstimateButton_Click" />
+                <Button x:Name="QuotaEstimateButton" Grid.Column="6" Style="{StaticResource PrimaryButton}" Content="额度估算" VerticalAlignment="Center" Click="QuotaEstimateButton_Click" />
             </Grid>
         </Border>
         <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,6" Margin="0,0,0,10">
@@ -119,33 +124,33 @@
                 <xctk:DateTimePicker x:Name="CustomStartPicker" Width="210" Margin="0,2" Format="Custom" FormatString="yyyy-MM-dd HH:mm:ss" Visibility="Collapsed" ValueChanged="CustomStartPicker_ValueChanged" />
             </WrapPanel>
         </Border>
-        <Border x:Name="UsageSummaryPanel" Grid.Row="4" Style="{StaticResource PanelBorder}" Padding="18,10" MinHeight="112" Margin="0,0,0,10">
+        <Border x:Name="UsageSummaryPanel" Visibility="{Binding ShowContent, Converter={StaticResource UsageVisibility}}" Grid.Row="4" Style="{StaticResource PanelBorder}" Padding="18,10" MinHeight="112" Margin="0,0,0,10">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="300" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,18,0">
                     <TextBlock Text="总用量 · TOKENS" Style="{StaticResource MetricCaption}" />
-                    <TextBlock x:Name="TotalValue" Text="-" FontFamily="Segoe UI" FontSize="36" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" Margin="0,0,0,2" />
-                    <TextBlock x:Name="PeriodValue" Text="-" Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" />
+                    <TextBlock x:Name="TotalValue" Text="{Binding Snapshot.Total}" FontFamily="Segoe UI" FontSize="36" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" Margin="0,0,0,2" />
+                    <TextBlock x:Name="PeriodValue" Text="{Binding Snapshot.Period}" Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" />
                 </StackPanel>
                 <ScrollViewer x:Name="CostCardsViewport" Grid.Column="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled" ClipToBounds="True" Focusable="False" SizeChanged="CostCardsViewport_SizeChanged">
                     <StackPanel x:Name="CostCardsPanel" Orientation="Horizontal" />
                 </ScrollViewer>
             </Grid>
         </Border>
-        <Border x:Name="UsageMetricsPanel" Grid.Row="5" Style="{StaticResource PanelBorder}" Margin="0,0,0,10">
+        <Border x:Name="UsageMetricsPanel" Visibility="{Binding ShowContent, Converter={StaticResource UsageVisibility}}" Grid.Row="5" Style="{StaticResource PanelBorder}" Margin="0,0,0,10">
             <UniformGrid Columns="9" Rows="1">
-                <Border Style="{StaticResource MetricTile}" ToolTip="Input · 包含缓存读取和缓存写入的总输入"><StackPanel><TextBlock Text="输入" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="InputValue" Text="-" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" ToolTip="Cached · 缓存命中的输入"><StackPanel><TextBlock Text="缓存读取" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CachedValue" Text="-" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" ToolTip="Cache Write · 创建缓存的输入"><StackPanel><TextBlock Text="缓存写入" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CacheWriteValue" Text="-" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" ToolTip="Uncached · 未命中缓存的输入"><StackPanel><TextBlock Text="未缓存" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="UncachedValue" Text="-" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" ToolTip="Output · 输出 Token"><StackPanel><TextBlock Text="输出" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="OutputValue" Text="-" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" ToolTip="Reasoning · 推理输出 Token"><StackPanel><TextBlock Text="推理" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="ReasoningValue" Text="-" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" ToolTip="Cache Ratio · 缓存读取占总输入的比例"><StackPanel><TextBlock Text="缓存命中" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CacheRatioValue" Text="-" Style="{StaticResource MetricValue}" Foreground="{StaticResource AccentBrush}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" ToolTip="Events · 用量事件数"><StackPanel><TextBlock Text="事件数" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="EventsValue" Text="-" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" BorderThickness="0" ToolTip="Coding Time · 以 10 分钟空闲间隔计算的活跃时长"><StackPanel><TextBlock Text="活跃时长" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CodingTimeValue" Text="-" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" ToolTip="Input · 包含缓存读取和缓存写入的总输入"><StackPanel><TextBlock Text="输入" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="InputValue" Text="{Binding Snapshot.Input}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" ToolTip="Cached · 缓存命中的输入"><StackPanel><TextBlock Text="缓存读取" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CachedValue" Text="{Binding Snapshot.Cached}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" ToolTip="Cache Write · 创建缓存的输入"><StackPanel><TextBlock Text="缓存写入" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CacheWriteValue" Text="{Binding Snapshot.CacheWrite}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" ToolTip="Uncached · 未命中缓存的输入"><StackPanel><TextBlock Text="未缓存" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="UncachedValue" Text="{Binding Snapshot.Uncached}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" ToolTip="Output · 输出 Token"><StackPanel><TextBlock Text="输出" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="OutputValue" Text="{Binding Snapshot.Output}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" ToolTip="Reasoning · 推理输出 Token"><StackPanel><TextBlock Text="推理" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="ReasoningValue" Text="{Binding Snapshot.Reasoning}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" ToolTip="Cache Ratio · 缓存读取占总输入的比例"><StackPanel><TextBlock Text="缓存命中" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CacheRatioValue" Text="{Binding Snapshot.CacheRatio}" Style="{StaticResource MetricValue}" Foreground="{StaticResource AccentBrush}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" ToolTip="Events · 用量事件数"><StackPanel><TextBlock Text="事件数" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="EventsValue" Text="{Binding Snapshot.Events}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border Style="{StaticResource MetricTile}" BorderThickness="0" ToolTip="Coding Time · 以 10 分钟空闲间隔计算的活跃时长"><StackPanel><TextBlock Text="活跃时长" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CodingTimeValue" Text="{Binding Snapshot.CodingTime}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
             </UniformGrid>
         </Border>
-        <Border x:Name="UsageDetailsPanel" Grid.Row="6" Style="{StaticResource PanelBorder}" Padding="12,10">
+        <Border x:Name="UsageDetailsPanel" Visibility="{Binding ShowContent, Converter={StaticResource UsageVisibility}}" Grid.Row="6" Style="{StaticResource PanelBorder}" Padding="12,10">
             <Grid>
                 <Grid.RowDefinitions><RowDefinition x:Name="TimelineRow" Height="0" /><RowDefinition x:Name="TimelineSplitterRow" Height="0" /><RowDefinition x:Name="BreakdownRow" Height="*" MinHeight="112" /></Grid.RowDefinitions>
                 <Grid x:Name="TimelineHost" Grid.Row="0" Visibility="Collapsed">
@@ -161,20 +166,20 @@
                 </Grid>
             </Grid>
         </Border>
-        <Border x:Name="EmptyUsagePanel" Grid.Row="4" Grid.RowSpan="3" Style="{StaticResource PanelBorder}" Padding="28" Visibility="Collapsed">
+        <Border x:Name="EmptyUsagePanel" Grid.Row="4" Grid.RowSpan="3" Style="{StaticResource PanelBorder}" Padding="28" Visibility="{Binding ShowEmpty, Converter={StaticResource UsageVisibility}}">
             <StackPanel MaxWidth="560" HorizontalAlignment="Center" VerticalAlignment="Center" TextBlock.TextAlignment="Center">
                 <Border Width="56" Height="56" Margin="0,0,0,10" HorizontalAlignment="Center" Background="{StaticResource AccentSoftBrush}" CornerRadius="16"><TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="24" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border>
-                <TextBlock x:Name="EmptyUsageTitle" Text="当前时段暂无用量" FontSize="22" FontWeight="SemiBold" />
-                <TextBlock x:Name="EmptyUsagePeriod" Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" />
-                <TextBlock x:Name="EmptyUsageHint" Margin="0,14,0,0" Foreground="{StaticResource MutedBrush}" FontSize="13" TextWrapping="Wrap" />
+                <TextBlock x:Name="EmptyUsageTitle" Text="{Binding Snapshot.EmptyTitle}" FontSize="22" FontWeight="SemiBold" />
+                <TextBlock x:Name="EmptyUsagePeriod" Text="{Binding Snapshot.EmptyPeriod}" Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" />
+                <TextBlock x:Name="EmptyUsageHint" Text="{Binding Snapshot.EmptyHint}" Margin="0,14,0,0" Foreground="{StaticResource MutedBrush}" FontSize="13" TextWrapping="Wrap" />
             </StackPanel>
         </Border>
         <DockPanel Grid.Row="7" Margin="2,10,0,0" LastChildFill="True">
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <CheckBox x:Name="AutoRefreshBox" Content="自动刷新" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" />
-                <Button x:Name="CopySummaryButton" Style="{StaticResource ToolButton}" Content="复制摘要" ToolTip="复制当前来源、时间范围、Token、费用与额度摘要" IsEnabled="False" Click="CopySummaryButton_Click" />
+                <Button x:Name="CopySummaryButton" Style="{StaticResource ToolButton}" Content="复制摘要" ToolTip="复制当前来源、时间范围、Token、费用与额度摘要" IsEnabled="{Binding CanCopy}" Click="CopySummaryButton_Click" />
             </StackPanel>
-            <TextBlock x:Name="StatusText" Text="准备就绪" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,16,0" />
+            <TextBlock x:Name="StatusText" Text="{Binding Status}" ToolTip="{Binding StatusDetail}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,16,0" />
         </DockPanel>
     </Grid>
 </Window>

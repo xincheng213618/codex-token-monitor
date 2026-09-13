@@ -12,10 +12,17 @@ internal partial class ResetOpportunityWindow : Window
 {
     private readonly ObservableCollection<ResetOpportunityRow> rows = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
+    private readonly AnalysisQuerySession querySession;
     private bool isClosed;
+    private bool hasLoadedSettings;
+    private bool hasSuccessfulLoad;
+    private bool isLoading;
+    private bool isSaving;
+    private bool isSyncing;
 
-    public ResetOpportunityWindow()
+    public ResetOpportunityWindow(MonitorRuntime? runtime = null)
     {
+        querySession = new AnalysisQuerySession(runtime);
         InitializeComponent();
         ResetGrid.ItemsSource = rows;
         rows.CollectionChanged += (_, args) =>
@@ -27,12 +34,78 @@ internal partial class ResetOpportunityWindow : Window
             UpdateRecordSummary();
         };
         ResetGrid.SelectionChanged += (_, _) => UpdateRecordSummary();
-        LoadRows(ResetOpportunityStore.Load());
+        UpdateEditingState();
+        Loaded += async (_, _) => await LoadAsync();
         Closed += (_, _) =>
         {
             isClosed = true;
             lifetimeCancellation.Cancel();
+            querySession.Dispose();
         };
+    }
+
+    private async Task LoadAsync()
+    {
+        if (isLoading || isSaving || isSyncing || querySession.IsStopping) return;
+        isLoading = true;
+        hasLoadedSettings = false;
+        UpdateEditingState();
+        SetStatus("正在读取重置机会设置…");
+        try
+        {
+            var result = await querySession.RunAsync("读取重置机会设置", _ => ResetOpportunityStore.Load(forceReload: true));
+            if (isClosed || querySession.IsStopping) return;
+            if (result.CacheWarnings.Count > 0)
+            {
+                ShowLoadFailure(CacheFailureText.Detail(result.CacheWarnings));
+                return;
+            }
+            LoadRows(result.Value);
+            hasLoadedSettings = true;
+            hasSuccessfulLoad = true;
+            SetStatus("同步会立即保存；手动修改在点击保存后生效。");
+        }
+        catch (OperationCanceledException) when (querySession.IsStopping || isClosed) { }
+        catch (Exception ex)
+        {
+            if (!isClosed && !querySession.IsStopping)
+                ShowLoadFailure(ex.ToString());
+        }
+        finally
+        {
+            isLoading = false;
+            if (!isClosed && !querySession.IsStopping) UpdateEditingState();
+        }
+    }
+
+    private async void RetryLoadButton_Click(object sender, RoutedEventArgs e) => await LoadAsync();
+
+    private bool CanEdit => hasLoadedSettings && !isLoading && !isSaving && !isSyncing && !querySession.IsStopping && !isClosed;
+
+    private void UpdateEditingState()
+    {
+        ResetEditor.IsEnabled = CanEdit;
+        SaveButton.IsEnabled = CanEdit;
+        RetryLoadButton.Visibility = hasLoadedSettings ? Visibility.Collapsed : Visibility.Visible;
+        RetryLoadButton.IsEnabled = !isLoading && !isSaving && !isSyncing && !querySession.IsStopping;
+    }
+
+    private void SetStatus(string text, string? detail = null)
+    {
+        StatusText.Text = text;
+        StatusText.ToolTip = detail;
+    }
+
+    private void ShowLoadFailure(string detail)
+    {
+        SetStatus("重置机会设置读取失败，编辑和保存已停用。修复后点击“重新读取”。", detail);
+        if (hasSuccessfulLoad) return;
+        AvailableCountText.Text = "暂不可用";
+        ExpirySummaryText.Text = "读取失败";
+        ExpirySummaryText.ToolTip = detail;
+        ResetRecordCountText.Text = "读取失败";
+        ResetRecordCountText.ToolTip = detail;
+        ResetEmptyState.Visibility = Visibility.Collapsed;
     }
 
     private void LoadRows(IReadOnlyList<ResetOpportunityRecord> records)
@@ -89,6 +162,7 @@ internal partial class ResetOpportunityWindow : Window
 
     private void AddTodayButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         var now = BeijingClock.Now;
         var row = new ResetOpportunityRow
@@ -105,6 +179,7 @@ internal partial class ResetOpportunityWindow : Window
 
     private void DeleteButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         foreach (var row in ResetGrid.SelectedItems.OfType<ResetOpportunityRow>().ToArray())
             rows.Remove(row);
@@ -113,6 +188,7 @@ internal partial class ResetOpportunityWindow : Window
 
     private void DefaultsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         LoadRows(ResetOpportunityStore.Defaults());
         StatusText.Text = "已载入示例，点击保存后生效。";
@@ -120,37 +196,40 @@ internal partial class ResetOpportunityWindow : Window
 
     private async void SyncButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
-        ResetEditor.IsEnabled = false;
-        SaveButton.IsEnabled = false;
-        StatusText.Text = "正在从 Codex 同步…";
+        isSyncing = true;
+        UpdateEditingState();
+        SetStatus("正在从 Codex 同步…");
         try
         {
-            var result = await ResetOpportunityStore.SyncFromCodexAsync(lifetimeCancellation.Token);
-            if (isClosed) return;
+            var result = await querySession.Runtime.Run("设置窗口同步重置机会", async runtimeToken =>
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken, lifetimeCancellation.Token);
+                return await Task.Run(() => ResetOpportunityStore.SyncFromCodexAsync(linked.Token), linked.Token);
+            });
+            if (isClosed || querySession.IsStopping) return;
             if (result.Success) LoadRows(result.Records);
-            StatusText.Text = result.Message;
-            if (!result.Success) ShowValidation(result.Message);
+            SetStatus(result.Success ? result.Message : $"同步失败，已保留当前编辑。{result.Message}", result.Success ? null : result.Message);
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || isClosed)
+        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || isClosed || querySession.IsStopping)
         {
         }
         catch (Exception ex)
         {
-            if (!isClosed) ShowValidation(ex.Message);
+            if (!isClosed && !querySession.IsStopping)
+                SetStatus("同步失败，已保留当前编辑。", ex.ToString());
         }
         finally
         {
-            if (!isClosed)
-            {
-                ResetEditor.IsEnabled = true;
-                SaveButton.IsEnabled = true;
-            }
+            isSyncing = false;
+            if (!isClosed && !querySession.IsStopping) UpdateEditingState();
         }
     }
 
-    private void SaveButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         try
         {
@@ -178,12 +257,32 @@ internal partial class ResetOpportunityWindow : Window
                     Note = row.Note?.Trim() ?? ""
                 });
             }
-            ResetOpportunityStore.Save(records);
+            isSaving = true;
+            UpdateEditingState();
+            SetStatus("正在保存重置机会设置…");
+            await querySession.RunAsync("保存重置机会设置", _ =>
+            {
+                ResetOpportunityStore.Save(records);
+                return true;
+            }, requiresSharedIo: true);
+            if (isClosed || querySession.IsStopping) return;
             DialogResult = true;
         }
+        catch (OperationCanceledException) when (querySession.IsStopping || isClosed) { }
         catch (Exception ex)
         {
-            ShowValidation(ex.Message);
+            if (!isClosed && !querySession.IsStopping)
+            {
+                if (isSaving)
+                    SetStatus("保存失败，已保留当前编辑。修复后可再次点击保存。", ex.ToString());
+                else
+                    ShowValidation(ex.Message);
+            }
+        }
+        finally
+        {
+            isSaving = false;
+            if (!isClosed && !querySession.IsStopping) UpdateEditingState();
         }
     }
 

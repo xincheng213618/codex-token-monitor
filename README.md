@@ -159,6 +159,8 @@ cost = uncached_input_millions * input_price
 
 ## 开发说明
 
+当前职责边界、查询与并发契约及后续重构顺序见 [架构基线与迭代路线](docs/ARCHITECTURE-REVIEW.md)。
+
 项目分层：
 
 ```text
@@ -173,7 +175,9 @@ tests/CodexTokenMonitor.Core.Tests/                        核心回归测试
 dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.csproj -c Release
 ```
 
-实时日志采用“首次完整读取、后续按文件尾部增量读取”的方式（`LiveFileTailReader` 按文件维护读取游标）。活动 JSONL 被截断、替换、清理缓存或查询需要更早覆盖范围时，读取游标会自动失效并安全回退；历史完整日仍以 SQLite 数据为准。子代理（subagent）会话文件的“父任务回放”段会被过滤，只统计子任务边界之后的 token_count。后台缓存、前台刷新和当前额度曲线实时扫描共用 I/O 闸门，避免同时扫描。
+实时日志采用“首次完整读取、后续按文件尾部增量读取”的方式（`LiveFileTailReader` 按文件维护读取游标）。活动 JSONL 被截断、替换、清理缓存或查询需要更早覆盖范围时，读取游标会自动失效并安全回退；历史完整日仍以 SQLite 数据为准。子代理（subagent）会话文件的“父任务回放”段会被过滤，只统计子任务边界之后的 token_count。后台缓存、主窗口刷新、周期分析和导入导出共用 `MonitorRuntime` 的 I/O 闸门；费用曲线只使用缓存并在内存投影缺失额度点，保持独立于预热的响应。
+
+主窗口遇到用量或额度缓存故障时会保留上次成功结果并提示重试；没有历史结果则显示统计暂不可用。关闭时停止接收新后台操作，并在一个 3 秒总预算内等待已登记任务及最后一次显示保存。
 
 关键文件：
 
@@ -181,7 +185,7 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 - `src/CodexTokenMonitor.Wpf/MainWindow.DataTransfer.cs`：主窗口的数据导入导出、CSV 和拖放处理（partial 分文件整理）；`MainWindow.DataSharing.cs`：共享服务生命周期与数据交换入口。
 - `src/CodexTokenMonitor.Wpf/Themes/MonitorTheme.xaml`：共享颜色与控件样式；`CostCardControl.xaml(.cs)`：费用卡片展示组件。
 - `src/CodexTokenMonitor.Wpf/QuotaEstimateWindow.xaml(.cs)`：额度估算窗口（当前 5h/7d、历史周期表、手动估算、内嵌额度曲线）。
-- `src/CodexTokenMonitor.Wpf/QuotaCostCurveWindow.xaml(.cs)` + `QuotaCostCurveCalculator.cs` + `QuotaCostCurveControl.cs`：额度费用曲线窗口。
+- `src/CodexTokenMonitor.Wpf/QuotaCostCurveWindow.xaml(.cs)` + `QuotaCostCurveControl.cs`：额度费用曲线窗口；计算器位于 `src/CodexTokenMonitor.Core/QuotaCostCurveCalculator.cs`。
 - `src/CodexTokenMonitor.Wpf/WpfTokenTimelineControl.cs`：ScottPlot token 时间轴控件。
 - `src/CodexTokenMonitor.Wpf/BackgroundCacheWarmer.cs`：后台历史缓存预热；`CacheDetailsWindow.xaml(.cs)`：缓存详情窗口。
 - `src/CodexTokenMonitor.Wpf/LastDisplayStore.cs`：恢复上次显示状态。
@@ -192,7 +196,13 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 - `src/CodexTokenMonitor.Core/CodexQuotaCycle.cs`：7d 额度周期的识别与异常快照剔除。
 - `src/CodexTokenMonitor.Core/QuotaEstimateCalculator.cs` / `QuotaPace.cs` / `QuotaSnapshotLookup.cs`：额度估算、重置评估、快照查询。
 - `src/CodexTokenMonitor.Core/ClaudeUsageReader.cs` / `ZCodeUsageReader.cs` / `WorkBuddyUsageReader.cs` / `DshUsageReader.cs`：其他来源日志读取（DSH 读取 zstd 压缩的会话日志，按 frame 解压并容忍不完整尾帧）。
-- `src/CodexTokenMonitor.Core/UsageSourceReader.cs` / `UsageModules.cs`：来源抽象与查询模块（含显示缓存）。
+- `src/CodexTokenMonitor.Core/UsageSourceReader.cs` / `UsageSourceRegistry.cs` / `UsageQueryModels.cs`：来源能力与元数据、查询范围和结果模型。
+- `src/CodexTokenMonitor.Wpf/UsageSourceModule.cs` / `UsageDisplayViewModel.cs`：每窗口的来源选择和显示缓存，以及主统计快照、空/失败/恢复状态。
+- `src/CodexTokenMonitor.Core/UsageQueryService.cs`：与 WPF 无关的用量查询服务，组合来源读取、缓存修复、分桶和额度锚点；`ExecuteCached` 只接收缓存查询能力，不扫描原始来源日志。
+- `src/CodexTokenMonitor.Core/LatestRequestRunner.cs`：串行刷新并合并等待请求，提供版本校验和取消/异常后的恢复。
+- `src/CodexTokenMonitor.Core/MonitorRuntime.cs`：共用 I/O 锁、后台任务登记、停止接收、取消与限时等待；任务结束后释放资源。
+- `src/CodexTokenMonitor.Core/AnalysisQuerySession.cs` / `QuotaCycleAnalysisQueryService.cs`：分析窗口任务与独立取消、缓存诊断、原周期刷新及校准保护。
+- `src/CodexTokenMonitor.Core/CacheOperationDiagnostics.cs`：按操作收集缓存故障，支持同实例后续重试；失败结果不覆盖成功显示。
 - `src/CodexTokenMonitor.Core/CodexDataTransferService.cs`：跨电脑数据包导出/导入（幂等合并）。
 - `src/CodexTokenMonitor.Core/PriceSettings.cs`：价格档案、分组默认值与价格库。
 - `src/CodexTokenMonitor.Core/SubscriptionPlan*.cs`：套餐/实际花费设置和导入。

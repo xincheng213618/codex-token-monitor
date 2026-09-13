@@ -12,10 +12,18 @@ internal partial class SubscriptionPlanWindow : Window
 {
     private readonly ObservableCollection<SubscriptionPlanRow> rows = new();
     private readonly CancellationTokenSource lifetimeCancellation = new();
+    private readonly AnalysisQuerySession querySession;
     private bool isClosed;
+    private bool hasLoadedSettings;
+    private bool hasSuccessfulLoad;
+    private bool isLoading;
+    private bool isSaving;
+    private bool isImporting;
+    private bool hasRequestedAccountPlan;
 
-    public SubscriptionPlanWindow()
+    public SubscriptionPlanWindow(MonitorRuntime? runtime = null)
     {
+        querySession = new AnalysisQuerySession(runtime);
         InitializeComponent();
         PlansGrid.ItemsSource = rows;
         rows.CollectionChanged += (_, args) =>
@@ -28,13 +36,87 @@ internal partial class SubscriptionPlanWindow : Window
         };
         PlansGrid.SelectionChanged += (_, _) => UpdateRecordSummary();
         MonthlyPlanBox.ItemsSource = new[] { "Pro 20x", "Pro 5x", "Plus", "Pro", "Business" };
-        LoadRows(SubscriptionPlanStore.Load());
-        Loaded += async (_, _) => await ReadAccountPlanAsync();
+        UpdateEditingState();
+        Loaded += async (_, _) => await LoadAsync();
         Closed += (_, _) =>
         {
             isClosed = true;
             lifetimeCancellation.Cancel();
+            querySession.Dispose();
         };
+    }
+
+    private async Task LoadAsync()
+    {
+        if (isLoading || isSaving || isImporting || querySession.IsStopping) return;
+        isLoading = true;
+        hasLoadedSettings = false;
+        UpdateEditingState();
+        SetStatus("正在读取套餐设置…");
+        try
+        {
+            var result = await querySession.RunAsync("读取套餐设置", _ => SubscriptionPlanStore.Load(forceReload: true));
+            if (isClosed || querySession.IsStopping) return;
+            if (result.CacheWarnings.Count > 0)
+            {
+                ShowLoadFailure(CacheFailureText.Detail(result.CacheWarnings));
+                return;
+            }
+            LoadRows(result.Value);
+            hasLoadedSettings = true;
+            hasSuccessfulLoad = true;
+            SetStatus("修改和导入记录在保存后生效。");
+        }
+        catch (OperationCanceledException) when (querySession.IsStopping || isClosed) { }
+        catch (Exception ex)
+        {
+            if (!isClosed && !querySession.IsStopping)
+            {
+                ShowLoadFailure(ex.ToString());
+            }
+        }
+        finally
+        {
+            isLoading = false;
+            if (!isClosed && !querySession.IsStopping) UpdateEditingState();
+        }
+        if (hasLoadedSettings && !hasRequestedAccountPlan && !isClosed && !querySession.IsStopping)
+        {
+            hasRequestedAccountPlan = true;
+            await ReadAccountPlanAsync();
+        }
+    }
+
+    private async void RetryLoadButton_Click(object sender, RoutedEventArgs e) => await LoadAsync();
+
+    private bool CanEdit => hasLoadedSettings && !isLoading && !isSaving && !isImporting && !querySession.IsStopping && !isClosed;
+
+    private void UpdateEditingState()
+    {
+        MonthlyEditor.IsEnabled = CanEdit;
+        PlansEditor.IsEnabled = CanEdit;
+        SaveButton.IsEnabled = CanEdit;
+        RetryLoadButton.Visibility = hasLoadedSettings ? Visibility.Collapsed : Visibility.Visible;
+        RetryLoadButton.IsEnabled = !isLoading && !isSaving && !isImporting && !querySession.IsStopping;
+    }
+
+    private void SetStatus(string text, string? detail = null)
+    {
+        StatusText.Text = text;
+        StatusText.ToolTip = detail;
+    }
+
+    private void ShowLoadFailure(string detail)
+    {
+        SetStatus("套餐设置读取失败，编辑和保存已停用。修复后点击“重新读取”。", detail);
+        if (hasSuccessfulLoad) return;
+        AccountStatusText.Text = "请先恢复本地购买记录。";
+        CurrentPlanText.Text = "暂不可用";
+        CurrentPlanText.ToolTip = "购买记录读取失败";
+        CurrentPlanDetailText.Text = "购买记录读取失败";
+        CurrentPlanDetailText.ToolTip = detail;
+        PlanRecordCountText.Text = "读取失败";
+        PlansEmptyState.Visibility = Visibility.Collapsed;
     }
 
     private void LoadRows(IReadOnlyList<SubscriptionPlanRecord> records)
@@ -111,6 +193,7 @@ internal partial class SubscriptionPlanWindow : Window
 
     private void AddMonthlyButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         try
         {
@@ -139,12 +222,18 @@ internal partial class SubscriptionPlanWindow : Window
 
     private async Task ReadAccountPlanAsync()
     {
+        if (isClosed || querySession.IsStopping || !hasLoadedSettings) return;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetimeCancellation.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(12));
         try
         {
-            var plan = await Task.Run(() => CodexAppServerQuotaReader.ReadPlanTypeAsync(timeout.Token), timeout.Token);
-            if (isClosed) return;
+            AccountStatusText.Text = "正在读取 Codex 账户套餐…";
+            var plan = await querySession.Runtime.Run("读取套餐账户信息", async runtimeToken =>
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken, timeout.Token);
+                return await Task.Run(() => CodexAppServerQuotaReader.ReadPlanTypeAsync(linked.Token), linked.Token);
+            });
+            if (isClosed || querySession.IsStopping) return;
             AccountStatusText.Text = plan is null
                 ? "未读取到账户套餐；已沿用购买记录，默认 Pro 20x / ¥1380。"
                 : $"账户套餐：{plan}。具体倍率、人民币月费和付款日期沿用购买记录，可在下方修改。";
@@ -164,6 +253,7 @@ internal partial class SubscriptionPlanWindow : Window
 
     private void DeleteButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         foreach (var row in PlansGrid.SelectedItems.OfType<SubscriptionPlanRow>().ToArray())
             rows.Remove(row);
@@ -172,40 +262,81 @@ internal partial class SubscriptionPlanWindow : Window
 
     private void DefaultsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         LoadRows(SubscriptionPlanStore.Defaults());
         StatusText.Text = "已载入示例，点击保存后生效。";
     }
 
-    private void ImportButton_Click(object sender, RoutedEventArgs e)
+    private async void ImportButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         try
         {
             var current = ReadRows();
-            var import = SubscriptionPlanImporter.TryImportFromCodex();
+            isImporting = true;
+            UpdateEditingState();
+            SetStatus("正在从 Codex 导入…");
+            var result = await querySession.RunAsync("导入套餐记录", _ => SubscriptionPlanImporter.TryImportFromCodex());
+            if (isClosed || querySession.IsStopping) return;
+            if (result.CacheWarnings.Count > 0)
+            {
+                SetStatus("导入失败，已保留当前编辑。", CacheFailureText.Detail(result.CacheWarnings));
+                return;
+            }
+            var import = result.Value;
             LoadRows(MergeRows(current, import.Records));
-            StatusText.Text = $"{import.Message} 点击保存后生效。";
+            SetStatus($"{import.Message} 点击保存后生效。");
             MessageBox.Show(this, $"{import.Message}\n\n导入结果仅在当前窗口预览，点击“保存”后才会生效。",
                 Title, MessageBoxButton.OK, MessageBoxImage.Information);
         }
+        catch (OperationCanceledException) when (querySession.IsStopping || isClosed) { }
         catch (Exception ex)
         {
-            ShowValidation(ex.Message);
+            if (!isClosed && !querySession.IsStopping)
+                SetStatus("导入失败，已保留当前编辑。", ex.ToString());
+        }
+        finally
+        {
+            isImporting = false;
+            if (!isClosed && !querySession.IsStopping) UpdateEditingState();
         }
     }
 
-    private void SaveButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!CommitEdits()) return;
         try
         {
-            SubscriptionPlanStore.Save(ReadRows());
+            var records = ReadRows();
+            isSaving = true;
+            UpdateEditingState();
+            SetStatus("正在保存套餐设置…");
+            await querySession.RunAsync("保存套餐设置", _ =>
+            {
+                SubscriptionPlanStore.Save(records);
+                return true;
+            }, requiresSharedIo: true);
+            if (isClosed || querySession.IsStopping) return;
             DialogResult = true;
         }
+        catch (OperationCanceledException) when (querySession.IsStopping || isClosed) { }
         catch (Exception ex)
         {
-            ShowValidation(ex.Message);
+            if (!isClosed && !querySession.IsStopping)
+            {
+                if (isSaving)
+                    SetStatus("保存失败，已保留当前编辑。修复后可再次点击保存。", ex.ToString());
+                else
+                    ShowValidation(ex.Message);
+            }
+        }
+        finally
+        {
+            isSaving = false;
+            if (!isClosed && !querySession.IsStopping) UpdateEditingState();
         }
     }
 

@@ -218,6 +218,8 @@
                 <DataGridTextColumn Header="Tokens" Binding="{Binding Tokens}" Width="92" ElementStyle="{StaticResource NumericCellText}" />
                 <DataGridTextColumn Header="本段代价" Binding="{Binding EquivalentCost}" Width="96" ElementStyle="{StaticResource NumericCellText}" />
                 <DataGridTextColumn Header="换算 100%" Binding="{Binding FullEstimate}" Width="104" ElementStyle="{StaticResource NumericCellText}" />
+                <DataGridTextColumn Header="拟合 100%" Binding="{Binding FittedEstimate}" Width="104" ElementStyle="{StaticResource NumericCellText}" />
+                <DataGridTextColumn Header="偏离拟合" Binding="{Binding FitDifference}" Width="88" ElementStyle="{StaticResource NumericCellText}" />
                 <DataGridTextColumn Header="相对均值" Binding="{Binding Difference}" Width="88" ElementStyle="{StaticResource NumericCellText}" />
                 <DataGridTextColumn Header="可信度" Binding="{Binding Reliability}" Width="78" />
             </DataGrid.Columns>

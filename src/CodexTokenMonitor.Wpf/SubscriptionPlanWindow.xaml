@@ -31,7 +31,7 @@
             </Border>
         </Grid>
 
-        <Border Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="14" Margin="0,0,0,12">
+        <Border x:Name="MonthlyEditor" Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="14" Margin="0,0,0,12">
             <StackPanel>
                 <Grid Margin="0,0,0,10">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
@@ -67,7 +67,7 @@
             </StackPanel>
         </Border>
 
-        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="14">
+        <Border x:Name="PlansEditor" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="14">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -114,10 +114,11 @@
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                 <TextBlock x:Name="StatusText" Text="修改和导入记录在保存后生效。" Style="{StaticResource PageSubtitle}"
-                           VerticalAlignment="Center" Margin="0,0,18,0" />
+                           VerticalAlignment="Center" Margin="0,0,18,0" TextWrapping="Wrap" />
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button x:Name="RetryLoadButton" Content="重新读取" Style="{StaticResource ToolButton}" Click="RetryLoadButton_Click" Margin="0,0,8,0" />
                     <Button Content="取消" IsCancel="True" Style="{StaticResource ToolButton}" Margin="0,0,8,0" />
-                    <Button Content="保存" IsDefault="True" Style="{StaticResource PrimaryButton}" Click="SaveButton_Click" />
+                    <Button x:Name="SaveButton" Content="保存" IsDefault="True" Style="{StaticResource PrimaryButton}" Click="SaveButton_Click" />
                 </StackPanel>
             </Grid>
         </Border>

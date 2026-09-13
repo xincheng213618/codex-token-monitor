@@ -12,18 +12,22 @@ public partial class QuotaCycleAnalysisWindow : Window
     private readonly CodexQuotaWindowEstimate? currentWeek;
     private readonly CodexQuotaCycle? previousPeriod;
     private readonly QuotaCycleAnalysisChart chart = new();
-    private readonly CancellationTokenSource loadCancellation = new();
+    private readonly AnalysisQuerySession querySession;
+    private readonly QuotaCycleAnalysisQueryService queryService = new();
     private IReadOnlyList<QuotaCycleBandRow> bandRows = Array.Empty<QuotaCycleBandRow>();
     private bool analysisLoading;
+    private bool hasSuccessfulResult;
 
     internal QuotaCycleAnalysisWindow(
         CodexQuotaCycle period,
         CodexQuotaWindowEstimate? currentWeek = null,
-        CodexQuotaCycle? previousPeriod = null)
+        CodexQuotaCycle? previousPeriod = null,
+        MonitorRuntime? runtime = null)
     {
         this.period = period;
         this.currentWeek = currentWeek;
         this.previousPeriod = previousPeriod;
+        querySession = new AnalysisQuerySession(runtime);
         InitializeComponent();
         ChartHost.Content = chart;
         chart.BandSelected += Chart_BandSelected;
@@ -32,56 +36,44 @@ public partial class QuotaCycleAnalysisWindow : Window
         ForecastPanel.RefreshRequested += async (_, _) => await LoadAnalysisAsync();
         ApplyChartView();
 
-        var plan = SubscriptionPlanStore.Summarize(period.PeriodStart, period.PeriodEnd);
         CycleTitleText.Text = $"7d 周期 · {period.PeriodStart:MM-dd HH:mm} → {period.PeriodEnd:MM-dd HH:mm}";
-        CycleMetaText.Text = $"重置 {period.ResetAt:yyyy-MM-dd HH:mm} · {period.SnapshotCount:N0} 个额度快照" +
-                             (plan.HasRecords ? $" · {plan.PlanNames}" : " · 未设置套餐");
+        CycleMetaText.Text = $"重置 {period.ResetAt:yyyy-MM-dd HH:mm} · {period.SnapshotCount:N0} 个额度快照";
 
         Loaded += async (_, _) => await LoadAnalysisAsync();
-        Closed += (_, _) =>
-        {
-            loadCancellation.Cancel();
-            loadCancellation.Dispose();
-        };
+        Closed += (_, _) => querySession.Dispose();
     }
 
     private async Task LoadAnalysisAsync()
     {
-        if (analysisLoading) return;
+        if (analysisLoading || querySession.IsStopping) return;
         analysisLoading = true;
         ForecastPanel.SetLoading(true);
-        var cancellationToken = loadCancellation.Token;
         try
         {
             StatusText.Text = "正在对齐模型记录与额度时间线...";
-            var loadResult = await Task.Run(() =>
-            {
-                var refreshRange = new QuotaAnalysisRefreshRange(period, currentWeek, false, "");
-                if (period.IsCurrent)
-                {
-                    var now = BeijingClock.Now;
-                    var snapshotStart = currentWeek is { ResetAtLocal: not null } &&
-                                        CodexQuotaCycleReader.IsSameQuotaReset(currentWeek.ResetAtLocal, period.ResetAt) &&
-                                        currentWeek.WindowStartLocal < period.PeriodStart
-                        ? currentWeek.WindowStartLocal : period.PeriodStart;
-                    var snapshots = CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(
-                        snapshotStart.AddMinutes(-10), now.AddTicks(1), cancellationToken);
-                    refreshRange = QuotaAnalysisRefreshRange.ResolveCurrentAnalysisPeriod(period, currentWeek, now, snapshots);
-                }
-                var analysis = QuotaCycleAnalysisCalculator.Build(refreshRange.Period, refreshRange.CurrentWeek, cancellationToken);
-                var capacities = analysis.HasData
-                    ? QuotaModelCapacityCalibrationService.Build(
-                        refreshRange.Period,
-                        analysis,
-                        previousPeriod,
-                        cancellationToken)
-                    : new QuotaModelCapacityReport("-", Array.Empty<QuotaModelCapacityEstimate>());
-                return new QuotaCycleAnalysisLoadResult(analysis, capacities, refreshRange.Reason);
-            }, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!IsLoaded) return;
+            var request = new QuotaCycleAnalysisRequest(period, currentWeek, previousPeriod);
+            var result = await querySession.RunAsync("周期分析",
+                token => (Analysis: queryService.Execute(request, token),
+                    Plan: SubscriptionPlanStore.Summarize(period.PeriodStart, period.PeriodEnd)),
+                requiresSharedIo: true);
+            if (querySession.IsStopping || !IsLoaded) return;
 
+            if (result.CacheWarnings.Count > 0)
+            {
+                StatusText.Text = CacheFailureText.Summary(result.CacheWarnings, hasSuccessfulResult);
+                StatusText.ToolTip = CacheFailureText.Detail(result.CacheWarnings);
+                if (!hasSuccessfulResult)
+                    InsightText.Text = "周期分析暂不可用，恢复缓存后重新打开或刷新此页。";
+                return;
+            }
+
+            var loadResult = result.Value.Analysis;
             ApplyResult(loadResult.Analysis, loadResult.Capacities);
+            var plan = result.Value.Plan;
+            CycleMetaText.Text = $"重置 {period.ResetAt:yyyy-MM-dd HH:mm} · {period.SnapshotCount:N0} 个额度快照" +
+                                 (plan.HasRecords ? $" · {plan.PlanNames}" : " · 未设置套餐");
+            hasSuccessfulResult = true;
+            StatusText.ToolTip = null;
             if (!string.IsNullOrWhiteSpace(loadResult.RefreshReason)) StatusText.Text = loadResult.RefreshReason;
         }
         catch (OperationCanceledException)
@@ -90,14 +82,14 @@ public partial class QuotaCycleAnalysisWindow : Window
         }
         catch (Exception ex)
         {
-            if (!IsLoaded) return;
-            StatusText.Text = "周期分析失败";
+            if (querySession.IsStopping || !IsLoaded) return;
+            StatusText.Text = hasSuccessfulResult ? "周期分析失败，保留上次成功结果" : "周期分析暂不可用";
             MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
             analysisLoading = false;
-            if (IsLoaded) ForecastPanel.SetLoading(false);
+            if (!querySession.IsStopping && IsLoaded) ForecastPanel.SetLoading(false);
         }
     }
 
@@ -156,7 +148,7 @@ public partial class QuotaCycleAnalysisWindow : Window
         var average = result.EstimatedFullQuotaCost ?? 0m;
         var consumptionRows = QuotaConsumptionTimelineCalculator.BuildBands(result)
             .ToDictionary(item => item.BandIndex, QuotaConsumptionSpeedRow.From);
-        bandRows = result.Bands.Select(item => QuotaCycleBandRow.From(item, average) with
+        bandRows = result.Bands.Select(item => QuotaCycleBandRow.From(item, average, capacities.Estimates) with
         {
             Consumption = consumptionRows.GetValueOrDefault(item.BandIndex)
         }).ToList();
@@ -180,7 +172,7 @@ public partial class QuotaCycleAnalysisWindow : Window
             {
                 QuotaModelCapacitySource.CurrentPeriodApproved => "本期核准",
                 QuotaModelCapacitySource.CurrentPeriodBlended => "本期综合",
-                QuotaModelCapacitySource.PreviousPeriodApproved => "沿用上期",
+                QuotaModelCapacitySource.PreviousPeriodApproved => "沿用上次",
                 _ => "本期推算"
             };
             var pureBandCount = Math.Max(0, item.BandCount - item.MixedBandCount);
@@ -208,7 +200,7 @@ public partial class QuotaCycleAnalysisWindow : Window
             : "没有满足条件的单模型分段";
         ModelCapacityBadge.ToolTip =
             "模型归因按界面整数显示达到 99% 就按纯模型样本核准，多个样本取平均并保存到数据库；" +
-            "混合段按模型成本占比作为小数权重参与综合平均；本期没有该模型样本时只沿用紧邻上一期。";
+            "本期没有纯模型样本时沿用同套餐最近一次校准，再按本期混合段的模型成本占比动态调整。";
     }
 
     private void Chart_BandSelected(object? sender, QuotaCycleAnalysisBand band)
@@ -250,7 +242,7 @@ public partial class QuotaCycleAnalysisWindow : Window
             : "额度位置 × 局部换算代价 · 上方色带为主导模型 · 点击联动下方明细";
         BandDescriptionText.Text = showTimeline
             ? "同一组 5% 分段 · 消耗时段按首次跨刻度对齐（含插值）· 段平均速度包含空闲"
-            : "每行按 5% 额度带聚合；小于 2% 的边缘区间标为小样本";
+            : "每行按 5% 额度带聚合；换算 100% 是实测外推，拟合 100% 按模型占比与动态估值合成";
     }
 
     private static string BuildInsight(QuotaCycleAnalysisResult result)
@@ -293,11 +285,6 @@ internal sealed record QuotaCycleModelRow(
     Brush Accent,
     string Detail);
 
-internal sealed record QuotaCycleAnalysisLoadResult(
-    QuotaCycleAnalysisResult Analysis,
-    QuotaModelCapacityReport Capacities,
-    string RefreshReason = "");
-
 internal sealed record QuotaCycleBandRow(
     QuotaCycleAnalysisBand Band,
     string QuotaRange,
@@ -308,6 +295,8 @@ internal sealed record QuotaCycleBandRow(
     string Tokens,
     string EquivalentCost,
     string FullEstimate,
+    string FittedEstimate,
+    string FitDifference,
     string Difference,
     string Reliability)
 {
@@ -319,9 +308,16 @@ internal sealed record QuotaCycleBandRow(
     public DateTimeOffset? ConsumptionStart => Consumption?.Band.StartLocal;
     public TimeSpan? ConsumptionElapsed => Consumption?.Elapsed;
 
-    public static QuotaCycleBandRow From(QuotaCycleAnalysisBand band, decimal average)
+    public static QuotaCycleBandRow From(
+        QuotaCycleAnalysisBand band,
+        decimal average,
+        IReadOnlyCollection<QuotaModelCapacityEstimate> capacities)
     {
         var estimate = band.EstimatedFullQuotaCost ?? 0m;
+        var fitted = QuotaModelCapacityEstimator.FitFullQuotaCost(band, capacities);
+        var fitDifference = estimate <= 0m || fitted is not > 0m
+            ? (decimal?)null
+            : (estimate / fitted.Value - 1m) * 100m;
         var difference = average <= 0m ? 0m : (estimate / average - 1m) * 100m;
         var mix = string.Join(" / ", band.Models.Take(3).Select(item =>
             $"{QuotaCycleModelPalette.ShortName(item.ModelId)} {item.QuotaSharePercent:N0}%"));
@@ -335,6 +331,8 @@ internal sealed record QuotaCycleBandRow(
             $"{band.Tokens / 1_000_000d:N3}M",
             FormatMoney(band.EquivalentCost),
             FormatMoney(band.EstimatedFullQuotaCost),
+            FormatMoney(fitted),
+            fitDifference is null ? "-" : $"{fitDifference.Value:+0;-0;0}%",
             $"{difference:+0;-0;0}%",
             band.QuotaDropPercent >= 4m ? "较稳" : band.QuotaDropPercent >= 2m ? "参考" : "小样本");
     }

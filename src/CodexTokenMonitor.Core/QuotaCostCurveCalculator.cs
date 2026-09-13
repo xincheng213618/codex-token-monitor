@@ -7,8 +7,7 @@ internal static class QuotaCostCurveCalculator
     public static QuotaCostCurveResult Build(
         CodexQuotaEstimate currentQuota,
         IReadOnlyList<CodexQuotaCycle> knownPeriods,
-        CancellationToken cancellationToken = default,
-        SemaphoreSlim? usageReadGate = null)
+        CancellationToken cancellationToken = default)
     {
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var periods = knownPeriods.Count > 0
@@ -39,7 +38,7 @@ internal static class QuotaCostCurveCalculator
                 continue;
             }
 
-            var timeline = CodexUsageReader.ReadMaterializedQuotaTimeline(
+            var timeline = CodexUsageReader.ReadCachedQuotaTimeline(
                     usageRows.Select(item => item.StartLocal),
                     cancellationToken: cancellationToken)
                 .Where(item =>

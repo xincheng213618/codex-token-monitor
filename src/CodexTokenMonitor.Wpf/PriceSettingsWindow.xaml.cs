@@ -17,19 +17,95 @@ internal partial class PriceSettingsWindow : Window
     private System.Windows.Point dragStartPoint;
     private PricePresetRow? draggedRow;
     private DateTime lastDragScrollUtc = DateTime.MinValue;
+    private readonly AnalysisQuerySession querySession;
+    private PriceSettings? loadedSettings;
+    private bool hasLoadedSettings;
+    private bool isLoading;
+    private bool isSaving;
 
-    public PriceSettingsWindow(string initialGroup)
+    public PriceSettingsWindow(string initialGroup, MonitorRuntime? runtime = null)
     {
+        querySession = new AnalysisQuerySession(runtime);
         InitializeComponent();
-        var settings = PriceSettingsStore.Current.Clone();
-        if (CodexModelCost.AddMissingPresets(settings, UsageCacheStore.Load().GetModelIds()) > 0)
-            PriceSettingsStore.Save(settings);
-        LoadSettings(PriceSettingsStore.Current);
-        SourceTabs.SelectedIndex = Math.Max(0, PricePresetGroups.All
-            .Select((group, index) => (group, index))
-            .FirstOrDefault(item => string.Equals(item.group, PricePresetGroups.Normalize(initialGroup), StringComparison.OrdinalIgnoreCase))
-            .index);
-        UpdateCurrentView();
+        foreach (var definition in UsageSourceRegistry.All)
+            SourceTabs.Items.Add(new TabItem { Header = definition.PriceGroup, Tag = definition.Source });
+        SourceTabs.SelectedIndex = UsageSourceRegistry.IndexOf(UsageSourceRegistry.ForPriceGroup(initialGroup).Source);
+        UpdateEditingState();
+        Loaded += async (_, _) => await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (isLoading || isSaving || querySession.IsStopping) return;
+        isLoading = true;
+        hasLoadedSettings = false;
+        UpdateEditingState();
+        SetStatus("正在读取价格设置…");
+        try
+        {
+            var result = await querySession.RunAsync("读取价格设置", _ => PriceSettingsStore.Load(forceReload: true));
+            if (querySession.IsStopping) return;
+            if (result.CacheWarnings.Count > 0)
+            {
+                SetStatus("价格设置读取失败，编辑和保存已停用。修复后点击“重新读取”。", CacheFailureText.Detail(result.CacheWarnings));
+                return;
+            }
+
+            var settings = result.Value.Clone();
+            var discoveredCount = 0;
+            string? modelWarning = null;
+            try
+            {
+                var models = await querySession.RunAsync("读取已发现模型", _ => UsageCacheStore.Load().GetModelIds());
+                if (querySession.IsStopping) return;
+                if (models.CacheWarnings.Count == 0)
+                    discoveredCount = CodexModelCost.AddMissingPresets(settings, models.Value);
+                else
+                    modelWarning = CacheFailureText.Detail(models.CacheWarnings);
+            }
+            catch (OperationCanceledException) when (querySession.IsStopping) { return; }
+            catch (Exception ex) { modelWarning = ex.ToString(); }
+
+            loadedSettings = settings;
+            LoadSettings(settings);
+            UpdateCurrentView();
+            hasLoadedSettings = true;
+            SetStatus(modelWarning is not null
+                ? "价格已载入；模型缓存暂不可读，可继续编辑价格。"
+                : discoveredCount > 0
+                    ? $"已补充 {discoveredCount} 个模型价格，点击保存后生效。"
+                    : "修改在点击保存后生效。", modelWarning);
+        }
+        catch (OperationCanceledException) when (querySession.IsStopping) { }
+        catch (Exception ex)
+        {
+            if (!querySession.IsStopping)
+                SetStatus("价格设置读取失败，编辑和保存已停用。修复后点击“重新读取”。", ex.ToString());
+        }
+        finally
+        {
+            isLoading = false;
+            if (!querySession.IsStopping) UpdateEditingState();
+        }
+    }
+
+    private async void RetryLoadButton_Click(object sender, RoutedEventArgs e) => await LoadAsync();
+
+    private bool CanEdit => hasLoadedSettings && !isLoading && !isSaving && !querySession.IsStopping;
+
+    private void UpdateEditingState()
+    {
+        PriceEditor.IsEnabled = CanEdit;
+        RestoreButton.IsEnabled = CanEdit;
+        SaveButton.IsEnabled = CanEdit;
+        RetryLoadButton.Visibility = hasLoadedSettings ? Visibility.Collapsed : Visibility.Visible;
+        RetryLoadButton.IsEnabled = !isLoading && !isSaving && !querySession.IsStopping;
+    }
+
+    private void SetStatus(string text, string? detail = null)
+    {
+        StatusText.Text = text;
+        StatusText.ToolTip = detail;
     }
 
     private void LoadSettings(PriceSettings settings)
@@ -81,6 +157,7 @@ internal partial class PriceSettingsWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        querySession.Dispose();
         if (activeView is not null)
         {
             activeView.CollectionChanged -= ActiveView_CollectionChanged;
@@ -160,6 +237,7 @@ internal partial class PriceSettingsWindow : Window
 
     private void PinButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (PriceGrid.SelectedItem is not PricePresetRow selected || !groupRows.TryGetValue(CurrentGroup(), out var rows))
         {
             ShowSelectionHint();
@@ -186,6 +264,7 @@ internal partial class PriceSettingsWindow : Window
 
     private void MoveSelected(int direction)
     {
+        if (!CanEdit) return;
         if (PriceGrid.SelectedItem is not PricePresetRow selected ||
             !groupRows.TryGetValue(CurrentGroup(), out var rows) ||
             activeView is null)
@@ -219,6 +298,7 @@ internal partial class PriceSettingsWindow : Window
 
     private void AddButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (!groupRows.TryGetValue(CurrentGroup(), out var rows))
         {
             return;
@@ -261,6 +341,7 @@ internal partial class PriceSettingsWindow : Window
 
     private void PriceGrid_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
     {
+        if (!CanEdit) return;
         if (e.LeftButton != MouseButtonState.Pressed || draggedRow is null)
         {
             return;
@@ -310,6 +391,7 @@ internal partial class PriceSettingsWindow : Window
 
     private void PriceGrid_Drop(object sender, System.Windows.DragEventArgs e)
     {
+        if (!CanEdit) return;
         if (e.Data.GetData(typeof(PricePresetRow)) is not PricePresetRow source ||
             !groupRows.TryGetValue(CurrentGroup(), out var rows))
         {
@@ -420,6 +502,7 @@ internal partial class PriceSettingsWindow : Window
 
     private void EditSelected()
     {
+        if (!CanEdit) return;
         if (PriceGrid.SelectedItem is not PricePresetRow selected)
         {
             ShowSelectionHint();
@@ -440,6 +523,7 @@ internal partial class PriceSettingsWindow : Window
 
     private void DeleteButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         if (PriceGrid.SelectedItem is not PricePresetRow selected || !groupRows.TryGetValue(CurrentGroup(), out var rows))
         {
             ShowSelectionHint();
@@ -474,6 +558,7 @@ internal partial class PriceSettingsWindow : Window
 
     private void RestoreButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit) return;
         var group = CurrentGroup();
         if (System.Windows.MessageBox.Show(this, $"恢复 {group} 分组的默认价格和展示顺序？其他分组不会受到影响。", Title,
                 MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
@@ -489,8 +574,9 @@ internal partial class PriceSettingsWindow : Window
         UpdateCurrentView();
     }
 
-    private void SaveButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!CanEdit || loadedSettings is null) return;
         try
         {
             foreach (var group in PricePresetGroups.All)
@@ -501,7 +587,7 @@ internal partial class PriceSettingsWindow : Window
                 }
             }
 
-            var settings = PriceSettingsStore.Current.Clone();
+            var settings = loadedSettings.Clone();
             settings.DisplayOrderVersion = PriceSettingsStore.Defaults().DisplayOrderVersion;
             settings.Presets = new();
             foreach (var group in PricePresetGroups.All)
@@ -517,18 +603,38 @@ internal partial class PriceSettingsWindow : Window
             }
 
             ApplyLegacyProfiles(settings, groupRows[PricePresetGroups.Codex].Select(row => row.Preset).ToList());
-            PriceSettingsStore.Save(settings);
+            isSaving = true;
+            UpdateEditingState();
+            SetStatus("正在保存价格设置…");
+            await querySession.RunAsync("保存价格设置", _ =>
+            {
+                PriceSettingsStore.Save(settings);
+                return true;
+            }, requiresSharedIo: true);
+            if (querySession.IsStopping) return;
             DialogResult = true;
         }
+        catch (OperationCanceledException) when (querySession.IsStopping) { }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (!querySession.IsStopping)
+            {
+                if (isSaving)
+                    SetStatus("保存失败，已保留当前编辑。修复后可再次点击保存。", ex.ToString());
+                else
+                    System.Windows.MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+        finally
+        {
+            isSaving = false;
+            if (!querySession.IsStopping) UpdateEditingState();
         }
     }
 
     private static void ApplyLegacyProfiles(PriceSettings settings, IReadOnlyList<PricePreset> codex)
     {
-        var current = PriceSettingsStore.Current;
+        var current = settings.Clone();
         var gpt = codex.FirstOrDefault(item =>
             item.Provider.Contains("OpenAI", StringComparison.OrdinalIgnoreCase) ||
             item.Model.Contains("GPT", StringComparison.OrdinalIgnoreCase));
@@ -578,8 +684,8 @@ internal partial class PriceSettingsWindow : Window
 
     private string CurrentGroup()
     {
-        return SourceTabs.SelectedItem is TabItem { Header: string header }
-            ? PricePresetGroups.Normalize(header)
+        return SourceTabs.SelectedItem is TabItem { Tag: UsageSource source }
+            ? PricePresetGroups.ForSource(source)
             : PricePresetGroups.Codex;
     }
 

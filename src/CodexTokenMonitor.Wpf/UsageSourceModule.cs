@@ -1,32 +1,10 @@
 namespace CodexTokenMonitor;
 
-internal enum RangeMode
-{
-    Day,
-    Week,
-    Month,
-    Cycle
-}
-
-internal sealed record SelectedRange(
-    DateTimeOffset Start,
-    DateTimeOffset End,
-    string Title,
-    string BreakdownTitle,
-    RangeMode Mode,
-    bool IsCustomStart = false,
-    bool FollowsCurrent = false);
-
-internal sealed record UsageQueryResult(
-    TokenUsageSummary Summary,
-    IReadOnlyList<TokenUsageBucket> BreakdownRows,
-    TimeSpan CodingTime,
-    CodexQuotaEstimate? Quota,
-    IReadOnlyList<CodexQuotaSnapshot> QuotaSnapshots)
-{
-    public IReadOnlyList<TokenUsageBucket> DetailRows { get; init; } = Array.Empty<TokenUsageBucket>();
-}
-
+/// <summary>
+/// Per-window page selection and accepted display cache, owned by the UI thread.
+/// It holds source metadata only; query and maintenance capabilities are selected
+/// by the window when it captures a request.
+/// </summary>
 internal abstract class UsageSourceModule
 {
     private const int DisplayCacheCapacity = 8;
@@ -35,14 +13,17 @@ internal abstract class UsageSourceModule
     private readonly List<DisplayCacheKey> displayCacheOrder = new();
     private RangeMode mode = RangeMode.Day;
 
-    protected UsageSourceModule(IUsageSourceReader reader)
+    protected UsageSourceModule(UsageSource source)
     {
-        Reader = reader;
+        var definition = UsageSourceRegistry.For(source);
+        Source = definition.Source;
+        Title = definition.Title;
+        SupportsQuota = definition.SupportsQuota;
     }
 
-    public IUsageSourceReader Reader { get; }
-    public UsageSource Source => Reader.Source;
-    public string Title => Reader.Title;
+    public UsageSource Source { get; }
+    public string Title { get; }
+    public bool SupportsQuota { get; }
     public virtual bool SupportsCycle => false;
     public DateTime PickerValue { get; set; } = BeijingClock.Today;
     public DateTimeOffset? CustomStartLocal { get; set; }
@@ -71,6 +52,7 @@ internal abstract class UsageSourceModule
 
     public void StoreDisplay(SelectedRange range, UsageQueryResult result)
     {
+        if (result.CacheWarnings.Count > 0) return;
         var displayResult = WithoutDetailRows(result);
         LastRange = range;
         LastResult = displayResult;
@@ -98,6 +80,7 @@ internal abstract class UsageSourceModule
 
     public void CacheDisplay(SelectedRange range, UsageQueryResult result)
     {
+        if (result.CacheWarnings.Count > 0) return;
         var key = DisplayCacheKey.From(range);
         displayCache[key] = WithoutDetailRows(result);
         TouchCachedDisplay(key);
@@ -147,7 +130,7 @@ internal abstract class UsageSourceModule
 internal sealed class CodexUsageModule : UsageSourceModule
 {
     public CodexUsageModule()
-        : base(UsageSourceReaders.For(UsageSource.Codex))
+        : base(UsageSource.Codex)
     {
     }
 
@@ -161,7 +144,7 @@ internal sealed class CodexUsageModule : UsageSourceModule
 internal sealed class ClaudeCodeUsageModule : UsageSourceModule
 {
     public ClaudeCodeUsageModule()
-        : base(UsageSourceReaders.For(UsageSource.ClaudeCode))
+        : base(UsageSource.ClaudeCode)
     {
     }
 }
@@ -169,7 +152,7 @@ internal sealed class ClaudeCodeUsageModule : UsageSourceModule
 internal sealed class ZCodeUsageModule : UsageSourceModule
 {
     public ZCodeUsageModule()
-        : base(UsageSourceReaders.For(UsageSource.ZCode))
+        : base(UsageSource.ZCode)
     {
     }
 }
@@ -177,7 +160,7 @@ internal sealed class ZCodeUsageModule : UsageSourceModule
 internal sealed class WorkBuddyUsageModule : UsageSourceModule
 {
     public WorkBuddyUsageModule()
-        : base(UsageSourceReaders.For(UsageSource.WorkBuddy))
+        : base(UsageSource.WorkBuddy)
     {
     }
 }
@@ -185,7 +168,7 @@ internal sealed class WorkBuddyUsageModule : UsageSourceModule
 internal sealed class DshUsageModule : UsageSourceModule
 {
     public DshUsageModule()
-        : base(UsageSourceReaders.For(UsageSource.Dsh))
+        : base(UsageSource.Dsh)
     {
     }
 }
@@ -194,19 +177,18 @@ internal static class UsageSourceModules
 {
     public static IReadOnlyDictionary<UsageSource, UsageSourceModule> Create()
     {
-        var codex = new CodexUsageModule();
-        var claude = new ClaudeCodeUsageModule();
-        var zcode = new ZCodeUsageModule();
-        var workBuddy = new WorkBuddyUsageModule();
-        var dsh = new DshUsageModule();
-
-        return new Dictionary<UsageSource, UsageSourceModule>
-        {
-            [codex.Source] = codex,
-            [claude.Source] = claude,
-            [zcode.Source] = zcode,
-            [workBuddy.Source] = workBuddy,
-            [dsh.Source] = dsh
-        };
+        return UsageSourceRegistry.All.ToDictionary(definition => definition.Source, definition => CreateModule(definition.Source));
     }
+
+    // Source order and metadata come from Core. The desktop owns its concrete
+    // page factories and creates new mutable state for every window.
+    private static UsageSourceModule CreateModule(UsageSource source) => source switch
+    {
+        UsageSource.Codex => new CodexUsageModule(),
+        UsageSource.ClaudeCode => new ClaudeCodeUsageModule(),
+        UsageSource.ZCode => new ZCodeUsageModule(),
+        UsageSource.WorkBuddy => new WorkBuddyUsageModule(),
+        UsageSource.Dsh => new DshUsageModule(),
+        _ => throw new InvalidOperationException($"No desktop page registered for source {source}.")
+    };
 }

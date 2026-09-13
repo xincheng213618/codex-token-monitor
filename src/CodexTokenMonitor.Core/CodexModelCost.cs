@@ -54,12 +54,15 @@ internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens,
 
 internal static class CodexModelCost
 {
+    public const string ReserveModelId = "gpt-reserve";
+    private const string LunaModelId = "gpt-5.6-luna";
+
     public static bool IsFastTier(string tier) => tier is "fast" or "priority";
     // ChatGPT quota credits, not API Priority billing. Current official rates:
     // https://learn.chatgpt.com/docs/agent-configuration/speed
-    public static decimal? FastQuotaMultiplier(string modelId) => Regex.Replace(NormalizeModelId(modelId), @"-\d{4}-\d{2}-\d{2}$", "") switch
+    public static decimal? FastQuotaMultiplier(string modelId) => ModelKey(modelId) switch
     {
-        "gpt-6-astra" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna" or "gpt-5.5" => 2.5m,
+        "gpt-6-astra" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna" or "gpt-5.5" or ReserveModelId => 2.5m,
         "gpt-5.4" => 2m,
         _ => null
     };
@@ -86,11 +89,8 @@ internal static class CodexModelCost
         var models = new List<ModelCostLine>();
         foreach (var (model, tokens) in usage.ModelUsage.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase))
         {
-            var key = NormalizeModelId(model);
-            if (!prices.TryGetValue(key, out var preset))
-                prices.TryGetValue(Regex.Replace(key, @"-\d{4}-\d{2}-\d{2}$", ""), out preset);
-            var pending = preset is null || (preset.Source == PlaceholderPriceSource || preset.Source == NoPublicPriceSource) &&
-                preset.UncachedInput == 0 && preset.CachedInput == 0 && preset.Output == 0 && (preset.CacheWriteInput ?? 0) == 0;
+            TryFindPrice(prices, model, out var preset);
+            var pending = IsPending(preset);
             decimal? amount = pending ? null : tokens.EstimateCost(preset!.ToProfile());
             var quotaProfile = pending ? null : CodexSubscriptionPricing.GetProfile(model, preset!.ToProfile());
             foreach (var (tier, tierUsage) in tokens.ServiceTierUsage)
@@ -133,6 +133,35 @@ internal static class CodexModelCost
         return value == "gpt-5.6" ? "gpt-5.6-sol" : value;
     }
 
+    public static bool IsReserveModel(string? modelId) => ModelKey(modelId) == ReserveModelId;
+
+    public static TokenUsageBucket? FindModelUsage(TokenUsageBucket usage, string modelId)
+    {
+        ArgumentNullException.ThrowIfNull(usage);
+        var key = ModelKey(modelId);
+        var matches = usage.ModelUsage
+            .Where(pair => ModelKey(pair.Key) == key)
+            .Select(pair => pair.Value)
+            .ToArray();
+        if (matches.Length == 0)
+        {
+            return null;
+        }
+
+        if (matches.Length == 1)
+        {
+            return matches[0];
+        }
+
+        var aggregate = new TokenUsageBucket { StartLocal = usage.StartLocal };
+        foreach (var match in matches)
+        {
+            aggregate.MergeFrom(match);
+        }
+
+        return aggregate;
+    }
+
     public static string DefaultModelId(string provider, string model) =>
         string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase) ? model switch
         {
@@ -165,7 +194,7 @@ internal static class CodexModelCost
         foreach (var model in models.Where(m => !string.IsNullOrWhiteSpace(m)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var key = NormalizeModelId(model);
-            if (catalog.ContainsKey(key) || catalog.ContainsKey(Regex.Replace(key, @"-\d{4}-\d{2}-\d{2}$", ""))) continue;
+            if (IsReserveModel(model) || catalog.ContainsKey(key) || catalog.ContainsKey(ModelKey(key))) continue;
             var preset = new PricePreset { Group = PricePresetGroups.Codex, Provider = "OpenAI",
                 Model = model, ModelId = model, CurrencySymbol = "$", UnitLabel = "USD / 1M tokens",
                 Divisor = 1_000_000m, UncachedInput = 0, CachedInput = 0, CacheWriteInput = 0, Output = 0,
@@ -175,5 +204,30 @@ internal static class CodexModelCost
             count++;
         }
         return count;
+    }
+
+    private static string ModelKey(string? model) => Regex.Replace(NormalizeModelId(model), @"-\d{4}-\d{2}-\d{2}$", "");
+
+    private static bool IsPending(PricePreset? preset) => preset is null ||
+        (preset.Source == PlaceholderPriceSource || preset.Source == NoPublicPriceSource) &&
+        preset.UncachedInput == 0 && preset.CachedInput == 0 && preset.Output == 0 && (preset.CacheWriteInput ?? 0) == 0;
+
+    private static bool TryFindPrice(Dictionary<string, PricePreset> prices, string model, out PricePreset? preset)
+    {
+        var key = NormalizeModelId(model);
+        if (!prices.TryGetValue(key, out preset))
+        {
+            prices.TryGetValue(ModelKey(key), out preset);
+        }
+
+        // Codex reports the post-limit fallback as gpt-reserve. It is not a
+        // separately billed API model, so use Luna's four-part price. A
+        // non-zero user-supplied reserve price still takes precedence.
+        if (IsReserveModel(key) && IsPending(preset))
+        {
+            prices.TryGetValue(LunaModelId, out preset);
+        }
+
+        return preset is not null;
     }
 }

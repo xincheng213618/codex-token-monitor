@@ -5,6 +5,28 @@ namespace CodexTokenMonitor.Tests;
 public sealed class UsageSourceModuleTests
 {
     [Fact]
+    public void CacheFailure_DoesNotReplaceOrCacheSuccessfulDisplay()
+    {
+        var module = new CodexUsageModule();
+        var originalRange = CycleRange(0);
+        var original = Result(42);
+        module.StoreDisplay(originalRange, original);
+        var failedRange = CycleRange(1);
+        var failed = Result(0) with
+        {
+            CacheWarnings = new[] { new CacheWarning("cache", "read", CacheWarningKind.Corrupt, "invalid database") }
+        };
+
+        module.StoreDisplay(failedRange, failed);
+        module.CacheDisplay(failedRange, failed);
+
+        Assert.True(module.TryGetDisplay(out var displayedRange, out var displayed));
+        Assert.Same(originalRange, displayedRange);
+        Assert.Same(original, displayed);
+        Assert.False(module.TryGetCachedDisplay(failedRange, out _));
+    }
+
+    [Fact]
     public void CachedDisplay_ReusesExactRangeAndClearInvalidatesIt()
     {
         var module = new CodexUsageModule();

@@ -22,9 +22,23 @@ internal sealed record SubscriptionPlanSummary(
 
 internal static class SubscriptionPlanStore
 {
-    private static readonly object SyncRoot = new();
-    private static string? initializedPath;
-    private static IReadOnlyList<SubscriptionPlanRecord>? cachedRecords;
+    private static readonly MonitorSettingsTable<SubscriptionPlanRecord> Table = new(
+        "subscription_plans",
+        """
+        CREATE TABLE IF NOT EXISTS subscription_plans (
+            id TEXT PRIMARY KEY,
+            start_local TEXT NOT NULL,
+            end_local TEXT NOT NULL,
+            plan_name TEXT NOT NULL,
+            amount_cny TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_subscription_plans_range ON subscription_plans(start_local, end_local);
+        """,
+        ReadRecords,
+        WriteRecords,
+        () => Defaults(),
+        CloneRecords,
+        NormalizeRecords);
 
     public static SubscriptionPlanRecord CreateMonthly(DateTimeOffset start, string planName = "Pro 20x", decimal amountCny = 1380m)
     {
@@ -60,58 +74,42 @@ internal static class SubscriptionPlanStore
         return records;
     }
 
-    public static IReadOnlyList<SubscriptionPlanRecord> Load()
-    {
-        EnsureInitialized();
-        lock (SyncRoot)
-        {
-            cachedRecords ??= CloneRecords(ReadRecords());
-            return CloneRecords(cachedRecords);
-        }
-    }
+    public static IReadOnlyList<SubscriptionPlanRecord> Load(bool forceReload = false) => Table.Load(forceReload);
 
-    private static IReadOnlyList<SubscriptionPlanRecord> ReadRecords()
+    private static IReadOnlyList<SubscriptionPlanRecord> ReadRecords(SqliteConnection connection, SqliteTransaction? transaction)
     {
-        try
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT id, start_local, end_local, plan_name, amount_cny
+            FROM subscription_plans
+            ORDER BY start_local
+            """;
+        var result = new List<SubscriptionPlanRecord>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
         {
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT id, start_local, end_local, plan_name, amount_cny
-                FROM subscription_plans
-                ORDER BY start_local
-                """;
-            var result = new List<SubscriptionPlanRecord>();
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
+            var record = new SubscriptionPlanRecord
             {
-                var record = new SubscriptionPlanRecord
-                {
-                    Id = reader.GetString(0),
-                    StartLocal = ParseDateTimeOffset(reader.GetString(1)),
-                    EndLocal = ParseDateTimeOffset(reader.GetString(2)),
-                    PlanName = reader.GetString(3),
-                    AmountCny = decimal.Parse(reader.GetString(4), CultureInfo.InvariantCulture)
-                };
-                if (record.EndLocal > record.StartLocal)
-                {
-                    result.Add(record);
-                }
-            }
-
-            return result;
+                Id = reader.GetString(0),
+                StartLocal = ParseDateTimeOffset(reader.GetString(1)),
+                EndLocal = ParseDateTimeOffset(reader.GetString(2)),
+                PlanName = reader.GetString(3),
+                AmountCny = decimal.Parse(reader.GetString(4), CultureInfo.InvariantCulture)
+            };
+            ValidateRecord(record);
+            result.Add(record);
         }
-        catch
-        {
-            return Defaults();
-        }
+        return result;
     }
 
-    public static void Save(IReadOnlyList<SubscriptionPlanRecord> records)
+    public static void Save(IReadOnlyList<SubscriptionPlanRecord> records) => Table.Save(records);
+
+    private static IReadOnlyList<SubscriptionPlanRecord> NormalizeRecords(IReadOnlyList<SubscriptionPlanRecord> records)
     {
-        EnsureInitialized();
-        var normalizedRecords = records
-            .Where(item => item.EndLocal > item.StartLocal)
+        ArgumentNullException.ThrowIfNull(records);
+        foreach (var record in records) ValidateRecord(record);
+        return records
             .OrderBy(item => item.StartLocal)
             .Select(item => new SubscriptionPlanRecord
             {
@@ -122,36 +120,33 @@ internal static class SubscriptionPlanStore
                 AmountCny = item.AmountCny
             })
             .ToList();
+    }
 
-        lock (SyncRoot)
+    private static void ValidateRecord(SubscriptionPlanRecord record)
+    {
+        if (record.EndLocal <= record.StartLocal)
+            throw new InvalidDataException("套餐结束时间必须晚于开始时间。");
+        if (record.AmountCny < 0)
+            throw new InvalidDataException("套餐金额不能为负数。");
+    }
+
+    private static void WriteRecords(SqliteConnection connection, SqliteTransaction transaction, IReadOnlyList<SubscriptionPlanRecord> records)
+    {
+        MonitorSettingsDatabase.ExecuteNonQuery(connection, transaction, "DELETE FROM subscription_plans");
+        foreach (var record in records)
         {
-            using var connection = OpenConnection();
-            using var transaction = connection.BeginTransaction();
-            using (var deleteCommand = connection.CreateCommand())
-            {
-                deleteCommand.Transaction = transaction;
-                deleteCommand.CommandText = "DELETE FROM subscription_plans";
-                deleteCommand.ExecuteNonQuery();
-            }
-
-            foreach (var record in normalizedRecords)
-            {
-                using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText = """
-                    INSERT INTO subscription_plans (id, start_local, end_local, plan_name, amount_cny)
-                    VALUES ($id, $start_local, $end_local, $plan_name, $amount_cny)
-                    """;
-                command.Parameters.AddWithValue("$id", record.Id);
-                command.Parameters.AddWithValue("$start_local", FormatDateTimeOffset(record.StartLocal));
-                command.Parameters.AddWithValue("$end_local", FormatDateTimeOffset(record.EndLocal));
-                command.Parameters.AddWithValue("$plan_name", record.PlanName);
-                command.Parameters.AddWithValue("$amount_cny", record.AmountCny.ToString(CultureInfo.InvariantCulture));
-                command.ExecuteNonQuery();
-            }
-
-            transaction.Commit();
-            cachedRecords = CloneRecords(normalizedRecords);
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO subscription_plans (id, start_local, end_local, plan_name, amount_cny)
+                VALUES ($id, $start_local, $end_local, $plan_name, $amount_cny)
+                """;
+            command.Parameters.AddWithValue("$id", record.Id);
+            command.Parameters.AddWithValue("$start_local", FormatDateTimeOffset(record.StartLocal));
+            command.Parameters.AddWithValue("$end_local", FormatDateTimeOffset(record.EndLocal));
+            command.Parameters.AddWithValue("$plan_name", record.PlanName);
+            command.Parameters.AddWithValue("$amount_cny", record.AmountCny.ToString(CultureInfo.InvariantCulture));
+            command.ExecuteNonQuery();
         }
     }
 
@@ -183,67 +178,6 @@ internal static class SubscriptionPlanStore
             ? "-"
             : string.Join(" / ", matching.Select(item => item.PlanName).Where(item => !string.IsNullOrWhiteSpace(item)).Distinct());
         return new SubscriptionPlanSummary(amount, names, matching);
-    }
-
-    private static void EnsureInitialized()
-    {
-        lock (SyncRoot)
-        {
-            if (initializedPath == MonitorSettingsDatabase.Path)
-            {
-                return;
-            }
-
-            using var connection = OpenConnection();
-            ExecuteNonQuery(connection, """
-                CREATE TABLE IF NOT EXISTS subscription_plans (
-                    id TEXT PRIMARY KEY,
-                    start_local TEXT NOT NULL,
-                    end_local TEXT NOT NULL,
-                    plan_name TEXT NOT NULL,
-                    amount_cny TEXT NOT NULL
-                )
-                """);
-            ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS idx_subscription_plans_range ON subscription_plans(start_local, end_local)");
-
-            using var countCommand = connection.CreateCommand();
-            countCommand.CommandText = "SELECT COUNT(*) FROM subscription_plans";
-            var count = Convert.ToInt32(countCommand.ExecuteScalar(), CultureInfo.InvariantCulture);
-            initializedPath = MonitorSettingsDatabase.Path;
-            cachedRecords = null;
-            if (count == 0)
-            {
-                Save(Defaults());
-            }
-        }
-    }
-
-    private static SqliteConnection OpenConnection()
-    {
-        var path = MonitorSettingsDatabase.Path;
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var builder = new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = true
-        };
-        var connection = new SqliteConnection(builder.ToString());
-        connection.Open();
-        ExecuteNonQuery(connection, "PRAGMA busy_timeout=5000;");
-        return connection;
-    }
-
-    private static void ExecuteNonQuery(SqliteConnection connection, string commandText)
-    {
-        using var command = connection.CreateCommand();
-        command.CommandText = commandText;
-        command.ExecuteNonQuery();
     }
 
     private static DateTimeOffset Local(int year, int month, int day, int hour, int minute)

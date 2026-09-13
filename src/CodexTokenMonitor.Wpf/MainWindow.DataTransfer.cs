@@ -34,6 +34,11 @@ public partial class MainWindow
 
     private async void ExportCurrentCsvButton_Click(object sender, RoutedEventArgs e)
     {
+        await RunUiActionAsync(ExportCurrentCsvAsync);
+    }
+
+    private async Task ExportCurrentCsvAsync()
+    {
         var module = CurrentModule();
         if (!module.TryGetDisplay(out var range, out var result) || !HasUsage(result))
         {
@@ -61,14 +66,14 @@ public partial class MainWindow
         {
             var csv = await Task.Run(
                 () => BuildCurrentCsv(module, range, result),
-                lifetimeCancellation.Token);
-            await WriteTextAtomicallyAsync(dialog.FileName, csv, lifetimeCancellation.Token);
+                runtime.LifetimeToken);
+            await WriteTextAtomicallyAsync(dialog.FileName, csv, runtime.LifetimeToken);
             if (!isClosed)
             {
                 SetStatus($"已导出当前明细 CSV：{result.BreakdownRows.Count:N0} 行");
             }
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (runtime.IsStopping)
         {
             if (!isClosed)
             {
@@ -242,7 +247,9 @@ public partial class MainWindow
         return value.ToString("0.########", CultureInfo.InvariantCulture);
     }
 
-    private async Task ExportDataAsync(CodexDataExportScope scope)
+    private Task ExportDataAsync(CodexDataExportScope scope) => RunUiActionAsync(() => ExportDataCoreAsync(scope));
+
+    private async Task ExportDataCoreAsync(CodexDataExportScope scope)
     {
         var (scopeLabel, fileScope) = scope switch
         {
@@ -269,18 +276,19 @@ public partial class MainWindow
         try
         {
             CodexDataExportResult result;
-            await usageQueryGate.WaitAsync(lifetimeCancellation.Token);
+            await usageQueryGate.WaitAsync(runtime.LifetimeToken);
             try
             {
                 result = await Task.Run(
-                    () => CodexDataTransferService.Export(dialog.FileName, scope, lifetimeCancellation.Token),
-                    lifetimeCancellation.Token);
+                    () => CodexDataTransferService.Export(dialog.FileName, scope, runtime.LifetimeToken),
+                    runtime.LifetimeToken);
             }
             finally
             {
                 usageQueryGate.Release();
             }
 
+            if (isClosed) return;
             SetStatus($"已导出{scopeLabel}数据：{result.UsageEventCount:N0} 条用量 · {result.QuotaSnapshotCount:N0} 条额度快照");
             System.Windows.MessageBox.Show(
                 this,
@@ -292,7 +300,7 @@ public partial class MainWindow
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (runtime.IsStopping)
         {
             if (!isClosed)
             {
@@ -416,7 +424,9 @@ public partial class MainWindow
                filePath.EndsWith(".codex-data.json", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task ImportDataAsync(IReadOnlyList<string> filePaths)
+    private Task ImportDataAsync(IReadOnlyList<string> filePaths) => RunUiActionAsync(() => ImportDataCoreAsync(filePaths));
+
+    private async Task ImportDataCoreAsync(IReadOnlyList<string> filePaths)
     {
         Interlocked.Increment(ref quotaRefreshVersion);
         backgroundCacheWarmer.CancelCurrent();
@@ -425,18 +435,19 @@ public partial class MainWindow
         try
         {
             CodexDataImportResult result;
-            await usageQueryGate.WaitAsync(lifetimeCancellation.Token);
+            await usageQueryGate.WaitAsync(runtime.LifetimeToken);
             try
             {
                 result = await Task.Run(
-                    () => CodexDataTransferService.Import(filePaths, lifetimeCancellation.Token),
-                    lifetimeCancellation.Token);
+                    () => CodexDataTransferService.Import(filePaths, runtime.LifetimeToken),
+                    runtime.LifetimeToken);
             }
             finally
             {
                 usageQueryGate.Release();
             }
 
+            if (isClosed) return;
             var codexModule = CurrentCodexModule();
             codexModule.CurrentQuotaEstimate = null;
             CodexQuotaCycleReader.InvalidateCache();
@@ -458,7 +469,7 @@ public partial class MainWindow
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (runtime.IsStopping)
         {
             if (!isClosed)
             {

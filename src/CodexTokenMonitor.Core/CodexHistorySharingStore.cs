@@ -16,11 +16,13 @@ internal sealed record CodexHistoryRange(DateOnly Start, DateOnly End)
 internal sealed class CodexHistorySharingStore(
     string folder = "CodexTokenMonitor",
     SemaphoreSlim? cacheGate = null,
-    Action<CodexDataImportResult>? imported = null)
+    Action<CodexDataImportResult>? imported = null,
+    MonitorRuntime? runtime = null)
 {
     private readonly string localAppData = MonitorCachePaths.LocalAppData;
+    private readonly SemaphoreSlim? workGate = cacheGate ?? runtime?.SharedIoGate;
 
-    public Task<IReadOnlyList<DateOnly>> GetDatesAsync(CancellationToken token) => RunAsync<IReadOnlyList<DateOnly>>(() =>
+    public Task<IReadOnlyList<DateOnly>> GetDatesAsync(CancellationToken token) => RunAsync<IReadOnlyList<DateOnly>>(cancellation =>
     {
         UsageCacheStore.Load(folder);
         QuotaSnapshotCacheStore.Load(folder);
@@ -35,36 +37,52 @@ internal sealed class CodexHistorySharingStore(
         var dates = new List<DateOnly>();
         while (reader.Read())
         {
-            token.ThrowIfCancellationRequested();
+            cancellation.ThrowIfCancellationRequested();
             dates.Add(DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture));
         }
         return dates;
     }, token);
 
-    public Task<CodexDataExportResult> ExportAsync(string path, CodexHistoryRange range, CancellationToken token) => RunAsync(() =>
+    public Task<CodexDataExportResult> ExportAsync(string path, CodexHistoryRange range, CancellationToken token) => RunAsync(cancellation =>
     {
         range.Validate();
         return CodexDataTransferService.ExportRange(path, folder,
             folder == "CodexTokenMonitor" ? CodexDataTransferService.GetOrCreateDeviceId() : folder,
-            Environment.MachineName, BeijingClock.Now, range.StartLocal, range.EndLocal, token);
+            Environment.MachineName, BeijingClock.Now, range.StartLocal, range.EndLocal, cancellation);
     }, token);
 
     public async Task<CodexDataImportResult> ImportAsync(string path, CodexHistoryRange range, CancellationToken token)
     {
         range.Validate();
-        var result = await RunAsync(() => CodexDataTransferService.ImportHistoryRange(
-            path, folder, range, token), token).ConfigureAwait(false);
+        var result = await RunAsync(cancellation => CodexDataTransferService.ImportHistoryRange(
+            path, folder, range, cancellation), token).ConfigureAwait(false);
         try { imported?.Invoke(result); } catch { }
         return result;
     }
 
-    private async Task<T> RunAsync<T>(Func<T> action, CancellationToken token)
+    private Task<T> RunAsync<T>(Func<CancellationToken, T> action, CancellationToken token,
+        [System.Runtime.CompilerServices.CallerMemberName] string operation = "")
     {
+        if (runtime is null) return RunCoreAsync(action, token);
+
+        // HTTP handlers have no UI operation surrounding them. Register every
+        // history read/write here so shutdown cannot dispose their shared gate
+        // before an in-flight handler releases it, even after the host times out.
+        return runtime.Run($"历史共享 {operation}", async lifetimeToken =>
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(lifetimeToken, token);
+            return await RunCoreAsync(action, linked.Token).ConfigureAwait(false);
+        });
+    }
+
+    private async Task<T> RunCoreAsync<T>(Func<CancellationToken, T> action, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
         // HTTP request execution contexts do not inherit caller AsyncLocals.
         using var root = MonitorCachePaths.PushLocalAppDataRoot(localAppData);
-        if (cacheGate is not null) await cacheGate.WaitAsync(token).ConfigureAwait(false);
-        try { return await Task.Run(action, token).ConfigureAwait(false); }
-        finally { cacheGate?.Release(); }
+        if (workGate is not null) await workGate.WaitAsync(token).ConfigureAwait(false);
+        try { return await Task.Run(() => action(token), token).ConfigureAwait(false); }
+        finally { workGate?.Release(); }
     }
 
     public static IReadOnlyList<CodexHistoryRange> BatchDates(IEnumerable<DateOnly> dates)

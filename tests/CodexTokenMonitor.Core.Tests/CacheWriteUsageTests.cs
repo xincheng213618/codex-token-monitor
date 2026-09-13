@@ -56,14 +56,16 @@ public sealed class CacheWriteUsageTests
     public void CodexReader_ParsesCacheWriteInputTokens()
     {
         var root = Path.Combine(Path.GetTempPath(), $"CodexCacheWriteTests-{Guid.NewGuid():N}");
-        var sessions = Path.Combine(root, "sessions", "2026", "08", "24");
+        var logRoot = Path.Combine(root, "logs");
+        var sessions = Path.Combine(logRoot, "Codex", "sessions", "2026", "08", "24");
         Directory.CreateDirectory(sessions);
         var logPath = Path.Combine(sessions, "rollout-test.jsonl");
         File.WriteAllText(
             logPath,
             "{\"timestamp\":\"2026-08-24T01:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"turn_id\":\"cache-write-test\",\"info\":{\"last_token_usage\":{\"input_tokens\":1000,\"cached_input_tokens\":600,\"cache_write_input_tokens\":100,\"output_tokens\":50,\"reasoning_output_tokens\":10,\"total_tokens\":1050}}}}\n");
 
-        CodexUsageReader.OverrideCodexHome = root;
+        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(Path.Combine(root, "cache"));
+        using var logScope = UsageLogPaths.PushRoot(logRoot);
         try
         {
             var start = new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.FromHours(8));
@@ -76,8 +78,12 @@ public sealed class CacheWriteUsageTests
         }
         finally
         {
-            CodexUsageReader.OverrideCodexHome = null;
-            Directory.Delete(root, recursive: true);
+            var resolved = Path.GetFullPath(root);
+            var temp = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!resolved.StartsWith(temp, StringComparison.OrdinalIgnoreCase) ||
+                !Path.GetFileName(resolved).StartsWith("CodexCacheWriteTests-", StringComparison.Ordinal))
+                throw new InvalidOperationException("Refusing to clean up outside the isolated test directory.");
+            Directory.Delete(resolved, recursive: true);
         }
     }
 }

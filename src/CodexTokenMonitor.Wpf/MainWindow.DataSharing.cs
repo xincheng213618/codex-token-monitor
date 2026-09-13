@@ -11,7 +11,7 @@ public partial class MainWindow
     private void EnsureDataSharingServer()
     {
         historySharingStore ??= new CodexHistorySharingStore(cacheGate: usageQueryGate,
-            imported: result => NotifySharedDataImported(result, refresh: false));
+            imported: result => NotifySharedDataImported(result, refresh: false), runtime: runtime);
         dataSharingServer ??= new CodexDataSharingServer(ExportSharedUsageAsync, ImportSharedUsageAsync, historySharingStore);
     }
 
@@ -24,9 +24,9 @@ public partial class MainWindow
             // Persist a newly generated key before opening the listener.
             settings.Save();
             EnsureDataSharingServer();
-            await dataSharingServer!.StartAsync(settings.Port, settings.AccessKey, lifetimeCancellation.Token);
+            await dataSharingServer!.StartAsync(settings.Port, settings.AccessKey, runtime.LifetimeToken);
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (runtime.IsStopping) { }
         catch (Exception ex)
         {
             if (!isClosed) SetStatus($"共享服务自动开启失败：{ex.Message}；可在数据管理 → 局域网共享中重试。");
@@ -43,7 +43,7 @@ public partial class MainWindow
 
         EnsureDataSharingServer();
         dataSharingWindow = new DataSharingWindow(
-            dataSharingServer!, ExportSharedUsageAsync, ImportSharedUsageAsync, historySharingStore!, lifetimeCancellation.Token)
+            dataSharingServer!, ExportSharedUsageAsync, ImportSharedUsageAsync, historySharingStore!, runtime.LifetimeToken, runtime)
         {
             Owner = this
         };
@@ -51,7 +51,16 @@ public partial class MainWindow
         dataSharingWindow.Show();
     }
 
-    private async Task<CodexDataExportResult> ExportSharedUsageAsync(string path, CancellationToken cancellationToken)
+    private Task<CodexDataExportResult> ExportSharedUsageAsync(string path, CancellationToken cancellationToken)
+    {
+        return runtime.Run("共享数据导出", async token =>
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, cancellationToken);
+            return await ExportSharedUsageCoreAsync(path, linked.Token).ConfigureAwait(false);
+        });
+    }
+
+    private async Task<CodexDataExportResult> ExportSharedUsageCoreAsync(string path, CancellationToken cancellationToken)
     {
         await usageQueryGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -74,7 +83,16 @@ public partial class MainWindow
         }
     }
 
-    private async Task<CodexDataImportResult> ImportSharedUsageAsync(string path, CancellationToken cancellationToken)
+    private Task<CodexDataImportResult> ImportSharedUsageAsync(string path, CancellationToken cancellationToken)
+    {
+        return runtime.Run("共享数据导入", async token =>
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, cancellationToken);
+            return await ImportSharedUsageCoreAsync(path, linked.Token).ConfigureAwait(false);
+        });
+    }
+
+    private async Task<CodexDataImportResult> ImportSharedUsageCoreAsync(string path, CancellationToken cancellationToken)
     {
         CodexDataImportResult result;
         await usageQueryGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -98,9 +116,9 @@ public partial class MainWindow
         CodexQuotaCycleReader.InvalidateCache();
         // Queue UI work after releasing the cache gate. Completing the remote
         // upload must not depend on a main-window refresh or a modal dialog.
-        if (!Dispatcher.HasShutdownStarted && !lifetimeCancellation.IsCancellationRequested)
+        if (!Dispatcher.HasShutdownStarted && !runtime.IsStopping)
         {
-            _ = Dispatcher.BeginInvoke(new Action(async () =>
+            _ = Dispatcher.BeginInvoke(new Action(async () => await RunUiActionAsync(async () =>
             {
                 if (isClosed)
                 {
@@ -116,13 +134,15 @@ public partial class MainWindow
                         module.ClearDisplay();
                     }
 
+                    UpdateCopySummaryState();
+
                     if (refresh) await RefreshUsageAsync(cacheOnly: true);
                     if (!isClosed)
                     {
                         SetStatus($"共享数据已合并：新增 {result.AddedUsageEventCount:N0} 条用量 · {result.AddedQuotaSnapshotCount:N0} 条额度快照");
                     }
                 }
-                catch (OperationCanceledException) when (isClosed || lifetimeCancellation.IsCancellationRequested) { }
+                catch (OperationCanceledException) when (isClosed || runtime.IsStopping) { }
                 catch (Exception ex)
                 {
                     if (!isClosed)
@@ -130,7 +150,7 @@ public partial class MainWindow
                         SetStatus($"共享数据已保存，刷新显示失败：{ex.Message}");
                     }
                 }
-            }));
+            })));
         }
 
     }

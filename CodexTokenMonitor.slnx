@@ -5,5 +5,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CodexTokenMonitor.Core.Tests/CodexTokenMonitor.Core.Tests.csproj" />
+    <Project Path="tests/CodexTokenMonitor.Wpf.Probes/CodexTokenMonitor.Wpf.Probes.csproj" />
   </Folder>
 </Solution>

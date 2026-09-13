@@ -2,98 +2,37 @@ namespace CodexTokenMonitor;
 
 internal enum UsageSource
 {
-    Codex,
-    ClaudeCode,
-    ZCode,
-    WorkBuddy,
-    Dsh
+    Codex = 0,
+    ClaudeCode = 1,
+    ZCode = 2,
+    WorkBuddy = 3,
+    Dsh = 4
 }
 
 internal sealed record DailyUsageSnapshot(
     TokenUsageSummary Summary,
     IReadOnlyList<TokenUsageBucket> Rows);
 
-internal interface IUsageSourceReader
-{
-    UsageSource Source { get; }
-    string Title { get; }
-    bool SupportsQuota { get; }
-
-    bool ClearCache();
-    bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default);
-    IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
-        DateTimeOffset startInclusive,
-        DateTimeOffset endInclusive,
-        CancellationToken cancellationToken = default);
-    TokenUsageSummary ReadRange(
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
-        bool includeLiveToday,
-        CancellationToken cancellationToken = default);
-    TokenUsageSummary ReadCachedRange(
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
-        CancellationToken cancellationToken = default);
-    IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
-        CancellationToken cancellationToken = default);
-    IReadOnlyList<TokenUsageBucket> ReadDetailRows(
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
-        bool includeLiveToday,
-        CancellationToken cancellationToken = default);
-    IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
-        CancellationToken cancellationToken = default);
-    DailyUsageSnapshot ReadDay(
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
-        bool includeLiveToday,
-        CancellationToken cancellationToken = default);
-    void WarmHistoricalDay(DateTimeOffset dayStart, CancellationToken cancellationToken = default);
-    void WarmHistoricalDays(
-        IEnumerable<DateTimeOffset> daysLocal,
-        CancellationToken cancellationToken = default,
-        Action<DateTimeOffset>? dayCompleted = null,
-        Action<int, int>? fileProgress = null);
-}
+// Compatibility facade for complete source adapters. Consumers should depend
+// on the query or maintenance capability they actually need.
+internal interface IUsageSourceReader : IUsageQuery, IUsageCacheMaintenance { }
 
 internal static class UsageSourceReaders
 {
-    private static readonly IUsageSourceReader Codex = new CodexUsageSourceReader();
-    private static readonly IUsageSourceReader ClaudeCode = new ClaudeCodeUsageSourceReader();
-    private static readonly IUsageSourceReader ZCode = new ZCodeUsageSourceReader();
-    private static readonly IUsageSourceReader WorkBuddy = new WorkBuddyUsageSourceReader();
-    private static readonly IUsageSourceReader Dsh = new DshUsageSourceReader();
+    public static IReadOnlyList<IUsageSourceReader> All => UsageSourceRegistry.Readers;
+    public static IUsageSourceReader For(UsageSource source) => UsageSourceRegistry.For(source).Reader;
 
-    public static IReadOnlyList<IUsageSourceReader> All { get; } = new[]
-    {
-        Codex,
-        ClaudeCode,
-        ZCode,
-        WorkBuddy,
-        Dsh
-    };
-
-    public static IUsageSourceReader For(UsageSource source)
-    {
-        return source switch
-        {
-            UsageSource.ClaudeCode => ClaudeCode,
-            UsageSource.ZCode => ZCode,
-            UsageSource.WorkBuddy => WorkBuddy,
-            UsageSource.Dsh => Dsh,
-            _ => Codex
-        };
-    }
+    internal static IUsageSourceReader CreateCodexReader() => new CodexUsageSourceReader();
+    internal static IUsageSourceReader CreateClaudeCodeReader() => new ClaudeCodeUsageSourceReader();
+    internal static IUsageSourceReader CreateZCodeReader() => new ZCodeUsageSourceReader();
+    internal static IUsageSourceReader CreateWorkBuddyReader() => new WorkBuddyUsageSourceReader();
+    internal static IUsageSourceReader CreateDshReader() => new DshUsageSourceReader();
 
     private sealed class CodexUsageSourceReader : IUsageSourceReader
     {
         public UsageSource Source => UsageSource.Codex;
-        public string Title => "Codex";
-        public bool SupportsQuota => true;
+        public string Title => UsageSourceRegistry.For(Source).Title;
+        public bool SupportsQuota => UsageSourceRegistry.For(Source).SupportsQuota;
 
         public bool ClearCache()
         {
@@ -198,8 +137,8 @@ internal static class UsageSourceReaders
     private sealed class ClaudeCodeUsageSourceReader : IUsageSourceReader
     {
         public UsageSource Source => UsageSource.ClaudeCode;
-        public string Title => "Claude Code";
-        public bool SupportsQuota => false;
+        public string Title => UsageSourceRegistry.For(Source).Title;
+        public bool SupportsQuota => UsageSourceRegistry.For(Source).SupportsQuota;
 
         public bool ClearCache()
         {
@@ -302,8 +241,8 @@ internal static class UsageSourceReaders
     private sealed class ZCodeUsageSourceReader : IUsageSourceReader
     {
         public UsageSource Source => UsageSource.ZCode;
-        public string Title => "ZCode";
-        public bool SupportsQuota => false;
+        public string Title => UsageSourceRegistry.For(Source).Title;
+        public bool SupportsQuota => UsageSourceRegistry.For(Source).SupportsQuota;
 
         public bool ClearCache()
         {
@@ -406,8 +345,8 @@ internal static class UsageSourceReaders
     private sealed class WorkBuddyUsageSourceReader : IUsageSourceReader
     {
         public UsageSource Source => UsageSource.WorkBuddy;
-        public string Title => "WorkBuddy";
-        public bool SupportsQuota => false;
+        public string Title => UsageSourceRegistry.For(Source).Title;
+        public bool SupportsQuota => UsageSourceRegistry.For(Source).SupportsQuota;
 
         public bool ClearCache()
         {
@@ -510,8 +449,8 @@ internal static class UsageSourceReaders
     private sealed class DshUsageSourceReader : IUsageSourceReader
     {
         public UsageSource Source => UsageSource.Dsh;
-        public string Title => "DSH";
-        public bool SupportsQuota => false;
+        public string Title => UsageSourceRegistry.For(Source).Title;
+        public bool SupportsQuota => UsageSourceRegistry.For(Source).SupportsQuota;
 
         public bool ClearCache()
         {

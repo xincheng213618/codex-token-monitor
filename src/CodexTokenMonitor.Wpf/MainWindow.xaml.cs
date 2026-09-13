@@ -8,6 +8,7 @@ namespace CodexTokenMonitor;
 
 public partial class MainWindow : Window
 {
+    private readonly UsageDisplayViewModel displayViewModel = new();
     private const double CostCardWidth = 190;
     private const double CostCardRightMargin = 10;
     private static readonly TimeSpan DayTimelineInterval = TimeSpan.FromMinutes(1);
@@ -15,14 +16,15 @@ public partial class MainWindow : Window
     private static readonly TimeSpan MonthTimelineInterval = TimeSpan.FromHours(1);
 
     private readonly IReadOnlyDictionary<UsageSource, UsageSourceModule> usageModules = UsageSourceModules.Create();
-    private readonly SemaphoreSlim usageQueryGate = new(1, 1);
+    private readonly MonitorRuntime runtime = new();
+    private SemaphoreSlim usageQueryGate => runtime.SharedIoGate;
     private readonly DispatcherTimer refreshTimer = new();
     private readonly BackgroundCacheWarmer backgroundCacheWarmer;
-    private readonly CancellationTokenSource lifetimeCancellation = new();
     private CacheDetailsWindow? cacheDetailsWindow;
     private readonly ResetOpportunitySynchronizer resetOpportunitySynchronizer = new();
     private readonly BreakdownGridAdapter breakdownGridAdapter;
-    private readonly object usageRefreshSync = new();
+    private readonly UsageQueryService usageQueryService = new();
+    private readonly LatestRequestRunner<UsageRefreshRequest> usageRefreshRunner;
     private readonly object cycleRefreshSync = new();
     private UsageSource activeSource = UsageSource.Codex;
     private bool initializing = true;
@@ -34,24 +36,25 @@ public partial class MainWindow : Window
     private bool isRefreshing;
     private bool isQuotaRefreshing;
     private bool isClosed;
-    private bool usageRefreshLoopRunning;
-    private bool usageRefreshPending;
-    private bool pendingCacheOnly;
-    private bool pendingIsAutomaticRefresh;
-    private long usageRefreshVersion;
     private long quotaRefreshVersion;
-    private Task usageRefreshLoopTask = Task.CompletedTask;
     private Task cycleRefreshTask = Task.CompletedTask;
     private int lastVisibleCostColumnCount = -1;
 
     public MainWindow()
     {
         InitializeComponent();
+        DataContext = displayViewModel;
+        foreach (var definition in UsageSourceRegistry.All)
+            SourceTabs.Items.Add(new TabItem { Header = definition.Title, Tag = definition.Source });
+        SourceTabs.SelectedIndex = 0;
+        usageRefreshRunner = new LatestRequestRunner<UsageRefreshRequest>(
+            (request, version, _) => runtime.Run("用量刷新", _ => RefreshUsageOnceAsync(request.CacheOnly, request.IsAutomaticRefresh, version)),
+            runtime.LifetimeToken);
         backgroundCacheWarmer = new BackgroundCacheWarmer(
             CurrentSource,
             () => isRefreshing || isQuotaRefreshing,
             usageQueryGate,
-            SetBackgroundStatus);
+            SetBackgroundStatus, runtime);
         breakdownGridAdapter = new BreakdownGridAdapter(BreakdownGrid);
         ConfigureBreakdownGrid();
         SyncRangeModeItems(CurrentModule());
@@ -60,7 +63,7 @@ public partial class MainWindow : Window
         refreshTimer.Interval = TimeSpan.FromSeconds(30);
         refreshTimer.Tick += async (_, _) => await RunUiActionAsync(async () =>
         {
-            if (isRefreshing || usageRefreshLoopRunning || isQuotaRefreshing || AutoRefreshBox.IsChecked != true)
+            if (isRefreshing || usageRefreshRunner.IsRunning || isQuotaRefreshing || AutoRefreshBox.IsChecked != true)
             {
                 return;
             }
@@ -93,7 +96,13 @@ public partial class MainWindow : Window
         {
             await StartDataSharingOnLaunchAsync();
             UpdateRangeControls();
-            var restored = TryRestoreLastDisplay();
+            _ = RefreshSettingsSummaryAsync();
+            var startupSource = CurrentSource();
+            var priceWarnings = await Task.Run(
+                () => ReadPriceSettingsForUsage(startupSource, null, runtime.LifetimeToken),
+                runtime.LifetimeToken);
+            if (isClosed) return;
+            var restored = priceWarnings.Count == 0 && TryRestoreLastDisplay();
             if (!restored)
             {
                 await RefreshUsageAsync(cacheOnly: true);
@@ -111,49 +120,36 @@ public partial class MainWindow : Window
 
             _ = SyncResetOpportunitiesFromCodexAsync(
                 showError: false,
-                cancellationToken: lifetimeCancellation.Token);
+                cancellationToken: runtime.LifetimeToken);
             backgroundCacheWarmer.Start();
         });
-        Closed += async (_, _) =>
+        Closing += MainWindow_Closing;
+        Closed += (_, _) =>
         {
-            isClosed = true;
-            lifetimeCancellation.Cancel();
-            var sharingShutdown = dataSharingServer?.StopAsync() ?? Task.CompletedTask;
-            refreshTimer.Stop();
             breakdownGridAdapter.Dispose();
-            backgroundCacheWarmer.Dispose();
-            LastDisplayStore.Flush();
-            await ObserveShutdownTaskAsync(sharingShutdown);
-            await backgroundCacheWarmer.WaitForCompletionAsync(TimeSpan.FromSeconds(2));
-            await ObserveShutdownTaskAsync(usageRefreshLoopTask);
-            await ObserveShutdownTaskAsync(cycleRefreshTask);
+            runtime.Dispose();
         };
-    }
-
-    private static async Task ObserveShutdownTaskAsync(Task task)
-    {
-        try
-        {
-            await task.WaitAsync(TimeSpan.FromSeconds(2));
-        }
-        catch
-        {
-            // Closing is best effort. Cancellation and any already-reported
-            // refresh error must not escape an async Closed handler.
-        }
     }
 
     private async Task RunUiActionAsync(Func<Task> action)
     {
         try
         {
-            await action();
+            if (!isClosed) await runtime.Run("界面操作", _ => action());
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || isClosed)
+        catch (OperationCanceledException) when (runtime.IsStopping || isClosed)
         {
             // Closing the main window cancels active I/O. Event handlers are
             // fire-and-forget by WPF, so observe that cancellation here rather
             // than allowing it to reach the dispatcher as an unhandled fault.
+        }
+        catch (Exception ex)
+        {
+            if (!isClosed)
+            {
+                SetStatus($"操作失败：{ex.Message}");
+                System.Windows.MessageBox.Show(this, ex.Message, "Codex Token 额度监控器", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
     }
 
@@ -301,7 +297,8 @@ public partial class MainWindow : Window
         var window = new QuotaCycleAnalysisWindow(
             cycle,
             codexModule.CurrentQuotaEstimate?.Week,
-            previousPeriod)
+            previousPeriod,
+            runtime)
         {
             Owner = this
         };
@@ -338,7 +335,7 @@ public partial class MainWindow : Window
 
     private void PriceSettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        var window = new PriceSettingsWindow(PricePresetGroups.ForSource(activeSource))
+        var window = new PriceSettingsWindow(PricePresetGroups.ForSource(activeSource), runtime)
         {
             Owner = this
         };
@@ -350,6 +347,7 @@ public partial class MainWindow : Window
                 module.ClearDisplay();
             }
 
+            _ = RefreshSettingsSummaryAsync(refreshAfterCurrent: true);
             _ = RefreshUsageAsync();
         }
     }
@@ -382,12 +380,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        var window = new ResetOpportunityWindow { Owner = this };
+        var window = new ResetOpportunityWindow(runtime) { Owner = this };
         window.ShowDialog();
-        ApplyResetOpportunitySummary();
+        _ = RefreshSettingsSummaryAsync(refreshAfterCurrent: true);
     }
 
-    private async Task SyncResetOpportunitiesFromCodexAsync(bool showError, CancellationToken cancellationToken = default)
+    private Task SyncResetOpportunitiesFromCodexAsync(bool showError, CancellationToken cancellationToken = default)
+    {
+        return runtime.Run("重置机会同步", async token =>
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, cancellationToken);
+            await SyncResetOpportunitiesFromCodexCoreAsync(showError, linked.Token);
+        });
+    }
+
+    private async Task SyncResetOpportunitiesFromCodexCoreAsync(bool showError, CancellationToken cancellationToken)
     {
         var result = await resetOpportunitySynchronizer.SyncAsync(cancellationToken);
         if (result is null || isClosed)
@@ -397,7 +404,7 @@ public partial class MainWindow : Window
 
         if (result.Success)
         {
-            ApplyResetOpportunitySummary();
+            await RefreshSettingsSummaryAsync(refreshAfterCurrent: true);
             return;
         }
 
@@ -414,10 +421,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        var window = new SubscriptionPlanWindow { Owner = this };
+        var window = new SubscriptionPlanWindow(runtime) { Owner = this };
         if (window.ShowDialog() == true)
         {
-            ApplyCurrentPlanSummary();
+            _ = RefreshSettingsSummaryAsync(refreshAfterCurrent: true);
             SetStatus("套餐设置已保存");
         }
     }
@@ -432,13 +439,14 @@ public partial class MainWindow : Window
         }
 
         await RefreshCycleOptionsAsync(keepSelection: true);
+        if (isClosed) return;
         quota = codexModule.CurrentQuotaEstimate;
         if (quota is null)
         {
             return;
         }
 
-        var window = new QuotaEstimateWindow(quota, codexModule.QuotaCycles, usageQueryGate)
+        var window = new QuotaEstimateWindow(quota, codexModule.QuotaCycles, runtime)
         {
             Owner = this
         };
@@ -555,16 +563,17 @@ public partial class MainWindow : Window
 
         backgroundCacheWarmer.CancelCurrent();
         var module = CurrentModule();
+        var maintenance = UsageSourceRegistry.For(module.Source).CacheMaintenance;
         var selectedDay = DateOnly.FromDateTime(module.PickerValue.Date);
         SetStatus($"清除 {module.Title} {selectedDay:yyyy-MM-dd} 缓存...");
 
         bool deleted;
-        await usageQueryGate.WaitAsync(lifetimeCancellation.Token);
+        await usageQueryGate.WaitAsync(runtime.LifetimeToken);
         try
         {
             deleted = await Task.Run(
-                () => module.Reader.RefreshCachedDay(selectedDay, lifetimeCancellation.Token),
-                lifetimeCancellation.Token);
+                () => maintenance.RefreshCachedDay(selectedDay, runtime.LifetimeToken),
+                runtime.LifetimeToken);
         }
         finally
         {
@@ -577,47 +586,11 @@ public partial class MainWindow : Window
         _ = backgroundCacheWarmer.WarmNowAsync();
     }
 
+    private sealed record UsageRefreshRequest(bool CacheOnly, bool IsAutomaticRefresh);
+
     private Task RefreshUsageAsync(bool cacheOnly = false, bool isAutomaticRefresh = false)
     {
-        lock (usageRefreshSync)
-        {
-            pendingCacheOnly = cacheOnly;
-            pendingIsAutomaticRefresh = isAutomaticRefresh;
-            usageRefreshPending = true;
-            usageRefreshVersion++;
-            if (!usageRefreshLoopRunning)
-            {
-                usageRefreshLoopRunning = true;
-                usageRefreshLoopTask = RunUsageRefreshLoopAsync();
-            }
-
-            return usageRefreshLoopTask;
-        }
-    }
-
-    private async Task RunUsageRefreshLoopAsync()
-    {
-        while (true)
-        {
-            bool cacheOnly;
-            bool isAutomaticRefresh;
-            long requestVersion;
-            lock (usageRefreshSync)
-            {
-                if (!usageRefreshPending)
-                {
-                    usageRefreshLoopRunning = false;
-                    return;
-                }
-
-                cacheOnly = pendingCacheOnly;
-                isAutomaticRefresh = pendingIsAutomaticRefresh;
-                requestVersion = usageRefreshVersion;
-                usageRefreshPending = false;
-            }
-
-            await RefreshUsageOnceAsync(cacheOnly, isAutomaticRefresh, requestVersion);
-        }
+        return usageRefreshRunner.RequestAsync(new UsageRefreshRequest(cacheOnly, isAutomaticRefresh));
     }
 
     private async Task RefreshUsageOnceAsync(bool cacheOnly, bool isAutomaticRefresh, long requestVersion)
@@ -631,20 +604,21 @@ public partial class MainWindow : Window
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var resumeBackgroundCache = false;
-        isRefreshing = true;
-        SetBusy(true);
-        SetStatus(cacheOnly ? "正在读取缓存..." : "正在刷新...");
         var module = CurrentModule();
-        var source = module.Source;
+        isRefreshing = true;
+        _ = RefreshSettingsSummaryAsync();
 
         try
         {
+            SetBusy(true);
+            SetStatus(cacheOnly ? "正在读取缓存..." : "正在刷新...");
+            var source = module.Source;
             var range = GetSelectedRange();
             var includeLiveToday = !cacheOnly && ShouldIncludeLiveToday(range);
             var cachedQuota = module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null;
             if (range.Mode == RangeMode.Cycle && !includeLiveToday && module.TryGetCachedDisplay(range, out var cachedResult))
             {
-                if (requestVersion != Volatile.Read(ref usageRefreshVersion) || isClosed)
+                if (!usageRefreshRunner.IsCurrent(requestVersion) || isClosed)
                 {
                     return;
                 }
@@ -654,7 +628,7 @@ public partial class MainWindow : Window
                 {
                     ApplySummary(range, cachedResult, module);
                     SetStatus($"周期结果缓存命中 {BeijingClock.DateTimeNow:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms");
-                    if (!cacheOnly && module.Reader.SupportsQuota)
+                    if (!cacheOnly && module.SupportsQuota)
                     {
                         _ = RefreshQuotaSummaryAsync();
                     }
@@ -663,221 +637,68 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var usesCachedCycleData = range.Mode == RangeMode.Cycle && !includeLiveToday;
-            // Automatic refresh waits for the current cache item through the shared
-            // gate; isRefreshing keeps the warmer from starting its next item.
-            if (!isAutomaticRefresh && !usesCachedCycleData && backgroundCacheWarmer.IsRunning)
+            // A historical query can repair missing details and materialize quota
+            // anchors. Only the display-cache hit above is safe to bypass the gate.
+            if (!isAutomaticRefresh && backgroundCacheWarmer.IsRunning)
             {
                 resumeBackgroundCache = true;
                 backgroundCacheWarmer.CancelCurrent();
                 SetStatus("正在刷新...");
             }
 
-            UsageQueryResult QueryUsage()
+            var definition = UsageSourceRegistry.For(source);
+            var cachedQueries = definition.CachedQueries;
+            // Capture the chosen capability and immutable request on the UI
+            // thread. A cache request has no source-log scanning methods.
+            Func<CancellationToken, UsageQueryResult> executeQuery;
+            if (cacheOnly)
             {
-                if (range.IsCustomStart)
-                {
-                    var transientRows = module.Reader.ReadTransientDetailRows(
-                        range.Start,
-                        range.End,
-                        lifetimeCancellation.Token);
-                    var transientSummary = CreateSummaryFromRows(range, transientRows);
-                    var transientQuota = ReadQuotaForRefresh(
-                        module.Reader,
-                        includeLiveToday,
-                        cachedQuota,
-                        lifetimeCancellation.Token);
-                    var transientQuotaSnapshots = module.Reader.SupportsQuota
-                        ? ReadQuotaSnapshotsForRefresh(
-                            range,
-                            transientRows,
-                            includeLiveToday,
-                            transientQuota,
-                            lifetimeCancellation.Token)
-                        : Array.Empty<CodexQuotaSnapshot>();
-                    return new UsageQueryResult(
-                        transientSummary,
-                        transientRows,
-                        UsageBreakdownBuilder.EstimateCodingTime(transientRows),
-                        transientQuota,
-                        transientQuotaSnapshots)
-                    {
-                        DetailRows = transientRows
-                    };
-                }
-
-                if (range.Mode == RangeMode.Day)
-                {
-                    var dayUsage = module.Reader.ReadDay(
-                        range.Start,
-                        range.End,
-                        includeLiveToday,
-                        lifetimeCancellation.Token);
-                    var dayRows = dayUsage.Rows;
-                    var daySummary = dayUsage.Summary;
-                    var historicalCacheNeedsRepair = !cacheOnly &&
-                                                     !includeLiveToday &&
-                                                     (daySummary.Events > 0 || dayRows.Count > 0) &&
-                                                     HasIncompleteHistoricalCache(
-                                                         module.Reader,
-                                                         range,
-                                                         lifetimeCancellation.Token);
-                    if (historicalCacheNeedsRepair ||
-                        (daySummary.Events > 0 &&
-                         UsageBreakdownBuilder.CountEvents(dayRows) < daySummary.Events))
-                    {
-                        dayRows = module.Reader.ReadDetailRows(
-                            range.Start,
-                            range.End,
-                            includeLiveToday: false,
-                            cancellationToken: lifetimeCancellation.Token);
-                        daySummary = UsageSummaryBuilder.FromRows(range.Start, range.End, dayRows);
-                    }
-                    var dayQuota = ReadQuotaForRefresh(
-                        module.Reader,
-                        includeLiveToday,
-                        cachedQuota,
-                        lifetimeCancellation.Token);
-                    var dayQuotaSnapshots = module.Reader.SupportsQuota
-                        ? ReadQuotaSnapshotsForRefresh(
-                            range,
-                            dayRows,
-                            includeLiveToday,
-                            dayQuota,
-                            lifetimeCancellation.Token)
-                        : Array.Empty<CodexQuotaSnapshot>();
-                    return new UsageQueryResult(
-                        daySummary,
-                        dayRows,
-                        UsageBreakdownBuilder.EstimateCodingTime(dayRows),
-                        dayQuota,
-                        dayQuotaSnapshots)
-                    {
-                        DetailRows = dayRows
-                    };
-                }
-
-                var summary = includeLiveToday
-                    ? module.Reader.ReadRange(
-                        range.Start,
-                        range.End,
-                        includeLiveToday,
-                        lifetimeCancellation.Token)
-                    : module.Reader.ReadCachedRange(
-                        range.Start,
-                        range.End,
-                        lifetimeCancellation.Token);
-                var detailRows = module.Reader.ReadCachedDetailRows(
-                    range.Start,
-                    range.End,
-                    lifetimeCancellation.Token);
-                if (!cacheOnly &&
-                    !includeLiveToday &&
-                    (summary.Events > 0 || detailRows.Count > 0) &&
-                    HasIncompleteHistoricalCache(
-                        module.Reader,
-                        range,
-                        lifetimeCancellation.Token))
-                {
-                    summary = module.Reader.ReadRange(
-                        range.Start,
-                        range.End,
-                        includeLiveToday: false,
-                        cancellationToken: lifetimeCancellation.Token);
-                    detailRows = module.Reader.ReadCachedDetailRows(
-                        range.Start,
-                        range.End,
-                        lifetimeCancellation.Token);
-                }
-                if (!cacheOnly &&
-                    summary.Events > 0 &&
-                    UsageBreakdownBuilder.CountEvents(detailRows) < summary.Events)
-                {
-                    detailRows = UsageBreakdownBuilder.ReadDetailRowsForRange(
-                        range.Start,
-                        range.End,
-                        (dayStart, dayEnd) => module.Reader.ReadDetailRows(
-                            dayStart,
-                            dayEnd,
-                            includeLiveToday,
-                            lifetimeCancellation.Token));
-                }
-                var rows = UsageBreakdownBuilder.Build(range, summary, detailRows, MultiDayBreakdownInterval);
-                var codingTime = UsageBreakdownBuilder.EstimateCodingTimeForRange(
-                    module.Reader,
-                    range,
-                    rows,
-                    detailRows,
-                    includeLiveToday,
-                    !includeLiveToday,
-                    lifetimeCancellation.Token);
-                var quota = ReadQuotaForRefresh(
-                    module.Reader,
-                    includeLiveToday,
-                    cachedQuota,
-                    lifetimeCancellation.Token);
-                var quotaSnapshots = module.Reader.SupportsQuota
-                    ? ReadQuotaSnapshotsForRefresh(
-                        range,
-                        rows,
-                        includeLiveToday,
-                        quota,
-                        lifetimeCancellation.Token)
-                    : Array.Empty<CodexQuotaSnapshot>();
-                return new UsageQueryResult(summary, rows, codingTime, quota, quotaSnapshots)
-                {
-                    DetailRows = detailRows
-                };
-            }
-
-            UsageQueryResult result;
-            if (usesCachedCycleData)
-            {
-                result = await Task.Run(QueryUsage, lifetimeCancellation.Token);
+                var request = new UsageCacheQueryRequest(cachedQueries, range, cachedQuota);
+                executeQuery = token => usageQueryService.ExecuteCached(request, token);
             }
             else
             {
-                await usageQueryGate.WaitAsync(lifetimeCancellation.Token);
-                try
+                var request = new UsageQueryRequest(definition.Queries, range, false, includeLiveToday, cachedQuota);
+                executeQuery = token => usageQueryService.Execute(request, token);
+            }
+            UsageQueryResult result;
+            bool canCacheCycleResult;
+            await usageQueryGate.WaitAsync(runtime.LifetimeToken);
+            try
+            {
+                // Navigation can supersede a request while it waits for warmup.
+                // Avoid scanning a range whose result can no longer be displayed.
+                if (!usageRefreshRunner.IsCurrent(requestVersion) || isClosed)
                 {
-                    result = await Task.Run(QueryUsage, lifetimeCancellation.Token);
+                    return;
                 }
-                finally
+
+                (result, canCacheCycleResult) = await Task.Run(() =>
                 {
-                    usageQueryGate.Release();
-                }
+                    var queried = executeQuery(runtime.LifetimeToken);
+                    var priceWarnings = queried.CacheWarnings.Count == 0
+                        ? ReadPriceSettingsForUsage(source, queried, runtime.LifetimeToken)
+                        : Array.Empty<CacheWarning>();
+                    using var diagnostics = CacheOperationDiagnostics.Begin();
+                    var canCache = queried.CacheWarnings.Count == 0 && priceWarnings.Count == 0 && usageQueryService.CanCacheCycleResult(
+                        cachedQueries, range, includeLiveToday, runtime.LifetimeToken);
+                    var warnings = queried.CacheWarnings.Concat(priceWarnings).Concat(diagnostics.Warnings).Distinct().ToArray();
+                    return (queried with { CacheWarnings = warnings }, canCache && warnings.Length == 0);
+                }, runtime.LifetimeToken);
+            }
+            finally
+            {
+                usageQueryGate.Release();
             }
 
-            if (requestVersion != Volatile.Read(ref usageRefreshVersion) || isClosed)
+            if (!usageRefreshRunner.IsCurrent(requestVersion) || isClosed)
             {
                 return;
             }
 
-            var canCacheCycleResult = false;
-            if (range.Mode == RangeMode.Cycle &&
-                !includeLiveToday &&
-                !range.IsCustomStart &&
-                range.Start < range.End)
+            if (result.CacheWarnings.Count > 0)
             {
-                await usageQueryGate.WaitAsync(lifetimeCancellation.Token);
-                try
-                {
-                    canCacheCycleResult = await Task.Run(
-                        () => CanCacheCycleResult(
-                            module.Reader,
-                            range,
-                            includeLiveToday,
-                            lifetimeCancellation.Token),
-                        lifetimeCancellation.Token);
-                }
-                finally
-                {
-                    usageQueryGate.Release();
-                }
-            }
-
-            if (requestVersion != Volatile.Read(ref usageRefreshVersion) || isClosed)
-            {
+                if (CurrentSource() == source) ShowCacheWarnings(module, result.CacheWarnings);
                 return;
             }
 
@@ -893,7 +714,7 @@ public partial class MainWindow : Window
                 SetStatus(includeLiveToday
                     ? $"已刷新 {BeijingClock.DateTimeNow:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms"
                     : $"缓存命中 {BeijingClock.DateTimeNow:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms");
-                if (!cacheOnly && module.Reader.SupportsQuota)
+                if (!cacheOnly && module.SupportsQuota)
                 {
                     _ = RefreshQuotaSummaryAsync();
                 }
@@ -901,9 +722,9 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            if (requestVersion == Volatile.Read(ref usageRefreshVersion) && !isClosed)
+            if (usageRefreshRunner.IsCurrent(requestVersion) && !isClosed && CurrentSource() == module.Source)
             {
-                SetStatus("读取失败");
+                ShowUsageReadFailure(module, ex.Message, ex.Message);
                 System.Windows.MessageBox.Show(this, ex.Message, "Codex Token 额度监控器", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
@@ -922,47 +743,33 @@ public partial class MainWindow : Window
         }
     }
 
-    private static bool CanCacheCycleResult(
-        IUsageSourceReader reader,
-        SelectedRange range,
-        bool includeLiveToday,
-        CancellationToken cancellationToken = default)
-    {
-        if (includeLiveToday || range.Mode != RangeMode.Cycle || range.IsCustomStart || range.Start >= range.End)
-        {
-            return false;
-        }
+    private Task ResumeBackgroundCacheAsync() => runtime.Run("恢复缓存预热", _ => ResumeBackgroundCacheCoreAsync());
 
-        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        var todayStart = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
-        var lastIncluded = range.End.AddTicks(-1);
-        return lastIncluded < todayStart &&
-               reader.GetIncompleteHistoricalDays(range.Start, lastIncluded, cancellationToken).Count == 0;
-    }
-
-    private async Task ResumeBackgroundCacheAsync()
+    private async Task ResumeBackgroundCacheCoreAsync()
     {
         try
         {
             for (var attempt = 0; attempt < 30 && backgroundCacheWarmer.IsRunning && !isClosed; attempt++)
             {
-                await Task.Delay(100, lifetimeCancellation.Token);
+                await Task.Delay(100, runtime.LifetimeToken);
             }
 
-            lifetimeCancellation.Token.ThrowIfCancellationRequested();
+            runtime.LifetimeToken.ThrowIfCancellationRequested();
             if (!isClosed)
             {
                 await backgroundCacheWarmer.WarmNowAsync();
             }
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || isClosed)
+        catch (OperationCanceledException) when (runtime.IsStopping || isClosed)
         {
             // A close can interrupt the short hand-off wait; no new warm cycle
             // should be started after the window lifetime has ended.
         }
     }
 
-    private async Task RefreshQuotaSummaryAsync()
+    private Task RefreshQuotaSummaryAsync() => runtime.Run("额度刷新", _ => RefreshQuotaSummaryCoreAsync());
+
+    private async Task RefreshQuotaSummaryCoreAsync()
     {
         if (isQuotaRefreshing || CurrentModule() is not CodexUsageModule codexModule)
         {
@@ -971,6 +778,7 @@ public partial class MainWindow : Window
 
         var requestVersion = Volatile.Read(ref quotaRefreshVersion);
         isQuotaRefreshing = true;
+        _ = RefreshSettingsSummaryAsync();
         try
         {
             if (isClosed || requestVersion != Volatile.Read(ref quotaRefreshVersion))
@@ -978,9 +786,10 @@ public partial class MainWindow : Window
                 return;
             }
 
-            await usageQueryGate.WaitAsync(lifetimeCancellation.Token);
+            await usageQueryGate.WaitAsync(runtime.LifetimeToken);
             CodexQuotaEstimate? cachedQuota;
             CodexQuotaEstimate? quota;
+            IReadOnlyList<CacheWarning> quotaWarnings;
             try
             {
                 if (isClosed || requestVersion != Volatile.Read(ref quotaRefreshVersion))
@@ -988,12 +797,15 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                cachedQuota = await Task.Run(
-                    () => FreshQuotaOrNull(CodexUsageReader.ReadCachedQuotaEstimate(lifetimeCancellation.Token)),
-                    lifetimeCancellation.Token);
-                quota = await Task.Run(
-                    () => CodexUsageReader.ReadQuotaEstimate(lifetimeCancellation.Token),
-                    lifetimeCancellation.Token);
+                var previousQuota = codexModule.CurrentQuotaEstimate;
+                (cachedQuota, quota, quotaWarnings) = await Task.Run(() =>
+                {
+                    using var diagnostics = CacheOperationDiagnostics.Begin();
+                    var cached = FreshQuotaOrNull(CodexUsageReader.ReadCachedQuotaEstimate(runtime.LifetimeToken));
+                    var establishedQuota = LatestFreshQuota(previousQuota, cached);
+                    var current = CodexUsageReader.ReadQuotaEstimate(establishedQuota, runtime.LifetimeToken);
+                    return (cached, current, diagnostics.Warnings);
+                }, runtime.LifetimeToken);
             }
             finally
             {
@@ -1002,6 +814,12 @@ public partial class MainWindow : Window
 
             if (isClosed || requestVersion != Volatile.Read(ref quotaRefreshVersion))
             {
+                return;
+            }
+
+            if (quotaWarnings.Count > 0)
+            {
+                SetStatus("额度缓存读取失败；保留上次额度，下次刷新将重试。");
                 return;
             }
 
@@ -1031,7 +849,7 @@ public partial class MainWindow : Window
                 }
             }
         }
-        catch (OperationCanceledException) when (lifetimeCancellation.IsCancellationRequested || isClosed)
+        catch (OperationCanceledException) when (runtime.IsStopping || isClosed)
         {
             // Window shutdown cancels the shared quota read. Do not replace a
             // normal closing path with an error message.
@@ -1060,27 +878,9 @@ public partial class MainWindow : Window
 
     private void ApplySummary(SelectedRange range, UsageQueryResult result, UsageSourceModule module)
     {
-        if (module.Source == UsageSource.Codex)
-        {
-            var settings = PriceSettingsStore.Current.Clone();
-            if (CodexModelCost.AddMissingPresets(settings, result.Summary.ModelUsage.Keys) > 0)
-                PriceSettingsStore.Save(settings);
-        }
-        Title = $"{module.Title} Token 额度监控器 - {range.Title}";
         var hasUsage = HasUsage(result);
-        ApplyUsageContentState(range, module, hasUsage);
-        TotalValue.Text = FormatTokenMillions(result.Summary.TotalTokens);
-        PeriodValue.Text = $"{result.Summary.StartLocal:yyyy-MM-dd HH:mm} - {result.Summary.EndLocal:yyyy-MM-dd HH:mm:ss}  GMT+8";
-        InputValue.Text = FormatTokenMillions(result.Summary.InputTokens);
-        CachedValue.Text = FormatTokenMillions(result.Summary.CachedInputTokens);
-        CacheWriteValue.Text = FormatTokenMillions(result.Summary.CacheWriteInputTokens);
-        UncachedValue.Text = FormatTokenMillions(result.Summary.UncachedInputTokens);
-        OutputValue.Text = FormatTokenAdaptive(result.Summary.OutputTokens);
-        ReasoningValue.Text = FormatTokenAdaptive(result.Summary.ReasoningOutputTokens);
-        CacheRatioValue.Text = result.Summary.InputTokens > 0 ? $"{result.Summary.CacheRatioPercent:N2}%" : "0.00%";
-        EventsValue.Text = result.Summary.Events.ToString("N0");
-        CodingTimeValue.Text = FormatDuration(result.CodingTime);
-        CopySummaryButton.IsEnabled = hasUsage && !isRefreshing;
+        displayViewModel.ShowResult(module.Source, module.Title, range, result);
+        displayViewModel.SetBusy(isRefreshing);
 
         var displayPresets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList();
         if (hasUsage)
@@ -1175,14 +975,7 @@ public partial class MainWindow : Window
 
     private static int SourceToTabIndex(UsageSource source)
     {
-        return source switch
-        {
-            UsageSource.ClaudeCode => 1,
-            UsageSource.ZCode => 2,
-            UsageSource.WorkBuddy => 3,
-            UsageSource.Dsh => 4,
-            _ => 0
-        };
+        return UsageSourceRegistry.IndexOf(source);
     }
 
     private static void RestoreModuleRange(UsageSourceModule module, SelectedRange range)
@@ -1199,27 +992,8 @@ public partial class MainWindow : Window
 
     private void ApplyEmptyModuleState(UsageSourceModule module)
     {
-        Title = $"{module.Title} Token 额度监控器";
-        UsageSummaryPanel.Visibility = Visibility.Collapsed;
-        UsageMetricsPanel.Visibility = Visibility.Collapsed;
-        UsageDetailsPanel.Visibility = Visibility.Collapsed;
-        EmptyUsagePanel.Visibility = Visibility.Visible;
-        EmptyUsageTitle.Text = $"正在读取 {module.Title} 用量";
-        EmptyUsagePeriod.Text = "";
-        EmptyUsageHint.Text = "完成后会自动显示当前时段的统计结果。";
-        TotalValue.Text = "-";
-        PeriodValue.Text = "-";
-        InputValue.Text = "-";
-        CachedValue.Text = "-";
-        CacheWriteValue.Text = "-";
-        UncachedValue.Text = "-";
-        OutputValue.Text = "-";
-        ReasoningValue.Text = "-";
-        CacheRatioValue.Text = "-";
-        EventsValue.Text = "-";
-        CodingTimeValue.Text = "-";
+        displayViewModel.ShowLoading(module.Source, module.Title);
         CostCardsPanel.Children.Clear();
-        CopySummaryButton.IsEnabled = false;
         SetTimelineVisible(false);
         ApplyQuotaSummary(module, module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null);
         ApplyBreakdownRows(GetSelectedRange(), Array.Empty<TokenUsageBucket>(), Array.Empty<CodexQuotaSnapshot>(), module.Source, PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList());
@@ -1273,43 +1047,7 @@ public partial class MainWindow : Window
         ApplyBreakdownRows(range, result.BreakdownRows, result.QuotaSnapshots, module.Source, displayPresets);
     }
 
-    private void ApplyUsageContentState(SelectedRange range, UsageSourceModule module, bool hasUsage)
-    {
-        UsageSummaryPanel.Visibility = hasUsage ? Visibility.Visible : Visibility.Collapsed;
-        UsageMetricsPanel.Visibility = hasUsage ? Visibility.Visible : Visibility.Collapsed;
-        UsageDetailsPanel.Visibility = hasUsage ? Visibility.Visible : Visibility.Collapsed;
-        EmptyUsagePanel.Visibility = hasUsage ? Visibility.Collapsed : Visibility.Visible;
-        if (hasUsage)
-        {
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        var isToday = range.Mode == RangeMode.Day && range.Start.Date == now.Date;
-        EmptyUsageTitle.Text = isToday
-            ? $"今天还没有 {module.Title} 用量"
-            : $"{range.Title}暂无 {module.Title} 用量";
-        EmptyUsagePeriod.Text =
-            $"{range.Start:yyyy-MM-dd HH:mm} — {range.End:yyyy-MM-dd HH:mm:ss}  GMT+8";
-        EmptyUsageHint.Text = module.Source == UsageSource.Codex
-            ? "额度会继续独立刷新；产生首条 Codex 用量后，这里会自动恢复统计卡和明细表。"
-            : $"产生首条 {module.Title} 用量后，这里会自动恢复统计卡和明细表。";
-    }
-
-    private static bool HasUsage(UsageQueryResult result)
-    {
-        return result.Summary.Events > 0 ||
-               result.Summary.TotalTokens > 0 ||
-               result.Summary.InputTokens > 0 ||
-               result.Summary.OutputTokens > 0 ||
-               result.Summary.ReasoningOutputTokens > 0 ||
-               result.BreakdownRows.Any(row =>
-                   row.Events > 0 ||
-                   row.TotalTokens > 0 ||
-                   row.InputTokens > 0 ||
-                   row.OutputTokens > 0 ||
-                   row.ReasoningOutputTokens > 0);
-    }
+    private static bool HasUsage(UsageQueryResult result) => UsageDisplayViewModel.ContainsUsage(result);
 
     private static string BuildClipboardSummary(
         UsageSourceModule module,
@@ -1384,7 +1122,7 @@ public partial class MainWindow : Window
         lines.Add(estimate.SpeedDescription);
         lines.Add($"订阅基准折算（含 Fast）：{estimate.FormatQuotaCost()}");
         foreach (var model in estimate.Models)
-            lines.Add($"{model.ModelId}: Input {model.Usage.InputTokens:N0} / Cached {model.Usage.CachedInputTokens:N0} / Cache Write {model.Usage.CacheWriteInputTokens:N0} / Output {model.Usage.OutputTokens:N0} · {(model.Cost is { } cost ? $"${cost:N4}" : CodexModelCost.HasNoPublicPrice(model.ModelId) ? "暂无公开 API 单价" : "$0 · 0x 待填写")}");
+            lines.Add($"{model.ModelId}{(CodexModelCost.IsReserveModel(model.ModelId) ? "（按 GPT-5.6 Luna）" : "")}: Input {model.Usage.InputTokens:N0} / Cached {model.Usage.CachedInputTokens:N0} / Cache Write {model.Usage.CacheWriteInputTokens:N0} / Output {model.Usage.OutputTokens:N0} · {(model.Cost is { } cost ? $"${cost:N4}" : CodexModelCost.HasNoPublicPrice(model.ModelId) ? "暂无公开 API 单价" : "$0 · 0x 待填写")}");
         if (!estimate.IsComplete)
         {
             lines.Add(estimate.MissingPriceDescription);
@@ -1455,6 +1193,7 @@ public partial class MainWindow : Window
         QuotaPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         ResetSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         PlanSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        ClearReserveUsageDisplay();
         if (!show)
         {
             return;
@@ -1467,6 +1206,7 @@ public partial class MainWindow : Window
         ApplyCurrentPlanSummary();
         ApplyResetOpportunitySummary();
         ApplyResetPaceSummary(effectiveQuota?.Week);
+        ApplyReserveUsage(effectiveQuota);
         if (effectiveQuota is null)
         {
             Quota5hValue.Text = "--";
@@ -1480,47 +1220,62 @@ public partial class MainWindow : Window
         ApplyQuotaWindow(QuotaWeekValue, QuotaWeekDetail, effectiveQuota.Week, QuotaWindowDisplayMode.Week);
     }
 
-    private void ApplyCurrentPlanSummary()
+    private void ApplyReserveUsage(CodexQuotaEstimate? quota)
     {
-        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        var active = SubscriptionPlanStore.Load()
-            .Where(item => item.StartLocal <= now && item.EndLocal > now)
-            .OrderByDescending(item => item.StartLocal)
-            .ToList();
-        if (active.Count == 0)
+        var reserve = FindReserveUsage(quota);
+        if (reserve is null)
         {
-            PlanSpendValue.Text = "-";
-            PlanSpendDetail.Text = "";
             return;
         }
 
-        PlanSpendValue.Text = string.Join(" / ", active.Select(item => item.PlanName).Distinct());
-        PlanSpendDetail.Text = FormatCny(active.Sum(item => item.AmountCny));
-    }
-
-    private void ApplyResetOpportunitySummary()
-    {
-        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        var summary = ResetOpportunityStore.Summarize(now);
-        ResetOpportunityValue.Text = ResetOpportunityFormatter.FormatCompactSummary(summary);
-        ResetOpportunityDetail.Text = summary.AvailableRecords.Count == 0 ? "" : $"{summary.AvailableCount:N0} 张可用";
-    }
-
-    private void ApplyResetPaceSummary(CodexQuotaWindowEstimate? week)
-    {
-        if (week is null)
+        var estimate = new TokenUsageBucket
         {
-            ResetPaceValue.Text = "-";
-            ResetPaceDetail.Text = "";
-            return;
+            ModelUsage = new Dictionary<string, TokenUsageBucket>(StringComparer.OrdinalIgnoreCase)
+            {
+                [CodexModelCost.ReserveModelId] = reserve.Value.Usage
+            }
+        };
+        var cost = CodexModelCost.Estimate(estimate).KnownCost;
+        ReserveUsageValue.Text = FormatTokenMillions(reserve.Value.Usage.TotalTokens);
+        ReserveUsageDetail.Text = $"{reserve.Value.WindowLabel} · {reserve.Value.Usage.Events:N0} 条 · 按 Luna ≈ ${cost:N4}";
+        ReserveUsageDetail.ToolTip = "仅统计额度窗口内的 gpt-reserve 用量；价格按 GPT-5.6 Luna：输入 $0.20、缓存读取 $0.02、缓存写入 $0.25、输出 $1.20（每百万 Token）。";
+        ReserveUsagePanel.Visibility = Visibility.Visible;
+    }
+
+    private static (TokenUsageBucket Usage, string WindowLabel)? FindReserveUsage(CodexQuotaEstimate? quota)
+    {
+        if (quota is null)
+        {
+            return null;
         }
 
-        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        var report = QuotaPaceAnalyzer.Analyze(week, ResetOpportunityStore.Summarize(now));
-        ResetPaceValue.Text = report.Rating;
-        ResetPaceDetail.Text =
-            $"已{report.UsedPercent:N0}% / 应{report.ExpectedUsedPercent:N0}% · " +
-            $"{QuotaPaceAnalyzer.FormatPaceDelta(report.DeltaPercent)} · {report.DetailText}";
+        foreach (var candidate in new[]
+        {
+            (Usage: quota.FiveHour?.Usage, WindowLabel: "5h"),
+            (Usage: quota.Week?.Usage, WindowLabel: "7d")
+        })
+        {
+            if (candidate.Usage is null)
+            {
+                continue;
+            }
+
+            var reserve = CodexModelCost.FindModelUsage(candidate.Usage, CodexModelCost.ReserveModelId);
+            if (reserve is not null && reserve.TotalTokens > 0)
+            {
+                return (reserve, candidate.WindowLabel);
+            }
+        }
+
+        return null;
+    }
+
+    private void ClearReserveUsageDisplay()
+    {
+        ReserveUsagePanel.Visibility = Visibility.Collapsed;
+        ReserveUsageValue.Text = "-";
+        ReserveUsageDetail.Text = "";
+        ReserveUsageDetail.ToolTip = null;
     }
 
     private static void ApplyQuotaWindow(TextBlock valueBlock, TextBlock detailBlock, CodexQuotaWindowEstimate? window, QuotaWindowDisplayMode mode)
@@ -1647,22 +1402,6 @@ public partial class MainWindow : Window
         return UsageRangePolicy.ShouldReadLiveToday(range, DateTimeOffset.UtcNow);
     }
 
-    private static bool HasIncompleteHistoricalCache(
-        IUsageSourceReader reader,
-        SelectedRange range,
-        CancellationToken cancellationToken = default)
-    {
-        if (range.Start >= range.End)
-        {
-            return false;
-        }
-
-        return reader.GetIncompleteHistoricalDays(
-            range.Start,
-            range.End.AddTicks(-1),
-            cancellationToken).Count > 0;
-    }
-
     private void UpdateRangeControls()
     {
         var module = CurrentModule();
@@ -1745,13 +1484,14 @@ public partial class MainWindow : Window
                 return cycleRefreshTask;
             }
 
-            cycleRefreshTask = RefreshCycleOptionsCoreAsync(keepSelection);
+            cycleRefreshTask = runtime.Run("额度周期", _ => RefreshCycleOptionsCoreAsync(keepSelection));
             return cycleRefreshTask;
         }
     }
 
     private async Task RefreshCycleOptionsCoreAsync(bool keepSelection)
     {
+        using var diagnostics = CacheOperationDiagnostics.Begin();
         if (CurrentModule() is not CodexUsageModule codexModule)
         {
             return;
@@ -1768,7 +1508,7 @@ public partial class MainWindow : Window
         try
         {
             IReadOnlyList<CodexQuotaCycle> cycles;
-            await usageQueryGate.WaitAsync(lifetimeCancellation.Token);
+            await usageQueryGate.WaitAsync(runtime.LifetimeToken);
             try
             {
                 if (isClosed)
@@ -1778,8 +1518,8 @@ public partial class MainWindow : Window
 
                 var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
                 cycles = await Task.Run(
-                    () => CodexQuotaCycleReader.ReadWeeklyCycles(quota, now, lifetimeCancellation.Token),
-                    lifetimeCancellation.Token);
+                    () => CodexQuotaCycleReader.ReadWeeklyCycles(quota, now, runtime.LifetimeToken),
+                    runtime.LifetimeToken);
             }
             finally
             {
@@ -1792,6 +1532,12 @@ public partial class MainWindow : Window
                 return;
             }
 
+            if (diagnostics.Warnings.Count > 0)
+            {
+                SetStatus("额度周期缓存读取失败；保留上次周期，下次刷新将重试。");
+                return;
+            }
+
             codexModule.QuotaCycles = cycles;
             ApplyCycleOptions(codexModule, cycles, keepSelection);
             if (codexModule.Mode == RangeMode.Cycle)
@@ -1799,9 +1545,12 @@ public partial class MainWindow : Window
                 UpdateRangeControls();
             }
         }
-        catch
+        catch (OperationCanceledException) when (isClosed || runtime.IsStopping)
         {
-            // Cycle data is auxiliary; the main usage and quota cards should remain usable.
+        }
+        catch (Exception ex)
+        {
+            if (!isClosed) SetStatus($"额度周期读取失败：{ex.Message}");
         }
     }
 
@@ -1905,6 +1654,7 @@ public partial class MainWindow : Window
 
     private void SetBusy(bool busy)
     {
+        displayViewModel.SetBusy(busy);
         isRefreshing = busy;
         RangeModeBox.IsEnabled = !busy;
         DatePicker.IsEnabled = !busy;
@@ -1920,7 +1670,6 @@ public partial class MainWindow : Window
             StartNowButton.IsEnabled = false;
             WeekPickerButton.IsEnabled = false;
             RefreshDayButton.IsEnabled = false;
-            CopySummaryButton.IsEnabled = false;
         }
         else
         {
@@ -1932,15 +1681,9 @@ public partial class MainWindow : Window
 
     private void UpdateCopySummaryState()
     {
-        if (CopySummaryButton is null)
-        {
-            return;
-        }
-
         var module = CurrentModule();
-        CopySummaryButton.IsEnabled = !isRefreshing &&
-                                      module.TryGetDisplay(out _, out var result) &&
-                                      HasUsage(result);
+        displayViewModel.SetCopySourceAvailable(module.TryGetDisplay(out _, out var result) && HasUsage(result));
+        displayViewModel.SetBusy(isRefreshing);
     }
 
     private void UpdateAutoRefreshState()
@@ -1976,7 +1719,8 @@ public partial class MainWindow : Window
 
     private void SetStatus(string text)
     {
-        StatusText.Text = text;
+        if (isClosed) return;
+        displayViewModel.SetStatus(text);
     }
 
     private void SetBackgroundStatus(CacheWarmStatus status)
@@ -2020,14 +1764,9 @@ public partial class MainWindow : Window
 
     private UsageSource CurrentSource()
     {
-        return SourceTabs.SelectedIndex switch
-        {
-            1 => UsageSource.ClaudeCode,
-            2 => UsageSource.ZCode,
-            3 => UsageSource.WorkBuddy,
-            4 => UsageSource.Dsh,
-            _ => UsageSource.Codex
-        };
+        return SourceTabs.SelectedItem is TabItem { Tag: UsageSource source }
+            ? UsageSourceRegistry.For(source).Source
+            : UsageSourceRegistry.Default.Source;
     }
 
     private UsageSourceModule CurrentModule()
@@ -2116,21 +1855,6 @@ public partial class MainWindow : Window
         breakdownGridAdapter.ConfigureInitialColumns();
     }
 
-    private static CodexQuotaEstimate? ReadQuotaForRefresh(
-        IUsageSourceReader reader,
-        bool includeLiveToday,
-        CodexQuotaEstimate? cachedQuota,
-        CancellationToken cancellationToken = default)
-    {
-        if (!reader.SupportsQuota)
-        {
-            return null;
-        }
-
-        _ = includeLiveToday;
-        return FreshQuotaOrNull(cachedQuota) ?? CodexUsageReader.ReadCachedQuotaEstimate(cancellationToken);
-    }
-
     private static CodexQuotaEstimate? FreshQuotaOrNull(CodexQuotaEstimate? quota)
     {
         if (quota is null)
@@ -2157,48 +1881,6 @@ public partial class MainWindow : Window
         }
 
         return freshFirst.SnapshotLocal >= freshSecond.SnapshotLocal ? freshFirst : freshSecond;
-    }
-
-    private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsForRefresh(
-        SelectedRange range,
-        IReadOnlyList<TokenUsageBucket> rows,
-        bool includeLiveToday,
-        CodexQuotaEstimate? quota,
-        CancellationToken cancellationToken = default)
-    {
-        var anchors = rows
-            .Select(bucket =>
-            {
-                if (IsEventBucket(range, bucket))
-                {
-                    return bucket.StartLocal;
-                }
-
-                var bucketEnd = bucket.StartLocal.Add(GetQuotaBucketInterval(range));
-                return (bucketEnd < range.End ? bucketEnd : range.End).AddTicks(-1);
-            })
-            .Where(anchor => anchor >= range.Start && anchor < range.End)
-            .Distinct()
-            .ToList();
-        var supplemental = quota is null
-            ? Array.Empty<CodexQuotaSnapshot>()
-            : new[]
-            {
-                new CodexQuotaSnapshot(
-                    quota.SnapshotLocal,
-                    quota.LimitId,
-                    quota.LimitName,
-                    quota.FiveHour?.UsedPercent,
-                    quota.FiveHour?.ResetAtLocal,
-                    quota.Week?.UsedPercent,
-                    quota.Week?.ResetAtLocal)
-            };
-
-        return CodexUsageReader.ReadMaterializedQuotaTimeline(
-            anchors,
-            supplemental,
-            refreshExisting: false,
-            cancellationToken: cancellationToken);
     }
 
     private static IReadOnlyList<CodexQuotaSnapshot> FilterQuotaSnapshotsForQuota(
@@ -2291,11 +1973,6 @@ public partial class MainWindow : Window
             .ToList();
     }
 
-    private static TokenUsageSummary CreateSummaryFromRows(SelectedRange range, IReadOnlyList<TokenUsageBucket> rows)
-    {
-        return UsageSummaryBuilder.FromRows(range.Start, range.End, rows);
-    }
-
     private static TimeSpan? GetTimelineInterval(RangeMode mode)
     {
         return mode switch
@@ -2309,9 +1986,7 @@ public partial class MainWindow : Window
 
     private static TimeSpan GetQuotaBucketInterval(SelectedRange range)
     {
-        return range.Mode is RangeMode.Week or RangeMode.Cycle
-            ? MultiDayBreakdownInterval
-            : TimeSpan.FromDays(1);
+        return UsageQueryService.GetQuotaBucketInterval(range);
     }
 
     private static IReadOnlyList<TokenUsageBucket> GetTimelineRows(SelectedRange range, UsageQueryResult result)
@@ -2334,17 +2009,7 @@ public partial class MainWindow : Window
 
     private static bool IsEventBucket(SelectedRange range, TokenUsageBucket bucket)
     {
-        if (range.IsCustomStart || range.Mode == RangeMode.Day)
-        {
-            return true;
-        }
-
-        if (range.Mode is RangeMode.Week or RangeMode.Cycle)
-        {
-            return bucket.LastTokenEventLocal is null || bucket.LastTokenEventLocal.Value < bucket.StartLocal.Add(MultiDayBreakdownInterval);
-        }
-
-        return false;
+        return UsageQueryService.IsEventBucket(range, bucket);
     }
 
     private static string FormatBucketLabel(SelectedRange range, DateTimeOffset start, bool eventBreakdown)
@@ -2417,27 +2082,12 @@ public partial class MainWindow : Window
 
     private static string FormatTokenMillions(long value)
     {
-        return $"{value / 1_000_000d:N3}M";
+        return UsageDisplayFormatting.TokenMillions(value);
     }
 
     private static string FormatTokenAdaptive(long value)
     {
-        if (value >= 1_000_000)
-        {
-            return FormatTokenMillions(value);
-        }
-
-        if (value >= 10_000)
-        {
-            return $"{value / 1_000d:N1}K";
-        }
-
-        if (value >= 1_000)
-        {
-            return $"{value / 1_000d:N2}K";
-        }
-
-        return value.ToString("N0");
+        return UsageDisplayFormatting.TokenAdaptive(value);
     }
 
     private static string FormatBreakdownToken(long value, bool useEventScale)
@@ -2491,14 +2141,7 @@ public partial class MainWindow : Window
 
     private static string FormatDuration(TimeSpan value)
     {
-        if (value <= TimeSpan.Zero)
-        {
-            return "-";
-        }
-
-        return value.TotalHours >= 1
-            ? $"{(int)value.TotalHours}h {value.Minutes}m"
-            : $"{Math.Max(1, (int)Math.Round(value.TotalMinutes))}m";
+        return UsageDisplayFormatting.Duration(value);
     }
 
     private enum QuotaWindowDisplayMode

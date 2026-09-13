@@ -98,6 +98,78 @@ public sealed class CodexQuotaCycleTests
     }
 
     [Fact]
+    public void MarkTransientResetOutliers_FiltersLongReplayOfPreviousWindowAfterRecovery()
+    {
+        var oldReset = Start.AddDays(7);
+        var currentStart = Start.AddDays(1);
+        var currentReset = currentStart.AddDays(7);
+        var replayStart = currentStart.AddDays(1).AddHours(15);
+        var snapshots = new List<CodexQuotaSnapshot>
+        {
+            Snapshot(Start, 70m, oldReset),
+            Snapshot(currentStart.AddMinutes(-1), 81m, oldReset),
+            Snapshot(currentStart, 0m, currentReset),
+            Snapshot(replayStart.AddMinutes(-1), 21m, currentReset)
+        };
+        snapshots.AddRange(Enumerable.Range(0, 87).Select(index =>
+            Snapshot(replayStart.AddSeconds(index * 30), index < 60 ? 81m : 82m, oldReset)));
+        snapshots.Add(Snapshot(replayStart.AddMinutes(44), 21m, currentReset));
+
+        var marked = CodexQuotaCycleReader.MarkTransientResetOutliers(snapshots);
+
+        Assert.Equal(87, marked.Count(item => item.IsAnomaly));
+        Assert.All(marked.Where(item => item.IsAnomaly), item => Assert.Equal(oldReset, item.WeekResetAtLocal));
+        var periods = CodexQuotaCycleReader.BuildActualWeeklyPeriods(
+            marked.Where(item => !item.IsAnomaly).ToList(),
+            replayStart.AddHours(1));
+        Assert.Equal(2, periods.Count);
+        Assert.Equal(currentStart, periods[^1].PeriodStart);
+        Assert.True(periods[^1].IsCurrent);
+    }
+
+    [Fact]
+    public void MarkTransientResetOutliers_FiltersHistoricalReplayBeforeEndpointRecovers()
+    {
+        var oldReset = Start.AddDays(7);
+        var currentStart = Start.AddDays(1);
+        var currentReset = currentStart.AddDays(7);
+        var replayStart = currentStart.AddDays(1);
+        var snapshots = new List<CodexQuotaSnapshot>
+        {
+            Snapshot(Start, 70m, oldReset),
+            Snapshot(currentStart.AddMinutes(-1), 81m, oldReset),
+            Snapshot(currentStart, 0m, currentReset),
+            Snapshot(replayStart.AddMinutes(-1), 21m, currentReset)
+        };
+        snapshots.AddRange(Enumerable.Range(0, 60).Select(index =>
+            Snapshot(replayStart.AddSeconds(index * 30), 81m, oldReset)));
+
+        var marked = CodexQuotaCycleReader.MarkTransientResetOutliers(snapshots);
+
+        Assert.Equal(60, marked.Count(item => item.IsAnomaly));
+        Assert.Equal(21m, marked.Last(item => !item.IsAnomaly).WeekUsedPercent);
+        Assert.Equal(currentReset, marked.Last(item => !item.IsAnomaly).WeekResetAtLocal);
+    }
+
+    [Fact]
+    public void MarkTransientResetOutliers_DoesNotDiscardReturnFromBriefPrematureReset()
+    {
+        var oldReset = Start.AddDays(7);
+        var prematureReset = oldReset.AddDays(1);
+        var snapshots = new[]
+        {
+            Snapshot(Start, 40m, oldReset),
+            Snapshot(Start.AddHours(1), 41m, oldReset),
+            Snapshot(Start.AddHours(1).AddMinutes(1), 50m, prematureReset),
+            Snapshot(Start.AddHours(1).AddMinutes(2), 42m, oldReset)
+        };
+
+        var marked = CodexQuotaCycleReader.MarkTransientResetOutliers(snapshots);
+
+        Assert.False(marked[^1].IsAnomaly);
+    }
+
+    [Fact]
     public void FormatCycleDurationRoundsResetJitterToSevenDays()
     {
         var period = new CodexQuotaCycle(

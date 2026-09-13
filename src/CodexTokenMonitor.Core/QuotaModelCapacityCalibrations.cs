@@ -1,6 +1,3 @@
-using System.Globalization;
-using Microsoft.Data.Sqlite;
-
 namespace CodexTokenMonitor;
 
 internal enum QuotaModelCapacitySource
@@ -142,13 +139,13 @@ internal static class QuotaModelCapacityEstimator
     public static IReadOnlyList<QuotaModelCapacityEstimate> BlendMixedModels(
         QuotaCycleAnalysisResult result,
         IReadOnlyCollection<QuotaModelCapacityEstimate> baselineEstimates,
-        IReadOnlyCollection<string> currentPureModels)
+        IReadOnlyCollection<string> targetModels)
     {
         var baselines = baselineEstimates
             .Where(item => item.AverageFullQuotaCost > 0m)
             .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
-        var targets = currentPureModels
+        var targets = targetModels
             .Select(CodexModelCost.NormalizeModelId)
             .Where(baselines.ContainsKey)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -235,6 +232,38 @@ internal static class QuotaModelCapacityEstimator
             .ToList();
     }
 
+    public static decimal? FitFullQuotaCost(
+        QuotaCycleAnalysisBand band,
+        IReadOnlyCollection<QuotaModelCapacityEstimate> estimates)
+    {
+        if (band.Models.Any(item => !item.IsPriced && item.QuotaSharePercent > 0m))
+        {
+            return null;
+        }
+
+        var capacities = estimates
+            .Where(item => item.AverageFullQuotaCost > 0m)
+            .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().AverageFullQuotaCost, StringComparer.OrdinalIgnoreCase);
+        var modelCosts = band.Models
+            .Where(item => item.IsPriced && item.EquivalentCost > 0m)
+            .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Sum(item => item.EquivalentCost), StringComparer.OrdinalIgnoreCase);
+        if (modelCosts.Count == 0 || modelCosts.Keys.Any(model => !capacities.ContainsKey(model)))
+        {
+            return null;
+        }
+
+        var totalCost = modelCosts.Values.Sum();
+        if (totalCost <= 0m)
+        {
+            return null;
+        }
+
+        var inverseCapacity = modelCosts.Sum(item => item.Value / totalCost / capacities[item.Key]);
+        return inverseCapacity > 0m ? 1m / inverseCapacity : null;
+    }
+
     private static QuotaModelCapacityEstimate BuildEstimate(
         string modelId,
         IReadOnlyCollection<decimal> samples,
@@ -260,7 +289,11 @@ internal static class QuotaModelCapacityCalibrationService
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        using var diagnostics = CacheOperationDiagnostics.Begin(propagateToParent: true);
         var planName = ResolvePlanName(period);
+        if (diagnostics.Warnings.Count > 0)
+            return new QuotaModelCapacityReport(planName, Array.Empty<QuotaModelCapacityEstimate>());
+        cancellationToken.ThrowIfCancellationRequested();
         var pureEstimates = QuotaModelCapacityEstimator.EstimatePureModels(result);
         QuotaModelCapacityCalibrationStore.Upsert(planName, period, pureEstimates);
 
@@ -270,8 +303,7 @@ internal static class QuotaModelCapacityCalibrationService
             .Select(item => CodexModelCost.NormalizeModelId(item.ModelId))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var currentApproved = QuotaModelCapacityCalibrationStore
-            .LoadExact(planName, period.PeriodStart, QuotaModelCapacitySource.CurrentPeriodApproved)
+        var currentApproved = pureEstimates
             .Where(item => currentModels.Contains(item.ModelId, StringComparer.OrdinalIgnoreCase))
             .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
 
@@ -279,39 +311,44 @@ internal static class QuotaModelCapacityCalibrationService
             .Where(model => !currentApproved.ContainsKey(model))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var previousApproved = new Dictionary<string, QuotaModelCapacityEstimate>(StringComparer.OrdinalIgnoreCase);
-        if (missingModels.Count > 0 && previousPeriod is not null &&
+        foreach (var item in QuotaModelCapacityCalibrationStore.LoadLatestBefore(
+                     planName,
+                     period.PeriodStart,
+                     missingModels,
+                     QuotaModelCapacitySource.PreviousPeriodApproved))
+        {
+            previousApproved[item.ModelId] = item;
+        }
+
+        if (missingModels.Any(model => !previousApproved.ContainsKey(model)) && previousPeriod is not null &&
             previousPeriod.PeriodStart < period.PeriodStart &&
             string.Equals(ResolvePlanName(previousPeriod), planName, StringComparison.OrdinalIgnoreCase))
         {
-            foreach (var item in QuotaModelCapacityCalibrationStore.LoadExact(
+            cancellationToken.ThrowIfCancellationRequested();
+            var previousResult = QuotaCycleAnalysisCalculator.Build(previousPeriod, cancellationToken);
+            if (diagnostics.Warnings.Count > 0)
+            {
+                // Partial cache reads are not evidence for replacing saved
+                // calibration or blending it into this period's estimate.
+                return new QuotaModelCapacityReport(planName, Array.Empty<QuotaModelCapacityEstimate>());
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            // Rebuild the predecessor with the same carry-forward and mixed-band
+            // rules. This promotes a previously inferred model (for example Sol)
+            // into a saved baseline that the new period can continue adjusting.
+            _ = Build(previousPeriod, previousResult, previousPeriod: null, cancellationToken);
+            foreach (var item in QuotaModelCapacityCalibrationStore.LoadLatestBefore(
                          planName,
-                         previousPeriod.PeriodStart,
+                         period.PeriodStart,
+                         missingModels,
                          QuotaModelCapacitySource.PreviousPeriodApproved))
             {
-                if (missingModels.Contains(item.ModelId))
-                {
-                    previousApproved[item.ModelId] = item;
-                }
-            }
-
-            if (missingModels.Any(model => !previousApproved.ContainsKey(model)))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var previousResult = QuotaCycleAnalysisCalculator.Build(previousPeriod, cancellationToken);
-                var previousPure = QuotaModelCapacityEstimator.EstimatePureModels(previousResult);
-                QuotaModelCapacityCalibrationStore.Upsert(planName, previousPeriod, previousPure);
-                foreach (var item in QuotaModelCapacityCalibrationStore.LoadExact(
-                             planName,
-                             previousPeriod.PeriodStart,
-                             QuotaModelCapacitySource.PreviousPeriodApproved))
-                {
-                    if (missingModels.Contains(item.ModelId))
-                    {
-                        previousApproved[item.ModelId] = item;
-                    }
-                }
+                previousApproved[item.ModelId] = item;
             }
         }
+
+        if (diagnostics.Warnings.Count > 0)
+            return new QuotaModelCapacityReport(planName, Array.Empty<QuotaModelCapacityEstimate>());
 
         var approved = currentModels
             .Select(model => currentApproved.GetValueOrDefault(model) ?? previousApproved.GetValueOrDefault(model))
@@ -326,10 +363,11 @@ internal static class QuotaModelCapacityCalibrationService
         var blended = QuotaModelCapacityEstimator.BlendMixedModels(
                 result,
                 baselines,
-                pureEstimates.Select(item => item.ModelId).ToList())
+                baselines.Select(item => item.ModelId).ToList())
             .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
         if (blended.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             QuotaModelCapacityCalibrationStore.Upsert(planName, period, blended.Values.ToList());
         }
         var estimates = currentModels
@@ -369,160 +407,4 @@ internal static class QuotaModelCapacityCalibrationService
 
     private static DateTimeOffset Min(DateTimeOffset first, DateTimeOffset second) =>
         first <= second ? first : second;
-}
-
-internal static class QuotaModelCapacityCalibrationStore
-{
-    private static readonly object SyncRoot = new();
-    private static string? initializedPath;
-
-    public static void Upsert(
-        string planName,
-        CodexQuotaCycle period,
-        IReadOnlyCollection<QuotaModelCapacityEstimate> estimates)
-    {
-        if (estimates.Count == 0)
-        {
-            return;
-        }
-
-        EnsureInitialized();
-        lock (SyncRoot)
-        {
-            using var connection = OpenConnection();
-            using var transaction = connection.BeginTransaction();
-            foreach (var estimate in estimates)
-            {
-                using var command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText = """
-                    INSERT INTO quota_model_calibrations (
-                        plan_name, model_id, period_start, period_end,
-                        average_full_quota_cost, minimum_full_quota_cost,
-                        maximum_full_quota_cost, sample_count, updated_at)
-                    VALUES (
-                        $plan_name, $model_id, $period_start, $period_end,
-                        $average, $minimum, $maximum, $sample_count, $updated_at)
-                    ON CONFLICT(plan_name, model_id, period_start) DO UPDATE SET
-                        period_end = excluded.period_end,
-                        average_full_quota_cost = excluded.average_full_quota_cost,
-                        minimum_full_quota_cost = excluded.minimum_full_quota_cost,
-                        maximum_full_quota_cost = excluded.maximum_full_quota_cost,
-                        sample_count = excluded.sample_count,
-                        updated_at = excluded.updated_at
-                    """;
-                command.Parameters.AddWithValue("$plan_name", planName);
-                command.Parameters.AddWithValue("$model_id", CodexModelCost.NormalizeModelId(estimate.ModelId));
-                command.Parameters.AddWithValue("$period_start", FormatDateTimeOffset(period.PeriodStart));
-                command.Parameters.AddWithValue("$period_end", FormatDateTimeOffset(period.PeriodEnd));
-                command.Parameters.AddWithValue("$average", FormatDecimal(estimate.AverageFullQuotaCost));
-                command.Parameters.AddWithValue("$minimum", FormatDecimal(estimate.MinimumFullQuotaCost));
-                command.Parameters.AddWithValue("$maximum", FormatDecimal(estimate.MaximumFullQuotaCost));
-                command.Parameters.AddWithValue("$sample_count", estimate.BandCount);
-                command.Parameters.AddWithValue("$updated_at", FormatDateTimeOffset(DateTimeOffset.UtcNow));
-                command.ExecuteNonQuery();
-            }
-            transaction.Commit();
-        }
-    }
-
-    public static IReadOnlyList<QuotaModelCapacityEstimate> LoadExact(
-        string planName,
-        DateTimeOffset periodStart,
-        QuotaModelCapacitySource source)
-    {
-        EnsureInitialized();
-        lock (SyncRoot)
-        {
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT model_id, average_full_quota_cost, minimum_full_quota_cost,
-                       maximum_full_quota_cost, sample_count
-                FROM quota_model_calibrations
-                WHERE plan_name = $plan_name AND period_start = $period_start
-                ORDER BY model_id
-                """;
-            command.Parameters.AddWithValue("$plan_name", planName);
-            command.Parameters.AddWithValue("$period_start", FormatDateTimeOffset(periodStart));
-            var result = new List<QuotaModelCapacityEstimate>();
-            using var reader = command.ExecuteReader();
-            while (reader.Read())
-            {
-                result.Add(new QuotaModelCapacityEstimate(
-                    reader.GetString(0),
-                    reader.GetInt32(4),
-                    ParseDecimal(reader.GetString(1)),
-                    ParseDecimal(reader.GetString(2)),
-                    ParseDecimal(reader.GetString(3)),
-                    source,
-                    periodStart));
-            }
-            return result;
-        }
-    }
-
-    private static void EnsureInitialized()
-    {
-        lock (SyncRoot)
-        {
-            if (initializedPath == MonitorSettingsDatabase.Path)
-            {
-                return;
-            }
-
-            using var connection = OpenConnection();
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                CREATE TABLE IF NOT EXISTS quota_model_calibrations (
-                    plan_name TEXT NOT NULL,
-                    model_id TEXT NOT NULL,
-                    period_start TEXT NOT NULL,
-                    period_end TEXT NOT NULL,
-                    average_full_quota_cost TEXT NOT NULL,
-                    minimum_full_quota_cost TEXT NOT NULL,
-                    maximum_full_quota_cost TEXT NOT NULL,
-                    sample_count INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (plan_name, model_id, period_start)
-                );
-                CREATE INDEX IF NOT EXISTS idx_quota_model_calibrations_period
-                    ON quota_model_calibrations(plan_name, period_start);
-                """;
-            command.ExecuteNonQuery();
-            initializedPath = MonitorSettingsDatabase.Path;
-        }
-    }
-
-    private static SqliteConnection OpenConnection()
-    {
-        var path = MonitorSettingsDatabase.Path;
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var builder = new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = true
-        };
-        var connection = new SqliteConnection(builder.ToString());
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA busy_timeout=5000;";
-        command.ExecuteNonQuery();
-        return connection;
-    }
-
-    private static string FormatDateTimeOffset(DateTimeOffset value) =>
-        value.ToString("O", CultureInfo.InvariantCulture);
-
-    private static string FormatDecimal(decimal value) =>
-        value.ToString(CultureInfo.InvariantCulture);
-
-    private static decimal ParseDecimal(string value) =>
-        decimal.Parse(value, CultureInfo.InvariantCulture);
 }

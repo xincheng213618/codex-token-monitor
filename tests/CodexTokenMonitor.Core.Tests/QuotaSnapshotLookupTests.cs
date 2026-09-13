@@ -162,6 +162,7 @@ public sealed class QuotaSnapshotLookupTests
     [Fact]
     public void QuotaCache_DoesNotMarkAllInvalidSnapshotsAsComplete()
     {
+        using var paths = new IsolatedPaths();
         var folder = $"CodexTokenMonitorTests-{Guid.NewGuid():N}";
         var date = new DateOnly(2026, 7, 19);
         var snapshotTime = new DateTimeOffset(date.Year, date.Month, date.Day, 2, 0, 0, Beijing);
@@ -195,6 +196,7 @@ public sealed class QuotaSnapshotLookupTests
     [Fact]
     public void QuotaCache_PreflightDetectsCorruptedCompleteDay()
     {
+        using var paths = new IsolatedPaths();
         var folder = $"CodexTokenMonitorTests-{Guid.NewGuid():N}";
         var date = new DateOnly(2026, 7, 20);
         var dayStart = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, Beijing);
@@ -239,18 +241,15 @@ public sealed class QuotaSnapshotLookupTests
     [Fact]
     public void LockedQuotaLogDoesNotMarkHistoricalDayComplete()
     {
+        using var paths = new IsolatedPaths();
         var date = new DateOnly(2026, 7, 21);
         var dayStart = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, Beijing);
-        var codexHome = Path.Combine(Path.GetTempPath(), $"CodexQuotaLogs-{Guid.NewGuid():N}");
+        var codexHome = UsageLogPaths.GetOverrideRoot(UsageSource.Codex)!;
         var sessions = Path.Combine(codexHome, "sessions", "2026", "07", "21");
         var logPath = Path.Combine(sessions, "locked.jsonl");
-        var cacheRoot = Path.Combine(Path.GetTempPath(), $"CodexQuotaCache-{Guid.NewGuid():N}");
         Directory.CreateDirectory(sessions);
-        Directory.CreateDirectory(cacheRoot);
         File.WriteAllText(logPath, "{\"type\":\"event_msg\"}\n");
 
-        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(cacheRoot);
-        CodexUsageReader.OverrideCodexHome = codexHome;
         try
         {
             using (var lockStream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.None))
@@ -264,10 +263,7 @@ public sealed class QuotaSnapshotLookupTests
         }
         finally
         {
-            CodexUsageReader.OverrideCodexHome = null;
             UsageCacheStore.Delete("CodexTokenMonitor");
-            TryDeleteDirectory(codexHome);
-            TryDeleteDirectory(cacheRoot);
         }
     }
 
@@ -290,18 +286,28 @@ public sealed class QuotaSnapshotLookupTests
         return new CodexQuotaSnapshot(time, "codex", "Codex", fiveHour, reset, week, reset);
     }
 
-    private static void TryDeleteDirectory(string path)
+    private sealed class IsolatedPaths : IDisposable
     {
-        try
+        private readonly string root = Path.Combine(Path.GetTempPath(), $"QuotaSnapshotPaths-{Guid.NewGuid():N}");
+        private readonly IDisposable cacheScope;
+        private readonly IDisposable logScope;
+
+        public IsolatedPaths()
         {
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, recursive: true);
-            }
+            cacheScope = MonitorCachePaths.PushLocalAppDataRoot(Path.Combine(root, "cache"));
+            logScope = UsageLogPaths.PushRoot(Path.Combine(root, "logs"));
         }
-        catch
+
+        public void Dispose()
         {
-            // Best-effort cleanup of unique temporary test data.
+            logScope.Dispose();
+            cacheScope.Dispose();
+            var resolved = Path.GetFullPath(root);
+            var temp = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!resolved.StartsWith(temp, StringComparison.OrdinalIgnoreCase) ||
+                !Path.GetFileName(resolved).StartsWith("QuotaSnapshotPaths-", StringComparison.Ordinal))
+                throw new InvalidOperationException("Refusing to clean up outside the isolated test directory.");
+            if (Directory.Exists(resolved)) Directory.Delete(resolved, recursive: true);
         }
     }
 }
