@@ -12,7 +12,11 @@ internal partial class DataSharingWindow : Window
     private readonly CodexDataSharingServer server;
     private readonly Func<string, CancellationToken, Task<CodexDataExportResult>> exportWeek;
     private readonly Func<string, CancellationToken, Task<CodexDataImportResult>> importWeek;
+    private readonly Func<string, CancellationToken, Task<CodexDataExportResult>> exportToday;
+    private readonly Func<string, CancellationToken, Task<CodexDataImportResult>> importToday;
     private readonly CodexHistorySharingStore historyStore;
+    private readonly SemaphoreSlim clientTransferGate;
+    private readonly Action automaticUploadSettingsChanged;
     private readonly CodexDataSharingSettings settings = CodexDataSharingSettings.Load();
     private readonly CancellationTokenSource lifetime;
     private readonly MonitorRuntime? runtime;
@@ -24,7 +28,11 @@ internal partial class DataSharingWindow : Window
     public DataSharingWindow(CodexDataSharingServer server,
         Func<string, CancellationToken, Task<CodexDataExportResult>> exportWeek,
         Func<string, CancellationToken, Task<CodexDataImportResult>> importWeek,
+        Func<string, CancellationToken, Task<CodexDataExportResult>> exportToday,
+        Func<string, CancellationToken, Task<CodexDataImportResult>> importToday,
         CodexHistorySharingStore historyStore,
+        SemaphoreSlim clientTransferGate,
+        Action automaticUploadSettingsChanged,
         CancellationToken cancellationToken,
         MonitorRuntime? runtime = null)
     {
@@ -32,13 +40,19 @@ internal partial class DataSharingWindow : Window
         this.server = server;
         this.exportWeek = exportWeek;
         this.importWeek = importWeek;
+        this.exportToday = exportToday;
+        this.importToday = importToday;
         this.historyStore = historyStore;
+        this.clientTransferGate = clientTransferGate;
+        this.automaticUploadSettingsChanged = automaticUploadSettingsChanged;
         this.runtime = runtime;
         lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         PortBox.Text = settings.Port.ToString(CultureInfo.InvariantCulture);
         LocalKeyBox.Text = settings.AccessKey;
         RemoteAddressBox.Text = settings.ServerAddress;
         RemoteKeyBox.Text = settings.ServerAccessKey;
+        AutoUploadTodayBox.IsChecked = settings.AutoUploadToday;
+        AutoUploadIntervalBox.Text = settings.AutoUploadIntervalHours.ToString(CultureInfo.InvariantCulture);
         AutoStartBox.IsChecked = settings.AutoStart;
         AutoStartBox.Checked += SaveAutoStart;
         AutoStartBox.Unchecked += SaveAutoStart;
@@ -152,7 +166,63 @@ internal partial class DataSharingWindow : Window
     private async void TestButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("测试连接", async (client, token) =>
     {
         var peer = await client.TestConnectionAsync(token);
-        return $"已连接：{peer.DeviceName}。可以上传或下载最近 8 天数据。";
+        return peer.SupportsToday
+            ? $"已连接：{peer.DeviceName}。可以同步今天、最近 8 天或全部历史数据。"
+            : $"已连接：{peer.DeviceName}。另一台电脑需更新后才能使用今天快速同步。";
+    });
+
+    private void SaveAutoUploadButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!int.TryParse(AutoUploadIntervalBox.Text, NumberStyles.None, CultureInfo.InvariantCulture, out var hours) ||
+            hours is < 1 or > CodexDataSharingSettings.MaxAutoUploadIntervalHours)
+        {
+            OperationText.Text = $"自动上传间隔需为 1–{CodexDataSharingSettings.MaxAutoUploadIntervalHours} 小时。";
+            AutoUploadIntervalBox.Focus();
+            AutoUploadIntervalBox.SelectAll();
+            return;
+        }
+
+        var enabled = AutoUploadTodayBox.IsChecked == true;
+        var address = RemoteAddressBox.Text.Trim();
+        var accessKey = RemoteKeyBox.Text.Trim();
+        try
+        {
+            if (enabled)
+            {
+                _ = CodexDataSharingProtocol.ParseServerAddress(address);
+                CodexDataSharingProtocol.ValidateAccessKey(accessKey);
+            }
+
+            settings.ServerAddress = address;
+            settings.ServerAccessKey = accessKey;
+            settings.AutoUploadToday = enabled;
+            settings.AutoUploadIntervalHours = hours;
+            settings.Save();
+            automaticUploadSettingsChanged();
+            AddActivity(enabled
+                ? $"自动上传已开启：程序运行期间每 {hours} 小时上传今天数据。"
+                : "自动上传已关闭。");
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            OperationText.Text = $"保存自动上传设置失败：{ex.Message}";
+        }
+    }
+
+    private async void TodaySyncButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("双向同步今天（1 天）", async (client, token) =>
+    {
+        var peer = await client.TestConnectionAsync(token);
+        if (!peer.SupportsToday)
+        {
+            throw new InvalidDataException("服务器不支持今天快速同步，请更新另一台电脑的程序后重试。");
+        }
+        using var upload = new CodexSharingTemporaryFile();
+        await exportToday(upload.FilePath, token);
+        var uploaded = await client.UploadTodayAsync(upload.FilePath, token);
+        using var download = new CodexSharingTemporaryFile();
+        await client.DownloadTodayAsync(download.FilePath, token);
+        var imported = await importToday(download.FilePath, token);
+        return FormatResult("服务器已合并", uploaded) + Environment.NewLine + FormatResult("本机已合并", imported);
     });
 
     private async void SyncButton_Click(object sender, RoutedEventArgs e) => await RunTransferAsync("双向同步最近 8 天", async (client, token) =>
@@ -232,12 +302,16 @@ internal partial class DataSharingWindow : Window
         operation = cancellation;
         SetTransferBusy(true);
         OperationText.Text = $"正在{label}…";
+        var enteredTransferGate = false;
         try
         {
+            await clientTransferGate.WaitAsync(cancellation.Token);
+            enteredTransferGate = true;
             settings.ServerAddress = RemoteAddressBox.Text.Trim();
             settings.ServerAccessKey = RemoteKeyBox.Text.Trim();
             using var client = new CodexDataSharingClient(settings.ServerAddress, settings.ServerAccessKey);
             settings.Save();
+            automaticUploadSettingsChanged();
             AddActivity(await action(client, cancellation.Token));
         }
         catch (OperationCanceledException)
@@ -257,6 +331,10 @@ internal partial class DataSharingWindow : Window
         }
         finally
         {
+            if (enteredTransferGate)
+            {
+                clientTransferGate.Release();
+            }
             operation = null;
             if (!closed)
             {
@@ -275,7 +353,8 @@ internal partial class DataSharingWindow : Window
 
     private void SetTransferBusy(bool busy)
     {
-        TestButton.IsEnabled = SyncButton.IsEnabled = HistorySyncButton.IsEnabled = UploadButton.IsEnabled = DownloadButton.IsEnabled = !busy;
+        TestButton.IsEnabled = TodaySyncButton.IsEnabled = SyncButton.IsEnabled = HistorySyncButton.IsEnabled = UploadButton.IsEnabled = DownloadButton.IsEnabled = !busy;
+        SaveAutoUploadButton.IsEnabled = AutoUploadTodayBox.IsEnabled = AutoUploadIntervalBox.IsEnabled = !busy;
         RemoteAddressBox.IsEnabled = RemoteKeyBox.IsEnabled = !busy;
         CancelButton.IsEnabled = busy;
     }
@@ -304,5 +383,21 @@ internal partial class DataSharingWindow : Window
         ActivityBox.Text = string.Join(Environment.NewLine, activity);
         ActivityBox.ScrollToEnd();
         OperationText.Text = message;
+    }
+
+    internal void ReportAutomaticUpload(string message)
+    {
+        if (closed)
+        {
+            return;
+        }
+
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(new Action(() => ReportAutomaticUpload(message)));
+            return;
+        }
+
+        AddActivity(message);
     }
 }

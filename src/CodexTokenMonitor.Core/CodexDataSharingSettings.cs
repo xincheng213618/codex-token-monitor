@@ -5,8 +5,12 @@ namespace CodexTokenMonitor;
 internal sealed class CodexDataSharingSettings
 {
     public const int DefaultPort = 36666;
+    public const int DefaultAutoUploadIntervalHours = 1;
+    public const int MaxAutoUploadIntervalHours = 24;
     public int Port { get; set; } = DefaultPort;
     public bool AutoStart { get; set; } = true;
+    public bool AutoUploadToday { get; set; }
+    public int AutoUploadIntervalHours { get; set; } = DefaultAutoUploadIntervalHours;
     public string AccessKey { get; set; } = CreateAccessKey();
     public string ServerAddress { get; set; } = "";
     public string ServerAccessKey { get; set; } = "";
@@ -24,6 +28,11 @@ internal sealed class CodexDataSharingSettings
             if (settings.Port is < 1 or > 65535)
             {
                 settings.Port = DefaultPort;
+            }
+
+            if (settings.AutoUploadIntervalHours is < 1 or > MaxAutoUploadIntervalHours)
+            {
+                settings.AutoUploadIntervalHours = DefaultAutoUploadIntervalHours;
             }
 
             if (string.IsNullOrWhiteSpace(settings.AccessKey))

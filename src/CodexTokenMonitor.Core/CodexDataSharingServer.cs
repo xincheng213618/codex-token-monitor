@@ -15,7 +15,9 @@ namespace CodexTokenMonitor;
 internal sealed class CodexDataSharingServer(
     Func<string, CancellationToken, Task<CodexDataExportResult>> exportWeek,
     Func<string, CancellationToken, Task<CodexDataImportResult>> importWeek,
-    CodexHistorySharingStore? historyStore = null) : IAsyncDisposable
+    CodexHistorySharingStore? historyStore = null,
+    Func<string, CancellationToken, Task<CodexDataExportResult>>? exportToday = null,
+    Func<string, CancellationToken, Task<CodexDataImportResult>>? importToday = null) : IAsyncDisposable
 {
     private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private readonly SemaphoreSlim transferGate = new(1, 1);
@@ -134,13 +136,14 @@ internal sealed class CodexDataSharingServer(
         {
             await context.Response.WriteAsJsonAsync(new CodexDataSharingPeer(
                 CodexDataSharingProtocol.Format, CodexDataSharingProtocol.Version, Environment.MachineName,
-                historyStore is not null), context.RequestAborted);
+                historyStore is not null, exportToday is not null && importToday is not null), context.RequestAborted);
             return;
         }
 
         var historyDates = context.Request.Path == "/api/history/dates" && historyStore is not null;
         var history = context.Request.Path == "/api/history" && historyStore is not null;
-        if (context.Request.Path != "/api/week" && !history && !historyDates)
+        var today = context.Request.Path == "/api/today" && exportToday is not null && importToday is not null;
+        if (context.Request.Path != "/api/week" && !today && !history && !historyDates)
         {
             await WriteErrorAsync(context, 404, "未找到共享接口。");
             return;
@@ -195,17 +198,21 @@ internal sealed class CodexDataSharingServer(
                     await CodexDataSharingProtocol.CopyPackageAsync(context.Request.Body, stream, timeout.Token);
                 }
 
-                var result = historyRange is null
-                    ? await importWeek(temporary.FilePath, timeout.Token)
-                    : await historyStore!.ImportAsync(temporary.FilePath, historyRange, timeout.Token);
+                var result = historyRange is not null
+                    ? await historyStore!.ImportAsync(temporary.FilePath, historyRange, timeout.Token)
+                    : today
+                        ? await importToday!(temporary.FilePath, timeout.Token)
+                        : await importWeek(temporary.FilePath, timeout.Token);
                 NotifyActivity($"收到上传：新增 {result.AddedUsageEventCount:N0} 条用量、{result.AddedQuotaSnapshotCount:N0} 条额度快照");
                 await context.Response.WriteAsJsonAsync(result, timeout.Token);
             }
             else
             {
-                var result = historyRange is null
-                    ? await exportWeek(temporary.FilePath, timeout.Token)
-                    : await historyStore!.ExportAsync(temporary.FilePath, historyRange, timeout.Token);
+                var result = historyRange is not null
+                    ? await historyStore!.ExportAsync(temporary.FilePath, historyRange, timeout.Token)
+                    : today
+                        ? await exportToday!(temporary.FilePath, timeout.Token)
+                        : await exportWeek(temporary.FilePath, timeout.Token);
                 await using var stream = File.OpenRead(temporary.FilePath);
                 CodexDataSharingProtocol.CheckPackageSize(stream.Length);
                 context.Response.ContentType = "application/json; charset=utf-8";

@@ -128,6 +128,7 @@ public sealed class CodexDataSharingTests
         var peer = await client.TestConnectionAsync(CancellationToken.None);
         Assert.Equal(CodexDataSharingProtocol.Format, peer.Format);
         Assert.Equal(CodexDataSharingProtocol.Version, peer.Version);
+        Assert.False(peer.SupportsToday);
         using var package = new CodexSharingTemporaryFile();
         await source.ExportAsync(package.FilePath, CancellationToken.None);
         var first = await client.UploadAsync(package.FilePath, CancellationToken.None);
@@ -159,13 +160,54 @@ public sealed class CodexDataSharingTests
     }
 
     [Fact]
+    public async Task TodaySharing_TransfersOnlyCurrentBeijingDate()
+    {
+        using var source = new TestCache();
+        using var host = new TestCache();
+        using var third = new TestCache();
+        source.AddEvent("source-today", Now, 100);
+        source.AddEvent("source-yesterday", Now.AddDays(-1), 200);
+        host.AddEvent("host-today", Now.AddMinutes(1), 300);
+        host.AddEvent("host-yesterday", Now.AddDays(-1), 400);
+        await using var server = new CodexDataSharingServer(
+            host.ExportAsync,
+            host.ImportAsync,
+            exportToday: host.ExportTodayAsync,
+            importToday: host.ImportTodayAsync);
+        await server.StartAsync(0, Key, listenAddress: IPAddress.Loopback);
+        using var client = new CodexDataSharingClient($"127.0.0.1:{server.Port}", Key);
+        Assert.True((await client.TestConnectionAsync(CancellationToken.None)).SupportsToday);
+
+        using var invalidUpload = new CodexSharingTemporaryFile();
+        CodexDataTransferService.Export(invalidUpload.FilePath, source.Folder, "source", "Source", Now);
+        var invalid = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.UploadTodayAsync(invalidUpload.FilePath, CancellationToken.None));
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        Assert.DoesNotContain(host.Events, item => item.Key?.StartsWith("codex:source-", StringComparison.Ordinal) == true);
+
+        using var upload = new CodexSharingTemporaryFile();
+        await source.ExportTodayAsync(upload.FilePath, CancellationToken.None);
+        var uploaded = await client.UploadTodayAsync(upload.FilePath, CancellationToken.None);
+        Assert.Equal(1, uploaded.AddedUsageEventCount);
+        Assert.DoesNotContain(host.Events, item => item.Key == "codex:source-yesterday");
+
+        using var download = new CodexSharingTemporaryFile();
+        await client.DownloadTodayAsync(download.FilePath, CancellationToken.None);
+        var downloaded = await third.ImportTodayAsync(download.FilePath, CancellationToken.None);
+        Assert.Equal(2, downloaded.AddedUsageEventCount);
+        Assert.Equal(
+            new[] { "codex:host-today", "codex:source-today" },
+            third.Events.Select(item => item.Key).OrderBy(item => item));
+    }
+
+    [Fact]
     public async Task AuthenticationAndInvalidUploads_LeaveCacheUnchanged()
     {
         using var host = new TestCache();
         await using var server = new CodexDataSharingServer(host.ExportAsync, host.ImportAsync);
         await server.StartAsync(0, Key, listenAddress: IPAddress.Loopback);
         using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{server.Port}") };
-        foreach (var path in new[] { "api/health", "api/week" })
+        foreach (var path in new[] { "api/health", "api/week", "api/today" })
         {
             using var response = await http.GetAsync(path);
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -348,6 +390,16 @@ public sealed class CodexDataSharingTests
 
         public Task<CodexDataImportResult> ImportAsync(string path, CancellationToken cancellationToken) =>
             Task.FromResult(CodexDataTransferService.ImportRecentDays(path, cancellationToken, Folder, Now));
+
+        public Task<CodexDataExportResult> ExportTodayAsync(string path, CancellationToken cancellationToken)
+        {
+            var range = CodexDataTransferService.GetExportRange(CodexDataExportScope.Today, Now);
+            return Task.FromResult(CodexDataTransferService.ExportRange(
+                path, Folder, Folder, "Test PC", Now, range.StartInclusive, range.EndExclusive, cancellationToken));
+        }
+
+        public Task<CodexDataImportResult> ImportTodayAsync(string path, CancellationToken cancellationToken) =>
+            Task.FromResult(CodexDataTransferService.ImportToday(path, cancellationToken, Folder, Now));
 
         public void Dispose() => UsageCacheStore.Delete(Folder);
     }

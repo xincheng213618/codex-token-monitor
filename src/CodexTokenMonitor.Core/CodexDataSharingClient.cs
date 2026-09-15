@@ -35,6 +35,9 @@ internal sealed class CodexDataSharingClient : IDisposable
     public async Task<CodexDataImportResult> UploadAsync(string filePath, CancellationToken cancellationToken)
         => await UploadToAsync("api/week", filePath, cancellationToken).ConfigureAwait(false);
 
+    public async Task<CodexDataImportResult> UploadTodayAsync(string filePath, CancellationToken cancellationToken)
+        => await UploadToAsync("api/today", filePath, cancellationToken).ConfigureAwait(false);
+
     private async Task<CodexDataImportResult> UploadToAsync(string endpoint, string filePath, CancellationToken cancellationToken)
     {
         await using var stream = File.OpenRead(filePath);
@@ -49,6 +52,9 @@ internal sealed class CodexDataSharingClient : IDisposable
 
     public async Task DownloadAsync(string filePath, CancellationToken cancellationToken)
         => await DownloadFromAsync("api/week", filePath, cancellationToken).ConfigureAwait(false);
+
+    public async Task DownloadTodayAsync(string filePath, CancellationToken cancellationToken)
+        => await DownloadFromAsync("api/today", filePath, cancellationToken).ConfigureAwait(false);
 
     private async Task DownloadFromAsync(string endpoint, string filePath, CancellationToken cancellationToken)
     {

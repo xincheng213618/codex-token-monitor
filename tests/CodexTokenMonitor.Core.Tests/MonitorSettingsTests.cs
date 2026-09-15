@@ -21,13 +21,26 @@ public sealed class MonitorSettingsTests
     {
         using var scope = MonitorCachePaths.PushLocalAppDataRoot(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
         Assert.True(CodexDataSharingSettings.Load().AutoStart);
+        Assert.False(CodexDataSharingSettings.Load().AutoUploadToday);
+        Assert.Equal(1, CodexDataSharingSettings.Load().AutoUploadIntervalHours);
         var settings = CodexDataSharingSettings.Load();
         settings.AutoStart = false;
+        settings.AutoUploadToday = true;
+        settings.AutoUploadIntervalHours = 3;
         settings.Save();
         var loaded = CodexDataSharingSettings.Load();
         Assert.False(loaded.AutoStart);
+        Assert.True(loaded.AutoUploadToday);
+        Assert.Equal(3, loaded.AutoUploadIntervalHours);
         Assert.Equal(settings.AccessKey, loaded.AccessKey);
-        Assert.True(System.Text.Json.JsonSerializer.Deserialize<CodexDataSharingSettings>("{\"Port\":36666}")!.AutoStart);
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<CodexDataSharingSettings>("{\"Port\":36666}")!;
+        Assert.True(legacy.AutoStart);
+        Assert.False(legacy.AutoUploadToday);
+        Assert.Equal(1, legacy.AutoUploadIntervalHours);
+
+        settings.AutoUploadIntervalHours = 0;
+        settings.Save();
+        Assert.Equal(1, CodexDataSharingSettings.Load().AutoUploadIntervalHours);
     }
 
     [Fact]

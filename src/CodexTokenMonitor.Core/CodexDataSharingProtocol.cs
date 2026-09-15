@@ -1,6 +1,11 @@
 namespace CodexTokenMonitor;
 
-internal sealed record CodexDataSharingPeer(string Format, int Version, string DeviceName, bool SupportsHistory = false);
+internal sealed record CodexDataSharingPeer(
+    string Format,
+    int Version,
+    string DeviceName,
+    bool SupportsHistory = false,
+    bool SupportsToday = false);
 
 internal static class CodexDataSharingProtocol
 {

@@ -301,6 +301,16 @@ internal static class CodexDataTransferService
         return ImportCore(new[] { filePath }, cacheFolder, (range.StartInclusive!.Value, range.EndExclusive!.Value), cancellationToken);
     }
 
+    internal static CodexDataImportResult ImportToday(
+        string filePath,
+        CancellationToken cancellationToken = default,
+        string cacheFolder = CacheFolder,
+        DateTimeOffset? now = null)
+    {
+        var range = GetExportRange(CodexDataExportScope.Today, now ?? DateTimeOffset.UtcNow);
+        return ImportCore(new[] { filePath }, cacheFolder, (range.StartInclusive!.Value, range.EndExclusive!.Value), cancellationToken);
+    }
+
     internal static CodexDataImportResult ImportHistoryRange(string filePath, string cacheFolder,
         CodexHistoryRange range, CancellationToken cancellationToken)
     {
