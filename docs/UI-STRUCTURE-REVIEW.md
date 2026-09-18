@@ -2,7 +2,9 @@
 
 检查日期：2026-09-08。结论基于当前源码；不涉及计费算法、缓存格式或网络协议调整。
 
-2026-09-12 更新：查询服务、刷新协调器及后台运行时已完成提取；三个分析窗口统一经过查询会话，周期分析持共享锁，费用曲线改为内存投影且不等待预热。缓存故障保留成功显示，关闭统一取消并限时等待，最后保存支持异步排空。当前结构及后续顺序见 [架构基线与迭代路线](ARCHITECTURE-REVIEW.md)；以下保留迁移阶段的历史检查记录。
+2026-09-12 更新：查询服务、刷新协调器及后台运行时已完成提取；三个分析窗口统一经过查询会话，周期分析持共享锁，费用曲线改为内存投影且不等待预热。缓存故障保留成功显示，关闭统一取消并限时等待，最后保存支持异步排空。
+
+2026-09-19 复核：下方"优先结构问题"逐项核实——(1) CSV 转义已在 Core 的 `CsvWriter`，刷新协调器已独立并配行为测试，主窗口程序化赋值改用 `UiEventSuppressor` 抑制域，范围解析移入 `UsageRangePolicy.ResolveSelectedRange` 纯函数；(2) `CodexUsageReader.cs` 已拆出缓存 store 与扫描类型，进一步实例化并删除全部静态可变状态；(3) 复查后 `QuotaSnapshotCacheStore` 中 6 个无调用 helper（`Min`、`AddBucketToSummary`、`AddEventToSummary`、`AddBucketValues`、`ToDetailBuckets`、`ToQuotaSnapshot`）本轮删除，其余原列成员均有活引用；(4) 曲线窗口的无效 `usageReadGate` 参数已移除；(5) 本轮同步修正 README 与架构文档中的 `wpf-last-display-v5.json` 文件名（原误记 v2）。当前结构及后续顺序见 [架构基线与迭代路线](ARCHITECTURE-REVIEW.md)；以下保留迁移阶段的历史检查记录。
 
 ## 本轮迁移边界
 

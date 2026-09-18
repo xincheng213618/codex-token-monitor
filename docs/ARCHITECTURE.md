@@ -144,7 +144,7 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 | 价格 | SQLite | `PriceSettings`：三档快速价格 + 按来源分组的 `PricePreset` 列表 |
 | 套餐 | SQLite | `SubscriptionPlanRecord`（起止、名称、金额），默认 5 月 Plus、自 6 月起每月 2 日 Pro 20x / ¥1,380，保存在独立 monitor-settings.sqlite3 |
 | 重置机会 | SQLite | `ResetOpportunityRecord`（获得/过期/已用/备注） |
-| 上次显示 | `wpf-last-display-v2.json` | `LastDisplayStore` 防抖落盘，启动时恢复 |
+| 上次显示 | `wpf-last-display-v5.json` | `LastDisplayStore` 防抖落盘，启动时恢复 |
 
 - 套餐导入：`SubscriptionPlanImporter` 从本地 Codex sqlite 数据库尝试识别套餐记录。
 - 重置卡同步：`ResetOpportunityStore.SyncFromCodexAsync` 读取 `~/.codex/auth.json` 的 access_token，GET `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`，把返回的 credits 写入本地。主窗口首轮用量刷新后会静默同步，用户也可在重置设置中手动同步；成功同步立即持久化，取消设置窗口不会撤销已同步结果。

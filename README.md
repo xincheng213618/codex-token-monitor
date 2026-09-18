@@ -102,7 +102,7 @@ outputs/一键生成CodexTokenMonitor.cmd
 - token 统计缓存（SQLite，含每日汇总、明细事件）
 - quota 快照缓存（SQLite + `quota-history-v2.jsonl` 历史额度时间线）
 - 价格设置、套餐设置、重置机会设置（SQLite）
-- `wpf-last-display-v2.json`：上次关闭时的显示状态
+- `wpf-last-display-v5.json`：上次关闭时的显示状态
 
 读取的数据来源通常包括：
 

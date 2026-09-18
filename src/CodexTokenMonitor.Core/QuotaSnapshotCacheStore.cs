@@ -162,65 +162,6 @@ internal sealed class QuotaSnapshotCacheStore
         return first >= second ? first : second;
     }
 
-    private static DateTimeOffset Min(DateTimeOffset first, DateTimeOffset second)
-    {
-        return first <= second ? first : second;
-    }
-
-    private static void AddBucketToSummary(
-        TokenUsageSummary summary,
-        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
-        TokenUsageBucket bucket)
-    {
-        AddBucketValues(summary, bucket);
-        var date = DateOnly.FromDateTime(bucket.StartLocal.DateTime);
-        if (!dailyBuckets.TryGetValue(date, out var dailyBucket))
-        {
-            dailyBucket = new TokenUsageBucket { StartLocal = bucket.StartLocal };
-            dailyBuckets[date] = dailyBucket;
-        }
-
-        AddBucketValues(dailyBucket, bucket);
-    }
-
-    private static void AddEventToSummary(
-        TokenUsageSummary summary,
-        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
-        TokenUsageEvent usageEvent)
-    {
-        summary.Add(usageEvent);
-
-        var date = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
-        if (!dailyBuckets.TryGetValue(date, out var dailyBucket))
-        {
-            dailyBucket = new TokenUsageBucket
-            {
-                StartLocal = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset)
-            };
-            dailyBuckets[date] = dailyBucket;
-        }
-
-        dailyBucket.Add(usageEvent);
-    }
-
-    private static void AddBucketValues(TokenUsageBucket target, TokenUsageBucket source)
-    {
-        target.MergeFrom(source);
-    }
-
-    private static IReadOnlyList<TokenUsageBucket> ToDetailBuckets(IEnumerable<TokenUsageEvent> events)
-    {
-        return events
-            .OrderBy(item => item.Timestamp)
-            .Select(item =>
-            {
-                var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
-                bucket.Add(item);
-                return bucket;
-            })
-            .ToList();
-    }
-
     public static QuotaSnapshotCacheStore Load(string folderName)
     {
         var cachePath = GetCachePath(folderName);
@@ -1027,18 +968,6 @@ internal sealed class QuotaSnapshotCacheStore
             """);
         ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS idx_quota_7d_timeline_date ON quota_7d_timeline(date)");
         ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS idx_quota_7d_timeline_anchor ON quota_7d_timeline(anchor_local)");
-    }
-
-    private static CodexQuotaSnapshot ToQuotaSnapshot(CachedQuotaSnapshot snapshot)
-    {
-        return new CodexQuotaSnapshot(
-            snapshot.SnapshotLocal,
-            snapshot.LimitId,
-            snapshot.LimitName,
-            snapshot.FiveHourUsedPercent,
-            snapshot.FiveHourResetAtLocal,
-            snapshot.WeekUsedPercent,
-            snapshot.WeekResetAtLocal);
     }
 
     private static CachedQuotaSnapshot ToCachedQuotaSnapshot(CodexQuotaSnapshot snapshot)

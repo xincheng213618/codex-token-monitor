@@ -161,6 +161,8 @@
 
 第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
 
+第十七轮（2026-09-19）文档一致性核对与薄弱模块测试：逐项复核 [UI 与迁移结构检查](UI-STRUCTURE-REVIEW.md) 的优先问题清单并更新其状态（CSV formatter、读取器拆分、死代码、无效 gate 参数均已解决，本轮删除 `QuotaSnapshotCacheStore` 中最后 6 个无调用 helper）；修正 README 与架构文档中的 `wpf-last-display-v5.json` 文件名（原误记 v2），并核验默认端口 36666、256 MB/3 分钟传输上限、120 秒预热间隔、DeepSeek 峰谷时段等 README 声明与实现一致。新增 `QuotaPaceAnalyzerTests`（12 项：步调差值、线性满额外推、钳制与全部重置卡评级分支）与 `QuotaAnalysisRefreshRangeTests`（5 项：历史周期不变、当前周期截断到当前、无可信快照冻结、到期结束、重置标识变化收页）。验证：Core 回归 584/584，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-013734-*/`）。
+
 第十六轮（2026-09-19）验证发布管线：Core 测试门禁（566/566）→ Release 自包含发布 → 单文件 230 MB exe，产物结构与 README 约定一致。标准输出目录 `outputs/CodexTokenMonitor` 的 exe 在验证时正被运行实例占用，验证改在独立目录完成；一键脚本逻辑本身未变，正式发布前需先退出运行中的监控器。
 
 第十五轮（2026-09-19）给 `desktop-regression.yml` 增加每周一 02:00 UTC 定时触发与并发组：手动分发仍是主路径，定时兜底捕获跨功能迭代累积的回归，PR 门禁保持 Core 回归不变。
