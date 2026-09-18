@@ -23,6 +23,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
             new SelectedRange(now, now, "", "", RangeMode.Day),
             eventBreakdown: false,
             Array.Empty<PricePreset>(),
+            includeModels: true,
             includeQuota: true);
     }
 
@@ -48,6 +49,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
         SelectedRange range,
         bool eventBreakdown,
         IReadOnlyList<PricePreset> tablePresets,
+        bool includeModels,
         bool includeQuota,
         IReadOnlyList<BreakdownRow> rows)
     {
@@ -57,7 +59,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
         }
 
         var anchor = CaptureAnchor();
-        ApplyColumns(range, eventBreakdown, tablePresets, includeQuota);
+        ApplyColumns(range, eventBreakdown, tablePresets, includeModels, includeQuota);
         grid.ItemsSource = rows;
         RestoreAnchor(anchor);
     }
@@ -66,9 +68,10 @@ internal sealed class BreakdownGridAdapter : IDisposable
         SelectedRange range,
         bool eventBreakdown,
         IReadOnlyList<PricePreset> tablePresets,
+        bool includeModels,
         bool includeQuota)
     {
-        var expected = BuildColumnDefinitions(range, eventBreakdown, tablePresets, includeQuota);
+        var expected = BuildColumnDefinitions(range, eventBreakdown, tablePresets, includeModels, includeQuota);
         if (ColumnsMatch(expected))
         {
             ApplyColumnWidths(expected);
@@ -96,6 +99,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
         SelectedRange range,
         bool eventBreakdown,
         IReadOnlyList<PricePreset> tablePresets,
+        bool includeModels,
         bool includeQuota)
     {
         var columns = new List<BreakdownColumnDefinition>
@@ -109,7 +113,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
             new("Output", nameof(BreakdownRow.Output), 76, true)
         };
 
-        if (includeQuota)
+        if (includeModels)
         {
             columns.Insert(1, new("实际模型", nameof(BreakdownRow.Model), 132, false));
             columns.Add(new("模型费用", nameof(BreakdownRow.ActualCost), 112, true));
@@ -117,7 +121,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
         for (var i = 0; i < tablePresets.Count; i++)
         {
             var bindingPath = $"{nameof(BreakdownRow.Prices)}[{i}]";
-            var title = (includeQuota ? "换用 " : "") + FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}");
+            var title = (includeModels ? "换用 " : "") + FormatPresetColumnTitle(tablePresets[i], $"价格{i + 1}");
             const double width = 112;
             columns.Add(new BreakdownColumnDefinition(title, bindingPath, width, true));
         }

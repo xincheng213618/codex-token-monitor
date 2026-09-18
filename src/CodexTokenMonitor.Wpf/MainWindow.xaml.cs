@@ -1212,7 +1212,13 @@ public partial class MainWindow : Window
             });
         }
 
-        breakdownGridAdapter.ApplyRows(range, eventBreakdown, tablePresets, source == UsageSource.Codex, rows);
+        breakdownGridAdapter.ApplyRows(
+            range,
+            eventBreakdown,
+            tablePresets,
+            includeModels: SupportsModelCost(source),
+            includeQuota: source == UsageSource.Codex,
+            rows);
     }
 
     private void ApplyQuotaSummary(CodexQuotaEstimate? quota)
