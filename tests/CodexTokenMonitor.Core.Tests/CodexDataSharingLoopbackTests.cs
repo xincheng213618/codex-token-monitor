@@ -72,6 +72,17 @@ public sealed class CodexDataSharingLoopbackTests : IDisposable
             {
                 using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
                 return Task.FromResult(CodexDataTransferService.ImportRecentDays(path, cancellationToken));
+            },
+            historyStore: null,
+            exportToday: (path, cancellationToken) =>
+            {
+                using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+                return Task.FromResult(CodexDataTransferService.Export(path, CodexDataExportScope.Today, cancellationToken));
+            },
+            importToday: (path, cancellationToken) =>
+            {
+                using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+                return Task.FromResult(CodexDataTransferService.ImportToday(path, cancellationToken));
             });
         server.StartAsync(0, accessKey).GetAwaiter().GetResult();
         return server;
@@ -138,6 +149,88 @@ public sealed class CodexDataSharingLoopbackTests : IDisposable
             finally
             {
                 File.Delete(packagePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TodayUploadDownload_RoundTripsTodaysEvents()
+    {
+        var server = StartServer();
+        await using (server)
+        {
+            var packagePath = ExportUploadPackage();
+            var downloadPath = Path.Combine(Path.GetTempPath(), $"share-today-{Guid.NewGuid():N}.codex.json");
+            try
+            {
+                using var client = new CodexDataSharingClient($"http://127.0.0.1:{server.Port}", accessKey);
+
+                var uploaded = await client.UploadTodayAsync(packagePath, CancellationToken.None);
+                Assert.Equal(3, uploaded.AddedUsageEventCount);
+
+                await client.DownloadTodayAsync(downloadPath, CancellationToken.None);
+
+                using var secondScope = MonitorCachePaths.PushLocalAppDataRoot(secondRoot);
+                var imported = CodexDataTransferService.Import(new[] { downloadPath });
+                Assert.Equal(3, imported.AddedUsageEventCount);
+            }
+            finally
+            {
+                File.Delete(downloadPath);
+                File.Delete(packagePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task TodayUpload_PackageWithOutsideDates_IsRejected()
+    {
+        // A package produced from another root whose events all fall before
+        // today must be rejected by the today endpoint's range validation.
+        var otherRoot = Path.Combine(Path.GetTempPath(), $"SharingLoopback-C-{Guid.NewGuid():N}");
+        var yesterdayPackage = Path.Combine(Path.GetTempPath(), $"share-yesterday-{Guid.NewGuid():N}.codex.json");
+        try
+        {
+            using (var otherScope = MonitorCachePaths.PushLocalAppDataRoot(otherRoot))
+            {
+                var at = DateTimeOffset.UtcNow.AddHours(-26);
+                var usageEvent = new TokenUsageEvent(
+                    at, InputTokens: 500, CachedInputTokens: 0, OutputTokens: 0,
+                    ReasoningOutputTokens: 0, TotalTokens: 500, Key: "yesterday-event");
+                var day = DateOnly.FromDateTime(at.DateTime);
+                var bucket = new TokenUsageBucket
+                {
+                    StartLocal = new DateTimeOffset(day.Year, day.Month, day.Day, 0, 0, 0, CodexUsageReader.BeijingOffset)
+                };
+                bucket.Add(usageEvent);
+                UsageCacheStore.Load("CodexTokenMonitor").Put(
+                    bucket, isComplete: true, scannedThroughLocal: day.ToDateTime(TimeOnly.MaxValue),
+                    detailEvents: new[] { usageEvent }, propagateErrors: true);
+                CodexDataTransferService.Export(yesterdayPackage, CodexDataExportScope.All);
+            }
+
+            var server = StartServer();
+            await using (server)
+            {
+                using var client = new CodexDataSharingClient($"http://127.0.0.1:{server.Port}", accessKey);
+
+                var failure = await Assert.ThrowsAsync<HttpRequestException>(
+                    () => client.UploadTodayAsync(yesterdayPackage, CancellationToken.None));
+
+                Assert.Equal(System.Net.HttpStatusCode.BadRequest, failure.StatusCode);
+                Assert.Contains("本次同步范围之外", failure.Message);
+            }
+        }
+        finally
+        {
+            File.Delete(yesterdayPackage);
+            try
+            {
+                Directory.Delete(otherRoot, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup of the temporary tree.
             }
         }
     }

@@ -161,6 +161,8 @@
 
 第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
 
+第二十四轮（2026-09-19）补共享 Today 端点回环（回环套件扩至 6 项）：`UploadTodayAsync`/`DownloadTodayAsync` 真实往返今日事件，且越界数据包（全部事件在昨天）被 `ImportToday` 的范围校验拒绝——服务端把 `InvalidDataException` 映射为 HTTP 400 并透传"本次同步范围之外"提示。另对全部 Core 类做覆盖率扫描，确认无零覆盖的生产类。验证：Core 回归 630/630，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-021116-*/`）。
+
 第二十三轮（2026-09-19）子代理回放过滤器边界测试扩面（`SubagentReplayFilterBoundaryTests`，6 项）：forked_from_id+parent_thread_id 检测、亚秒间隙保持回放、≥1 秒跳变无需任何边界标记即转实况、无 bootstrap 的 task_started 不放行、坏时间戳不推进回放边界、抑制段仍归因模型。验证：Core 回归 628/628，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-020620-*/`）。
 
 第二十二轮（2026-09-19）共享 Client/Server 回环集成测试（`CodexDataSharingLoopbackTests`，4 项）：在隔离缓存根下以端口 0 启动真实 Kestrel 共享服务、委托各自重压缓存作用域（Kestrel 线程不继承 AsyncLocal），用真实客户端验证：错误密钥 401（HTTP 401 + 中文提示）、health 返回协议 v4 与设备名、同包两次上传按稳定键幂等合并（3 新增 → 0 新增 3 已有）、下载包可导入全新存储并带回全部事件。验证：Core 回归 622/622，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-020256-*/`）。
