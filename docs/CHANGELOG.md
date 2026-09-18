@@ -6,6 +6,7 @@
 
 - 额度读取去静态化：`CodexAppServerQuotaReader` 的 20s/10s 缓存、已选 CLI 命令与同步锁改为随 Codex 读取器实例持有（`UsageSourceReaders.Codex.AppServerQuota`），协议解析保持静态，行为不变。
 
+- 测试扩面：为订阅额度折算、共享设置持久化与费用曲线计算补 11 项行为测试，费用曲线测试通过种子化用量缓存与额度时间线驱动真实计算路径。
 - 文档与测试：复核旧 UI 结构检查清单并标记各项完成状态，删除额度快照缓存中 6 个无调用 helper，修正文档中上次显示文件名（v5）；修正 README/架构文档声明与实现的一致性；为重置评估（`QuotaPaceAnalyzer` 全部评级分支）与周期分析刷新范围（`QuotaAnalysisRefreshRange`）补 17 项行为测试。
 - 稳定性：生产 SQLite 连接（用量缓存、额度快照、monitor-settings、共享历史）全部禁用连接池。并行测试负载下曾观察到池化句柄被释放后复用的偶发崩溃；生产 I/O 由共享闸门串行化，禁用池化无性能影响。
 
