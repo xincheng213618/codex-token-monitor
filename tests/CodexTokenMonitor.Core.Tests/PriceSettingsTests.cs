@@ -4,6 +4,19 @@ namespace CodexTokenMonitor.Tests;
 
 public sealed class PriceSettingsTests
 {
+
+    [Fact]
+    public void ZCodeDefaults_ListGlm53FlashFirst()
+    {
+        var presets = PricePreset.DefaultsForGroup(PricePresetGroups.ZCode);
+
+        Assert.NotEmpty(presets);
+        Assert.Equal(("智谱/Z.AI", "GLM-5.3 Flash"), (presets[0].Provider, presets[0].Model));
+        Assert.Equal(0.80m, presets[0].UncachedInput);
+        Assert.Equal(0.23m, presets[0].CachedInput);
+        Assert.Equal(2.80m, presets[0].Output);
+    }
+
     [Fact]
     public void OfficialRefreshUpdatesOldBuiltInsAndPreservesEditedPrices()
     {

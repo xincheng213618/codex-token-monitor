@@ -4,6 +4,8 @@
 
 ## 2026-09-19
 
+- ZCode 来源实际模型计价：ZCode 日志（model-io）中的 `model.modelId` 现在进入用量事件并参与计价，ZCode 页新增与 Codex 相同的"实际模型 · 标准 API 等价"费用卡、明细表"实际模型/模型费用"列和复制摘要行，按智谱/Z.AI 价格组人民币计价。价格库新增 GLM-5.3 Flash 参考档（输入 ¥0.80 / 缓存命中 ¥0.23 / 输出 ¥2.80 每百万 tokens，bigmodel.cn 2026-09 标准价；缓存存储费暂免）并设为 ZCode 页默认第一对比档。既有缓存中无模型的 ZCode 日会在下次启动时自动重扫补齐模型（一次性迁移，仅限 zcode 键）。
+
 - 额度读取去静态化：`CodexAppServerQuotaReader` 的 20s/10s 缓存、已选 CLI 命令与同步锁改为随 Codex 读取器实例持有（`UsageSourceReaders.Codex.AppServerQuota`），协议解析保持静态，行为不变。
 
 - 测试扩面：共享服务 Today 端点补 2 项回环测试（今日事件往返、越界数据包 400 拒绝），并完成全 Core 类覆盖扫描（无零覆盖类）。

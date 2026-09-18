@@ -112,7 +112,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
         if (includeQuota)
         {
             columns.Insert(1, new("实际模型", nameof(BreakdownRow.Model), 132, false));
-            columns.Add(new("模型费用 ($)", nameof(BreakdownRow.ActualCost), 112, true));
+            columns.Add(new("模型费用", nameof(BreakdownRow.ActualCost), 112, true));
         }
         for (var i = 0; i < tablePresets.Count; i++)
         {

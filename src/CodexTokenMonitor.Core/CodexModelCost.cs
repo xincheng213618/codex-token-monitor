@@ -7,6 +7,9 @@ internal sealed record ModelCostLine(string ModelId, TokenUsageBucket Usage, dec
 internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens, long UnpricedEvents,
     IReadOnlyList<ModelCostLine> Models)
 {
+    // Codex estimates are USD; source-group estimates take the currency of
+    // their first priced preset (e.g. ¥ for the ZCode group).
+    public string CurrencySymbol { get; init; } = "$";
     public decimal QuotaBaseCost { get; init; } = KnownCost;
     public decimal FastSurcharge { get; init; }
     public long FastEvents { get; init; }
@@ -23,15 +26,15 @@ internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens,
         Models.Any(item => item.Cost is null && !CodexModelCost.HasNoPublicPrice(item.ModelId)) ? "含 0x 待填" : null
     }.Where(item => item is not null));
     public string Format(string format = "N2") => IsComplete
-        ? $"${KnownCost.ToString(format, CultureInfo.InvariantCulture)}"
-        : $"${KnownCost.ToString(format, CultureInfo.InvariantCulture)}（{MissingSummary}）";
+        ? $"{CurrencySymbol}{KnownCost.ToString(format, CultureInfo.InvariantCulture)}"
+        : $"{CurrencySymbol}{KnownCost.ToString(format, CultureInfo.InvariantCulture)}（{MissingSummary}）";
 
     public string FormatQuotaCost(string format = "N2")
     {
         var details = new List<string>();
         if (!IsComplete) details.Add(MissingSummary);
         if (UnknownFastRateEvents > 0) details.Add("Fast 倍率待补");
-        return $"${QuotaEquivalentCost.ToString(format, CultureInfo.InvariantCulture)}" +
+        return $"{CurrencySymbol}{QuotaEquivalentCost.ToString(format, CultureInfo.InvariantCulture)}" +
             (details.Count > 0 ? $"（{string.Join("、", details)}）" : "");
     }
     public string SpeedDescription => $"Fast / priority {FastEvents:N0} 条，按 ChatGPT Fast 倍率增加参考费用 ${FastSurcharge:N2}。" +
@@ -71,8 +74,9 @@ internal static class CodexModelCost
     public static bool HasNoPublicPrice(string modelId) => NormalizeModelId(modelId) == "gpt-5.3-codex-spark";
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<PriceSettings, Dictionary<string, PricePreset>> Catalogs = new();
 
-    private static Dictionary<string, PricePreset> BuildCatalog(IEnumerable<PricePreset> catalog) => catalog
-        .Where(p => string.Equals(p.Provider, "OpenAI", StringComparison.OrdinalIgnoreCase) && p.CurrencySymbol == "$")
+    private static Dictionary<string, PricePreset> BuildCatalog(IEnumerable<PricePreset> catalog, bool openAiOnly = true) => catalog
+        .Where(p => !openAiOnly ||
+                    (string.Equals(p.Provider, "OpenAI", StringComparison.OrdinalIgnoreCase) && p.CurrencySymbol == "$"))
         .GroupBy(p => NormalizeModelId(string.IsNullOrWhiteSpace(p.ModelId) ? p.Model : p.ModelId))
         .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
     // The catalog is independent of which comparison cards are currently visible.
@@ -82,15 +86,32 @@ internal static class CodexModelCost
         var prices = catalog is null
             ? Catalogs.GetValue(PriceSettingsStore.Current, settings => BuildCatalog(settings.CodexPresets))
             : BuildCatalog(catalog);
+        return EstimateWith(prices, usage);
+    }
+
+    /// <summary>
+    /// Estimates a source-group bucket against that group's own presets, so
+    /// non-Codex sources (ZCode/DSH/...) price their actual model ids.
+    /// </summary>
+    public static ModelCostEstimate Estimate(TokenUsageBucket usage, string priceGroup)
+    {
+        var catalog = PriceSettingsStore.Current.PresetsForGroup(PricePresetGroups.Normalize(priceGroup));
+        return EstimateWith(BuildCatalog(catalog, openAiOnly: false), usage);
+    }
+
+    private static ModelCostEstimate EstimateWith(Dictionary<string, PricePreset> prices, TokenUsageBucket usage)
+    {
         long pricedTokens = 0, pricedEvents = 0;
         decimal cost = 0, quotaBaseCost = 0;
         decimal fastSurcharge = 0;
         long fastEvents = 0, knownTierEvents = 0, unknownFastRateEvents = 0;
         var models = new List<ModelCostLine>();
+        string? currencySymbol = null;
         foreach (var (model, tokens) in usage.ModelUsage.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase))
         {
             TryFindPrice(prices, model, out var preset);
             var pending = IsPending(preset);
+            if (!pending && currencySymbol is null) currencySymbol = preset!.CurrencySymbol;
             decimal? amount = pending ? null : tokens.EstimateCost(preset!.ToProfile());
             var quotaProfile = pending ? null : CodexSubscriptionPricing.GetProfile(model, preset!.ToProfile());
             foreach (var (tier, tierUsage) in tokens.ServiceTierUsage)
@@ -119,6 +140,7 @@ internal static class CodexModelCost
         return new ModelCostEstimate(cost, TokenCountMath.SubtractNonNegative(usage.TotalTokens, pricedTokens),
             TokenCountMath.SubtractNonNegative(usage.Events, pricedEvents), models)
         {
+            CurrencySymbol = currencySymbol ?? "$",
             QuotaBaseCost = quotaBaseCost, FastSurcharge = fastSurcharge, FastEvents = fastEvents,
             UnknownTierEvents = TokenCountMath.SubtractNonNegative(usage.Events, knownTierEvents),
             UnknownFastRateEvents = unknownFastRateEvents

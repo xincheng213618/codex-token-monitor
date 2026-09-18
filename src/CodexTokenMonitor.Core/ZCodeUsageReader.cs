@@ -11,7 +11,8 @@ internal sealed record ZCodeUsageEntry(
     long CacheWrite,
     long Output,
     long Reasoning,
-    long ReportedTotal)
+    long ReportedTotal,
+    string? ModelId = null)
 {
     public long Total => ReportedTotal > 0
         ? ReportedTotal
@@ -331,14 +332,7 @@ internal static class ZCodeUsageReader
 
         foreach (var usageEvent in UsageEventMerger.Merge(events))
         {
-            summary.Add(
-                usageEvent.Timestamp,
-                usageEvent.InputTokens,
-                usageEvent.CachedInputTokens,
-                usageEvent.CacheWriteInputTokens,
-                usageEvent.OutputTokens,
-                usageEvent.ReasoningOutputTokens,
-                usageEvent.TotalTokens);
+            summary.Add(usageEvent);
 
             var dayKey = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
             if (!dailyBuckets.TryGetValue(dayKey, out var bucket))
@@ -350,14 +344,7 @@ internal static class ZCodeUsageReader
                 dailyBuckets[dayKey] = bucket;
             }
 
-            bucket.Add(
-                usageEvent.Timestamp,
-                usageEvent.InputTokens,
-                usageEvent.CachedInputTokens,
-                usageEvent.CacheWriteInputTokens,
-                usageEvent.OutputTokens,
-                usageEvent.ReasoningOutputTokens,
-                usageEvent.TotalTokens);
+            bucket.Add(usageEvent);
         }
 
         summary.DailyBuckets.AddRange(
@@ -404,7 +391,8 @@ internal static class ZCodeUsageReader
                 item.Reasoning,
                 item.Total,
                 $"zcode:{item.Key}",
-                item.CacheWrite))
+                item.CacheWrite,
+                ModelId: item.ModelId))
             .ToList();
         return new UsageEventScanResult(events, isComplete);
     }
@@ -533,6 +521,9 @@ internal static class ZCodeUsageReader
                 return null;
             }
 
+            var modelId = root.TryGetProperty("model", out var modelElement)
+                ? GetString(modelElement, "modelId")
+                : null;
             var requestId = GetString(root, "requestId");
             var turnId = GetString(root, "turnId");
             var sessionId = GetString(root, "sessionId");
@@ -555,7 +546,7 @@ internal static class ZCodeUsageReader
                 return null;
             }
 
-            return new ZCodeUsageEntry(key, timestamp, input, cached, cacheWrite, output, reasoning, total);
+            return new ZCodeUsageEntry(key, timestamp, input, cached, cacheWrite, output, reasoning, total, modelId);
         }
         catch
         {
@@ -569,14 +560,7 @@ internal static class ZCodeUsageReader
             .Select(item =>
             {
                 var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
-                bucket.Add(
-                    item.Timestamp,
-                    item.InputTokens,
-                    item.CachedInputTokens,
-                    item.CacheWriteInputTokens,
-                    item.OutputTokens,
-                    item.ReasoningOutputTokens,
-                    item.TotalTokens);
+                bucket.Add(item);
                 return bucket;
             })
             .ToList();
@@ -589,14 +573,7 @@ internal static class ZCodeUsageReader
         var bucket = new TokenUsageBucket { StartLocal = bucketStart };
         foreach (var item in UsageEventMerger.Merge(events))
         {
-            bucket.Add(
-                item.Timestamp,
-                item.InputTokens,
-                item.CachedInputTokens,
-                item.CacheWriteInputTokens,
-                item.OutputTokens,
-                item.ReasoningOutputTokens,
-                item.TotalTokens);
+            bucket.Add(item);
         }
 
         return bucket;

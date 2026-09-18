@@ -223,6 +223,7 @@ internal sealed class PricePreset
             Preset("Kimi（月之暗面）", "K2.7 Code HighSpeed", "¥", "CNY / 1M tokens", 1_000_000m, 13.00m, 2.60m, 54.00m, "Kimi K2.7 Code 官方价格"),
             Preset("Kimi（月之暗面）", "K2.6", "¥", "CNY / 1M tokens", 1_000_000m, 6.50m, 1.10m, 27.00m, "Kimi API 官方人民币价格"),
             Preset("Kimi（月之暗面）", "K2.5", "¥", "CNY / 1M tokens", 1_000_000m, 4.00m, 0.70m, 21.00m, "Kimi API 官方人民币价格"),
+            Preset("智谱/Z.AI", "GLM-5.3 Flash", "¥", "CNY / 1M tokens", 1_000_000m, 0.80m, 0.23m, 2.80m, "bigmodel.cn/pricing（2026-09 标准价；缓存存储费暂免）"),
             Preset("智谱/Z.AI", "GLM-5.2 1M", "¥", "CNY / 1M tokens", 1_000_000m, 8.00m, 2.00m, 28.00m, "bigmodel.cn/pricing"),
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, DeepSeekPriceSource, "ZCode", PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan", "ZCode"),
@@ -295,7 +296,7 @@ internal sealed class PricePreset
         var preferred = PricePresetGroups.Normalize(group) switch
         {
             PricePresetGroups.ClaudeCode => ("Claude", "Fable 5 API"),
-            PricePresetGroups.ZCode => ("智谱/Z.AI", "GLM-5.2 1M"),
+            PricePresetGroups.ZCode => ("智谱/Z.AI", "GLM-5.3 Flash"),
             PricePresetGroups.WorkBuddy => ("Kimi（月之暗面）", "K3"),
             PricePresetGroups.Dsh => ("DeepSeek", "V4.1 Flash"),
             _ => ("OpenAI", "GPT-5.6 Sol")
@@ -700,8 +701,9 @@ internal static class PriceSettingsStore
             ("Claude Code", "Claude", "Fable 5 API"),
             ("Claude Code", "DeepSeek", "V4.1 Flash"),
             ("Claude Code", "Xiaomi", "MiMo V2.5 Pro"),
-            ("ZCode", "智谱/Z.AI", "GLM-5.2 1M"),
+            ("ZCode", "智谱/Z.AI", "GLM-5.3 Flash"),
             ("ZCode", "DeepSeek", "V4.1 Flash"),
+            ("ZCode", "智谱/Z.AI", "GLM-5.2 1M"),
             ("ZCode", "Xiaomi", "MiMo V2.5 Pro"),
             ("WorkBuddy", "Kimi（月之暗面）", "K3"),
             ("WorkBuddy", "DeepSeek", "V4.1 Flash"),

@@ -1004,8 +1004,20 @@ public partial class MainWindow : Window
     private void ApplyCostCards(IReadOnlyList<PricePreset> presets, TokenUsageSummary summary)
     {
         CostCardsPanel.Children.Clear();
-        if (CurrentModule().Source == UsageSource.Codex)
+        var source = CurrentModule().Source;
+        if (source == UsageSource.Codex)
+        {
             CostCardsPanel.Children.Add(CreateCostCard(new PricePreset { Provider = "OpenAI", Model = "实际模型 · 标准 API 等价" }, summary, actual: true));
+        }
+        else if (summary.ModelUsage.Count > 0)
+        {
+            // Non-Codex sources price their actual model ids against the
+            // source's own price group, in that group's currency.
+            var provider = source == UsageSource.ZCode ? "智谱/Z.AI" : UsageSourceRegistry.For(source).Title;
+            CostCardsPanel.Children.Add(CreateCostCard(
+                new PricePreset { Provider = provider, Model = "实际模型 · 标准 API 等价" }, summary,
+                actual: true, priceGroup: PricePresetGroups.ForSource(source)));
+        }
         foreach (var preset in presets.Take(GetVisibleCostColumnCount(presets.Count)))
         {
             CostCardsPanel.Children.Add(CreateCostCard(preset, summary, comparison: CurrentModule().Source == UsageSource.Codex));
@@ -1081,6 +1093,10 @@ public partial class MainWindow : Window
                 builder.AppendLine($"实际模型 API 等价费用：{CodexModelCost.Estimate(summary).Format()}");
                 builder.AppendLine(BuildModelCostDetails(summary));
             }
+            else if (summary.ModelUsage.Count > 0)
+            {
+                builder.AppendLine($"实际模型 API 等价费用：{CodexModelCost.Estimate(summary, PricePresetGroups.ForSource(module.Source)).Format()}");
+            }
             builder.AppendLine("相同 Token 换模型费用估算：");
             foreach (var preset in presets)
             {
@@ -1133,13 +1149,28 @@ public partial class MainWindow : Window
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static UIElement CreateCostCard(PricePreset preset, TokenUsageSummary summary, bool actual = false, bool comparison = false)
+    private static bool SupportsModelCost(UsageSource source)
+    {
+        return source is UsageSource.Codex or UsageSource.ZCode;
+    }
+
+    private static string FormatActualBucketCost(UsageSource source, TokenUsageBucket bucket)
+    {
+        return source == UsageSource.Codex
+            ? CodexModelCost.Estimate(bucket).Format("N4")
+            : CodexModelCost.Estimate(bucket, PricePresetGroups.ForSource(source)).Format("N4");
+    }
+
+    private static UIElement CreateCostCard(PricePreset preset, TokenUsageSummary summary, bool actual = false, bool comparison = false, string? priceGroup = null)
     {
         var profile = preset.ToProfile();
+        var actualCost = priceGroup is null
+            ? CodexModelCost.Estimate(summary).Format()
+            : CodexModelCost.Estimate(summary, priceGroup).Format();
         return new CostCardControl(
             string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
             comparison ? $"换用 {preset.Model}" : preset.Model,
-            actual ? CodexModelCost.Estimate(summary).Format() : FormatCost(summary.EstimateCost(profile), profile),
+            actual ? actualCost : FormatCost(summary.EstimateCost(profile), profile),
             actual ? BuildModelCostDetails(summary) : comparison ? "按相同输入、缓存和输出 Token 换算，实际换模型后的用量可能不同。" : null,
             actual)
         {
@@ -1168,8 +1199,8 @@ public partial class MainWindow : Window
             rows.Add(new BreakdownRow
             {
                 Label = FormatBucketLabel(range, bucket.StartLocal, rowIsEvent),
-                Model = source == UsageSource.Codex ? CodexModelCost.DescribeModels(bucket) : "",
-                ActualCost = source == UsageSource.Codex ? CodexModelCost.Estimate(bucket).Format("N4") : "",
+                Model = SupportsModelCost(source) ? CodexModelCost.DescribeModels(bucket) : "",
+                ActualCost = SupportsModelCost(source) ? FormatActualBucketCost(source, bucket) : "",
                 Total = FormatBreakdownToken(bucket.TotalTokens, rowIsEvent),
                 Input = FormatBreakdownToken(bucket.InputTokens, rowIsEvent),
                 Cached = FormatBreakdownToken(bucket.CachedInputTokens, rowIsEvent),
