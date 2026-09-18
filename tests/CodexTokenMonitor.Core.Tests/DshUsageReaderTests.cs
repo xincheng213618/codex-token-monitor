@@ -6,19 +6,24 @@ namespace CodexTokenMonitor.Tests;
 
 public sealed class DshUsageReaderTests : IDisposable
 {
-    private readonly string sessionsRoot = Path.Combine(Path.GetTempPath(), $"DshReaderTests-{Guid.NewGuid():N}");
+    private readonly string testRoot = Path.Combine(Path.GetTempPath(), $"DshReaderTests-{Guid.NewGuid():N}");
+
+    // UsageLogPaths resolves the DSH sessions root as <scope root>/Dsh, so the
+    // transcript tree lives one level below the pushed scope like real logs do.
+    private readonly IDisposable logScope;
+    private string SessionsRoot => Path.Combine(testRoot, UsageSource.Dsh.ToString());
 
     public DshUsageReaderTests()
     {
-        DshUsageReader.OverrideSessionsRoot = sessionsRoot;
+        logScope = UsageLogPaths.PushRoot(testRoot);
     }
 
     public void Dispose()
     {
-        DshUsageReader.OverrideSessionsRoot = null;
+        logScope.Dispose();
         try
         {
-            Directory.Delete(sessionsRoot, recursive: true);
+            Directory.Delete(testRoot, recursive: true);
         }
         catch
         {
@@ -274,7 +279,7 @@ public sealed class DshUsageReaderTests : IDisposable
 
     private string WriteTranscript(string projectDir, string sessionId, params string[] frames)
     {
-        var directory = Path.Combine(sessionsRoot, projectDir, sessionId);
+        var directory = Path.Combine(SessionsRoot, projectDir, sessionId);
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "session.jsonl.zstd");
         var combined = new List<byte>();

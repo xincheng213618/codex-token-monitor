@@ -69,7 +69,7 @@ public sealed class CacheWriteUsageTests
         try
         {
             var start = new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.FromHours(8));
-            var row = Assert.Single(CodexUsageReader.ReadTransientDetailRows(start, start.AddDays(1)));
+            var row = Assert.Single(UsageSourceReaders.Codex.ReadTransientDetailRows(start, start.AddDays(1)));
 
             Assert.Equal(1000, row.InputTokens);
             Assert.Equal(600, row.CachedInputTokens);

@@ -39,12 +39,12 @@ internal static class QuotaCycleAnalysisCalculator
                 ? UsageBreakdownBuilder.ReadDetailRowsForRange(
                     start,
                     end,
-                    (dayStart, dayEnd) => CodexUsageReader.ReadDetailRows(
+                    (dayStart, dayEnd) => UsageSourceReaders.Codex.ReadDetailRows(
                         dayStart,
                         dayEnd,
                         includeLiveToday: true,
                         cancellationToken))
-                : CodexUsageReader.ReadCachedDetailRows(
+                : UsageSourceReaders.Codex.ReadCachedDetailRows(
                     start,
                     end,
                     cancellationToken))
@@ -56,7 +56,7 @@ internal static class QuotaCycleAnalysisCalculator
             return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可用的逐条 Token 记录");
         }
 
-        var timeline = CodexUsageReader.ReadMaterializedQuotaTimeline(
+        var timeline = UsageSourceReaders.Codex.ReadMaterializedQuotaTimeline(
                 usageRows.Select(item => item.StartLocal),
                 cancellationToken: cancellationToken)
             .Where(item =>

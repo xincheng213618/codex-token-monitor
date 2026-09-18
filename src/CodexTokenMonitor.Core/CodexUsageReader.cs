@@ -1,6 +1,6 @@
 namespace CodexTokenMonitor;
 
-internal static class CodexUsageReader
+internal sealed class CodexUsageReader
 {
     private const string CacheFolder = "CodexTokenMonitor";
     private const string QuotaHistoryFileName = "quota-history-v2.jsonl";
@@ -11,18 +11,18 @@ internal static class CodexUsageReader
     private const string SparkLimitName = "GPT-5.3-Codex-Spark";
     public static readonly TimeSpan BeijingOffset = TimeSpan.FromHours(8);
 
-    private static readonly LiveFileTailReader UsageTailReader = new();
-    private static readonly LiveFileTailReader QuotaTailReader = new();
-    private static readonly ConcurrentDictionary<string, SubagentReplayFilter> UsageReplayFilters =
+    private LiveFileTailReader UsageTailReader = new();
+    private LiveFileTailReader QuotaTailReader = new();
+    private ConcurrentDictionary<string, SubagentReplayFilter> UsageReplayFilters =
         new(StringComparer.OrdinalIgnoreCase);
-    private static readonly ConcurrentDictionary<string, SubagentReplayFilter> QuotaReplayFilters =
+    private ConcurrentDictionary<string, SubagentReplayFilter> QuotaReplayFilters =
         new(StringComparer.OrdinalIgnoreCase);
-    private static readonly object QuotaHistoryCacheSync = new();
-    private static readonly List<RateLimitSnapshot> QuotaHistorySnapshotCache = new();
-    private static readonly HashSet<QuotaHistoryKey> QuotaHistoryKeyCache = new(QuotaHistoryKeyComparer.Instance);
-    private static string? quotaHistoryCachedPath;
-    private static long quotaHistoryCachedLength = -1;
-    private static DateTime quotaHistoryCachedWriteTimeUtc;
+    private object QuotaHistoryCacheSync = new();
+    private List<RateLimitSnapshot> QuotaHistorySnapshotCache = new();
+    private HashSet<QuotaHistoryKey> QuotaHistoryKeyCache = new(QuotaHistoryKeyComparer.Instance);
+    private string? quotaHistoryCachedPath;
+    private long quotaHistoryCachedLength = -1;
+    private DateTime quotaHistoryCachedWriteTimeUtc;
 
     private readonly record struct RateLimitWindowSnapshot(
         decimal UsedPercent,
@@ -73,7 +73,7 @@ internal static class CodexUsageReader
         DateTimeOffset? BeforeSnapshotLocal,
         DateTimeOffset? AfterSnapshotLocal);
 
-    public static bool ClearCache()
+    public bool ClearCache()
     {
         ResetLiveFileCursors();
         CodexQuotaCycleReader.InvalidateCache();
@@ -86,7 +86,7 @@ internal static class CodexUsageReader
         return deleted;
     }
 
-    public static bool ClearCachedDay(DateOnly date)
+    public bool ClearCachedDay(DateOnly date)
     {
         ResetLiveFileCursors();
         CodexQuotaCycleReader.InvalidateCache();
@@ -95,7 +95,7 @@ internal static class CodexUsageReader
         return usageDeleted || quotaDeleted;
     }
 
-    public static IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
+    public IReadOnlyList<DateTimeOffset> GetIncompleteHistoricalDays(
         DateTimeOffset startInclusive,
         DateTimeOffset endInclusive,
         CancellationToken cancellationToken = default)
@@ -107,7 +107,7 @@ internal static class CodexUsageReader
             cancellationToken);
     }
 
-    public static TokenUsageSummary ReadCachedRange(
+    public TokenUsageSummary ReadCachedRange(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -115,7 +115,7 @@ internal static class CodexUsageReader
         return UsageCacheStore.Load(CacheFolder).ReadRange(startLocal, endLocal, cancellationToken);
     }
 
-    public static IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
+    public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -123,12 +123,12 @@ internal static class CodexUsageReader
         return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal, cancellationToken);
     }
 
-    public static CodexQuotaEstimate? ReadQuotaEstimate(CancellationToken cancellationToken = default)
+    public CodexQuotaEstimate? ReadQuotaEstimate(CancellationToken cancellationToken = default)
     {
         return ReadQuotaEstimate(null, cancellationToken);
     }
 
-    public static CodexQuotaEstimate? ReadQuotaEstimate(
+    public CodexQuotaEstimate? ReadQuotaEstimate(
         CodexQuotaEstimate? establishedQuota,
         CancellationToken cancellationToken = default)
     {
@@ -190,7 +190,7 @@ internal static class CodexUsageReader
         return BuildQuotaEstimate(snapshot, now, cancellationToken: cancellationToken);
     }
 
-    public static CodexQuotaEstimate? ReadCachedQuotaEstimate(
+    public CodexQuotaEstimate? ReadCachedQuotaEstimate(
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -204,7 +204,7 @@ internal static class CodexUsageReader
         return BuildQuotaEstimate(snapshot, now, includeLiveToday: false, cancellationToken);
     }
 
-    private static CodexQuotaSnapshot? SelectLatestTrustedQuotaSnapshot(
+    private CodexQuotaSnapshot? SelectLatestTrustedQuotaSnapshot(
         DateTimeOffset now,
         CodexQuotaSnapshot? supplemental,
         CancellationToken cancellationToken)
@@ -234,7 +234,7 @@ internal static class CodexUsageReader
                candidateReset < establishedReset.AddMinutes(-10);
     }
 
-    public static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshots(
+    public IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshots(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal)
     {
@@ -243,7 +243,7 @@ internal static class CodexUsageReader
             .ToList();
     }
 
-    public static IReadOnlyList<CodexQuotaSnapshot> ReadCachedQuotaSnapshots(
+    public IReadOnlyList<CodexQuotaSnapshot> ReadCachedQuotaSnapshots(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -255,7 +255,7 @@ internal static class CodexUsageReader
             .ToList();
     }
 
-    public static IReadOnlyList<CodexQuotaSnapshot> ReadMaterializedQuotaTimeline(
+    public IReadOnlyList<CodexQuotaSnapshot> ReadMaterializedQuotaTimeline(
         IEnumerable<DateTimeOffset> anchors,
         IEnumerable<CodexQuotaSnapshot>? supplementalSnapshots = null,
         bool refreshExisting = false,
@@ -270,7 +270,7 @@ internal static class CodexUsageReader
     /// anchors or scanning session logs. Cached analysis views can use this
     /// path without queuing behind source-log backfill.
     /// </summary>
-    public static IReadOnlyList<CodexQuotaSnapshot> ReadCachedQuotaTimeline(
+    public IReadOnlyList<CodexQuotaSnapshot> ReadCachedQuotaTimeline(
         IEnumerable<DateTimeOffset> anchors,
         IEnumerable<CodexQuotaSnapshot>? supplementalSnapshots = null,
         CancellationToken cancellationToken = default)
@@ -279,7 +279,7 @@ internal static class CodexUsageReader
             persistMissing: false, cancellationToken);
     }
 
-    private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaTimeline(
+    private IReadOnlyList<CodexQuotaSnapshot> ReadQuotaTimeline(
         IEnumerable<DateTimeOffset> anchors,
         IEnumerable<CodexQuotaSnapshot>? supplementalSnapshots,
         bool refreshExisting,
@@ -351,7 +351,7 @@ internal static class CodexUsageReader
             .ToList();
     }
 
-    public static IReadOnlyList<DateTimeOffset> GetIncompleteQuotaTimelineDays(
+    public IReadOnlyList<DateTimeOffset> GetIncompleteQuotaTimelineDays(
         DateTimeOffset startInclusive,
         DateTimeOffset endInclusive,
         CancellationToken cancellationToken = default)
@@ -360,7 +360,7 @@ internal static class CodexUsageReader
             .GetIncompleteTimelineDays(startInclusive, endInclusive, cancellationToken);
     }
 
-    public static void WarmQuotaTimelineDay(
+    public void WarmQuotaTimelineDay(
         DateTimeOffset dayLocal,
         CancellationToken cancellationToken = default)
     {
@@ -378,7 +378,7 @@ internal static class CodexUsageReader
             cancellationToken: cancellationToken);
     }
 
-    public static IReadOnlyList<CodexQuotaSnapshot> ReadCachedAndHistoricalQuotaSnapshots(
+    public IReadOnlyList<CodexQuotaSnapshot> ReadCachedAndHistoricalQuotaSnapshots(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -397,7 +397,7 @@ internal static class CodexUsageReader
             .ToList();
     }
 
-    private static IReadOnlyList<CodexQuotaSnapshot> PrepareQuotaTimelineSources(
+    private IReadOnlyList<CodexQuotaSnapshot> PrepareQuotaTimelineSources(
         IEnumerable<CodexQuotaSnapshot> snapshots,
         CancellationToken cancellationToken = default)
     {
@@ -430,7 +430,7 @@ internal static class CodexUsageReader
             .ToList();
     }
 
-    private static MaterializedQuotaPoint MaterializeQuotaPoint(
+    private MaterializedQuotaPoint MaterializeQuotaPoint(
         DateTimeOffset anchor,
         QuotaTimelineSnapshotIndex allIndex,
         QuotaTimelineSnapshotIndex fiveHourIndex,
@@ -530,7 +530,7 @@ internal static class CodexUsageReader
         return Math.Max(0m, Math.Min(100m, value));
     }
 
-    public static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaHistoryQuotaSnapshots(
+    public IReadOnlyList<CodexQuotaSnapshot> ReadQuotaHistoryQuotaSnapshots(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -549,7 +549,7 @@ internal static class CodexUsageReader
             .ToList();
     }
 
-    public static IReadOnlyList<DateTimeOffset> GetIncompleteQuotaSnapshotDays(
+    public IReadOnlyList<DateTimeOffset> GetIncompleteQuotaSnapshotDays(
         DateTimeOffset startInclusive,
         DateTimeOffset endInclusive,
         CancellationToken cancellationToken = default)
@@ -561,7 +561,7 @@ internal static class CodexUsageReader
             cancellationToken);
     }
 
-    public static void WarmQuotaSnapshotDay(
+    public void WarmQuotaSnapshotDay(
         DateTimeOffset dayLocal,
         CancellationToken cancellationToken = default)
     {
@@ -580,7 +580,7 @@ internal static class CodexUsageReader
         WarmQuotaTimelineDay(dayStart.AddDays(1), cancellationToken);
     }
 
-    public static void WarmQuotaSnapshotDays(
+    public void WarmQuotaSnapshotDays(
         IEnumerable<DateTimeOffset> daysLocal,
         CancellationToken cancellationToken = default,
         Action<DateTimeOffset>? dayCompleted = null,
@@ -663,7 +663,7 @@ internal static class CodexUsageReader
         CodexQuotaCycleReader.InvalidateCache();
     }
 
-    private static IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsCached(
+    private IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsCached(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -815,7 +815,7 @@ internal static class CodexUsageReader
             ?.SnapshotLocal;
     }
 
-    private static QuotaSnapshotScanResult ReadQuotaSnapshotsUncached(
+    private QuotaSnapshotScanResult ReadQuotaSnapshotsUncached(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -979,7 +979,7 @@ internal static class CodexUsageReader
         return score;
     }
 
-    private static CodexQuotaEstimate BuildQuotaEstimate(
+    private CodexQuotaEstimate BuildQuotaEstimate(
         RateLimitSnapshot snapshot,
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
@@ -992,7 +992,7 @@ internal static class CodexUsageReader
             BuildQuotaWindowEstimate("1周", snapshot.Week, now, cancellationToken: cancellationToken));
     }
 
-    private static CodexQuotaEstimate BuildQuotaEstimate(
+    private CodexQuotaEstimate BuildQuotaEstimate(
         CodexQuotaSnapshot snapshot,
         DateTimeOffset now,
         bool includeLiveToday = true,
@@ -1026,7 +1026,7 @@ internal static class CodexUsageReader
             : new RateLimitWindowSnapshot(usedPercent.Value, windowMinutes, resetAtLocal);
     }
 
-    private static CodexQuotaWindowEstimate? BuildQuotaWindowEstimate(
+    private CodexQuotaWindowEstimate? BuildQuotaWindowEstimate(
         string label,
         RateLimitWindowSnapshot? snapshot,
         DateTimeOffset now,
@@ -1065,7 +1065,7 @@ internal static class CodexUsageReader
             estimatedTokenLimit);
     }
 
-    public static TokenUsageSummary ReadRangeFromDetailRows(
+    public TokenUsageSummary ReadRangeFromDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         bool includeLiveToday = true,
@@ -1109,7 +1109,7 @@ internal static class CodexUsageReader
         return summary;
     }
 
-    private static void AppendQuotaHistoryIfNew(RateLimitSnapshot snapshot)
+    private void AppendQuotaHistoryIfNew(RateLimitSnapshot snapshot)
     {
         try
         {
@@ -1160,7 +1160,7 @@ internal static class CodexUsageReader
         };
     }
 
-    private static void EnsureQuotaHistoryCacheLoaded(
+    private void EnsureQuotaHistoryCacheLoaded(
         string path,
         CancellationToken cancellationToken = default)
     {
@@ -1205,7 +1205,7 @@ internal static class CodexUsageReader
         }
     }
 
-    private static void ResetQuotaHistoryCache(string path)
+    private void ResetQuotaHistoryCache(string path)
     {
         QuotaHistorySnapshotCache.Clear();
         QuotaHistoryKeyCache.Clear();
@@ -1214,7 +1214,7 @@ internal static class CodexUsageReader
         quotaHistoryCachedWriteTimeUtc = default;
     }
 
-    private static void UpdateQuotaHistoryCacheFileState(string path)
+    private void UpdateQuotaHistoryCacheFileState(string path)
     {
         var info = new FileInfo(path);
         info.Refresh();
@@ -1230,12 +1230,12 @@ internal static class CodexUsageReader
             : limitId.Trim();
     }
 
-    private static string GetQuotaHistoryPath()
+    private string GetQuotaHistoryPath()
     {
         return Path.Combine(MonitorCachePaths.LocalAppData, CacheFolder, QuotaHistoryFileName);
     }
 
-    private static IReadOnlyList<RateLimitSnapshot> ReadQuotaHistorySnapshots(
+    private IReadOnlyList<RateLimitSnapshot> ReadQuotaHistorySnapshots(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -1313,7 +1313,7 @@ internal static class CodexUsageReader
         return new RateLimitWindowSnapshot(usedPercent!.Value, windowMinutes, resetAt);
     }
 
-    public static void WarmHistoricalDays(
+    public void WarmHistoricalDays(
         IEnumerable<DateTimeOffset> daysLocal,
         CancellationToken cancellationToken = default,
         Action<DateTimeOffset>? dayCompleted = null,
@@ -1424,7 +1424,7 @@ internal static class CodexUsageReader
         }
     }
 
-    public static TokenUsageSummary ReadRange(
+    public TokenUsageSummary ReadRange(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         bool includeLiveToday = true,
@@ -1624,7 +1624,7 @@ internal static class CodexUsageReader
         return summary;
     }
 
-    public static IReadOnlyList<TokenUsageBucket> ReadDetailRows(
+    public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         bool includeLiveToday = true,
@@ -1736,7 +1736,7 @@ internal static class CodexUsageReader
             : null;
     }
 
-    public static IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
+    public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -1747,7 +1747,7 @@ internal static class CodexUsageReader
         return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal, cancellationToken: cancellationToken).Events);
     }
 
-    private static UsageRangeScanResult ReadRangeUncached(
+    private UsageRangeScanResult ReadRangeUncached(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken)
@@ -1782,7 +1782,7 @@ internal static class CodexUsageReader
         return new UsageRangeScanResult(summary, isComplete);
     }
 
-    private static UsageEventScanResult ReadEventsUncached(
+    private UsageEventScanResult ReadEventsUncached(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         bool useLiveCursor = false,
@@ -1822,7 +1822,7 @@ internal static class CodexUsageReader
         return new UsageEventScanResult(UsageEventMerger.Merge(events).ToList(), isComplete);
     }
 
-    private static bool ReadEventFile(
+    private bool ReadEventFile(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
@@ -1861,7 +1861,7 @@ internal static class CodexUsageReader
         return true;
     }
 
-    private static bool ReadEventFileIncremental(
+    private bool ReadEventFileIncremental(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
@@ -1921,7 +1921,7 @@ internal static class CodexUsageReader
         return bucket;
     }
 
-    private static void AddScanRange(
+    private void AddScanRange(
         List<ScanRange> scanRanges,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
@@ -2013,7 +2013,7 @@ internal static class CodexUsageReader
         }
     }
 
-    private static IEnumerable<string> EnumerateJsonlFiles(
+    private IEnumerable<string> EnumerateJsonlFiles(
         string root,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal)
@@ -2056,7 +2056,7 @@ internal static class CodexUsageReader
         }
     }
 
-    private static IReadOnlyList<RateLimitSnapshot> ReadLatestRateLimitSnapshots(
+    private IReadOnlyList<RateLimitSnapshot> ReadLatestRateLimitSnapshots(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default)
@@ -2068,7 +2068,7 @@ internal static class CodexUsageReader
             .ToList();
     }
 
-    private static RateLimitScanResult ReadRateLimitSnapshots(
+    private RateLimitScanResult ReadRateLimitSnapshots(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         CancellationToken cancellationToken = default,
@@ -2145,7 +2145,7 @@ internal static class CodexUsageReader
         return new RateLimitScanResult(snapshots, isComplete);
     }
 
-    private static bool ReadRateLimitFileIncremental(
+    private bool ReadRateLimitFileIncremental(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
@@ -2182,7 +2182,7 @@ internal static class CodexUsageReader
         return startLocal >= StartOfDay(now) && endLocal <= now.AddMinutes(10);
     }
 
-    private static void ResetLiveFileCursors()
+    private void ResetLiveFileCursors()
     {
         UsageTailReader.Reset();
         QuotaTailReader.Reset();
@@ -2190,7 +2190,7 @@ internal static class CodexUsageReader
         QuotaReplayFilters.Clear();
     }
 
-    private static void PruneLiveFileState(DateTimeOffset startLocal, DateTimeOffset endLocal)
+    private void PruneLiveFileState(DateTimeOffset startLocal, DateTimeOffset endLocal)
     {
         if (!IsLiveRange(startLocal, endLocal))
         {
@@ -2207,7 +2207,7 @@ internal static class CodexUsageReader
         PruneReplayFiltersBeforeUtc(QuotaReplayFilters, cutoffUtc);
     }
 
-    private static void PruneReplayFiltersBeforeUtc(
+    private void PruneReplayFiltersBeforeUtc(
         ConcurrentDictionary<string, SubagentReplayFilter> filters,
         DateTime cutoffUtc)
     {

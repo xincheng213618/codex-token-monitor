@@ -331,7 +331,7 @@ public sealed class UsageCacheStoreTests
         cancellation.Cancel();
 
         Assert.Throws<OperationCanceledException>(() =>
-            CodexUsageReader.ReadCachedQuotaEstimate(cancellation.Token));
+            UsageSourceReaders.Codex.ReadCachedQuotaEstimate(cancellation.Token));
     }
 
     [Fact]
@@ -349,11 +349,11 @@ public sealed class UsageCacheStoreTests
                     historyPath,
                     "{\"snapshotLocal\":\"2026-07-16T02:00:00+08:00\",\"limitId\":\"codex\",\"limitName\":\"Codex\",\"fiveHour\":{\"usedPercent\":1,\"windowMinutes\":300,\"resetAtLocal\":\"2026-07-16T07:00:00+08:00\"},\"week\":{\"usedPercent\":12,\"windowMinutes\":10080,\"resetAtLocal\":\"2026-07-23T00:00:00+08:00\"}}\n");
 
-                Assert.Single(CodexUsageReader.ReadQuotaHistoryQuotaSnapshots(start, start.AddDays(1)));
-                CodexUsageReader.ClearCache();
+                Assert.Single(UsageSourceReaders.Codex.ReadQuotaHistoryQuotaSnapshots(start, start.AddDays(1)));
+                UsageSourceReaders.Codex.ClearCache();
 
                 Assert.False(File.Exists(historyPath));
-                Assert.Empty(CodexUsageReader.ReadQuotaHistoryQuotaSnapshots(start, start.AddDays(1)));
+                Assert.Empty(UsageSourceReaders.Codex.ReadQuotaHistoryQuotaSnapshots(start, start.AddDays(1)));
             }
         }
         finally

@@ -54,7 +54,7 @@ CodexTokenMonitor.slnx
 
 ### 2.2 Codex 日志读取（CodexUsageReader）
 
-输入是 `~/.codex/sessions`、`~/.codex/archived_sessions` 下的 JSONL 会话文件，从中提取 `token_count` 事件（时间戳、input、cached input、cache write input、output、reasoning output、total）。
+输入是 `~/.codex/sessions`、`~/.codex/archived_sessions` 下的 JSONL 会话文件，从中提取 `token_count` 事件（时间戳、input、cached input、cache write input、output、reasoning output、total）。`CodexUsageReader` 是实例类：尾读器游标、子代理过滤器与额度历史缓存随实例持有；进程级共享实例经 `UsageSourceReaders.Codex` 暴露（Registry 适配器注入同一实例），需要隔离的测试可构造独立实例。
 
 要点：
 

@@ -47,7 +47,7 @@ public sealed class ReaderCacheConsistencyTests
             // There are no local rollouts: these events came from another device.
             // Scanning source files instead of the complete cache loses both the
             // boundary-day counters and their model / Fast metadata.
-            var actual = CodexUsageReader.ReadRange(start.ToUniversalTime(), end.ToUniversalTime(), includeLiveToday: false);
+            var actual = UsageSourceReaders.Codex.ReadRange(start.ToUniversalTime(), end.ToUniversalTime(), includeLiveToday: false);
 
             Assert.Equal(expected.Length, actual.Events);
             Assert.Equal(expected.Sum(e => e.TotalTokens), actual.TotalTokens);
@@ -348,7 +348,7 @@ public sealed class ReaderCacheConsistencyTests
     {
         return source switch
         {
-            "Codex" => CodexUsageReader.ReadRange(startLocal, endLocal, includeLiveToday: false),
+            "Codex" => UsageSourceReaders.Codex.ReadRange(startLocal, endLocal, includeLiveToday: false),
             "Claude" => ClaudeUsageReader.ReadRange(startLocal, endLocal, includeLiveToday: false),
             "Dsh" => DshUsageReader.ReadRange(startLocal, endLocal, includeLiveToday: false),
             "WorkBuddy" => WorkBuddyUsageReader.ReadRange(startLocal, endLocal, includeLiveToday: false),

@@ -196,7 +196,7 @@ internal static class QuotaEstimateCalculator
         var endUsedThreshold = 100m - toRemaining;
         var resetAt = week.ResetAtLocal ?? week.WindowEndLocal;
         var snapshots = CodexQuotaCycleReader.RemoveTransientResetOutliers(
-            CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(
+            UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(
                 week.WindowStartLocal,
                 week.WindowEndLocal.AddMinutes(1),
                 cancellationToken)
@@ -246,7 +246,7 @@ internal static class QuotaEstimateCalculator
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        var usage = CodexUsageReader.ReadCachedRange(
+        var usage = UsageSourceReaders.Codex.ReadCachedRange(
             start.SnapshotLocal,
             end.SnapshotLocal,
             cancellationToken);
@@ -278,7 +278,7 @@ internal static class QuotaEstimateCalculator
         }
 
         var snapshots = CodexQuotaCycleReader.RemoveTransientResetOutliers(
-            CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(
+            UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(
                     window.WindowStartLocal,
                     window.WindowEndLocal.AddMinutes(1),
                     cancellationToken)
@@ -366,7 +366,7 @@ internal static class QuotaEstimateCalculator
             return null;
         }
 
-        var usage = CodexUsageReader.ReadCachedRange(candidate.Snapshot.SnapshotLocal, current.SnapshotLocal);
+        var usage = UsageSourceReaders.Codex.ReadCachedRange(candidate.Snapshot.SnapshotLocal, current.SnapshotLocal);
         var modelCost = CodexModelCost.Estimate(usage);
         var usedCost = modelCost.QuotaEquivalentCost;
         var estimatedLimit = QuotaMath.EstimateLimit(usedCost, candidate.UsedDeltaPercent);

@@ -70,7 +70,7 @@ internal sealed class QuotaCycleAnalysisQueryService(
     private sealed class DefaultSource : IQuotaCycleAnalysisSource
     {
         public IReadOnlyList<CodexQuotaSnapshot> ReadSnapshots(DateTimeOffset start, DateTimeOffset end, CancellationToken token) =>
-            CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(start, end, token);
+            UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(start, end, token);
 
         public QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek, CancellationToken token) =>
             QuotaCycleAnalysisCalculator.Build(period, currentWeek, token);

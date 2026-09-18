@@ -37,16 +37,16 @@ public sealed class QuotaCachedQueryTests
         var anchors = new[] { Day.AddHours(9), Day.AddHours(9).AddMinutes(30), Day.AddHours(10) };
         using var operation = CacheOperationDiagnostics.Begin();
 
-        var readOnly = CodexUsageReader.ReadCachedQuotaTimeline(anchors);
+        var readOnly = UsageSourceReaders.Codex.ReadCachedQuotaTimeline(anchors);
 
         Assert.Equal(3, readOnly.Count);
         Assert.Equal(20m, readOnly[1].FiveHourUsedPercent);
         Assert.Equal(40m, readOnly[1].WeekUsedPercent);
         Assert.Empty(cache.GetTimelineSnapshots(Day, Day.AddDays(1)));
-        var materialized = CodexUsageReader.ReadMaterializedQuotaTimeline(anchors);
+        var materialized = UsageSourceReaders.Codex.ReadMaterializedQuotaTimeline(anchors);
         Assert.Equal(readOnly, materialized);
         Assert.Equal(materialized, cache.GetTimelineSnapshots(Day, Day.AddDays(1)));
-        Assert.Equal(materialized, CodexUsageReader.ReadCachedQuotaTimeline(anchors));
+        Assert.Equal(materialized, UsageSourceReaders.Codex.ReadCachedQuotaTimeline(anchors));
         Assert.Empty(operation.Warnings);
     }
 
@@ -58,7 +58,7 @@ public sealed class QuotaCachedQueryTests
         var supplemental = new[] { Snapshot(Day.AddHours(9), 10, 30), Snapshot(Day.AddHours(10), 30, 50) };
         var anchor = Day.AddHours(9).AddMinutes(30);
 
-        var result = CodexUsageReader.ReadCachedQuotaTimeline(new[] { anchor }, supplemental);
+        var result = UsageSourceReaders.Codex.ReadCachedQuotaTimeline(new[] { anchor }, supplemental);
 
         Assert.Equal(40m, Assert.Single(result).WeekUsedPercent);
         Assert.Empty(cache.GetSnapshots(Day, Day.AddDays(1)));

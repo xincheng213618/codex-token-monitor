@@ -1,6 +1,6 @@
 # 架构基线与迭代路线
 
-检查日期：2026-09-12，2026-09-18 增补第八轮。基于当前代码及隔离测试，记录本轮已落地的边界和后续工作。
+检查日期：2026-09-12，2026-09-18 增补第八、九轮。基于当前代码及隔离测试，记录本轮已落地的边界和后续工作。
 
 ## 判断
 
@@ -143,14 +143,30 @@
 
 测试：`UiEventSuppressorTests` 覆盖基本抑制、嵌套释放顺序、重复释放、异常路径释放、孤儿作用域不能解除新作用域、并行作用域计数线程安全共 6 项。
 
+### 第九轮：Codex 来源读取去静态化
+
+`CodexUsageReader` 原是静态类，进程内共享尾读器游标、子代理过滤器字典和额度历史缓存，测试隔离只能依赖 `AsyncLocal` 路径作用域，且字典按文件路径无限累积。第九轮把它改为实例类：
+
+- 55 个有状态成员（`UsageTailReader`/`QuotaTailReader`、两组 `SubagentReplayFilter` 字典、额度历史缓存及其同步锁、全部读取/预热/补扫入口）改为实例成员；纯 JSON 解析与归一化辅助（`NormalizeQuotaSnapshotWindows`、`TryRead*`、`ClassifyRateLimitWindows` 等）保持静态。
+- `UsageSourceReaders` 持有进程级共享实例并暴露 `UsageSourceReaders.Codex`；`CodexUsageSourceReader` 适配器改为构造注入该实例。原直接静态调用的生产代码（`QuotaEstimateCalculator`、`UsageQueryService`、`QuotaSnapshotCacheStore`、`BackgroundCacheWarmer`、`MainWindow.DataSharing` 等 17 处）改走 `UsageSourceReaders.Codex`，与适配器指向同一实例，行为不变。
+- 测试改走 `UsageSourceReaders.Codex`（保持共享语义）；需要隔离的测试可以 `new CodexUsageReader()` 获得独立游标与过滤器，不再依赖全局状态。
+- `DshUsageReader.OverrideSessionsRoot`（最后一个 reader 级全局测试覆盖属性）删除，DSH 测试改用 `UsageLogPaths.PushRoot`，与第五轮其他 reader 的处理一致。
+- `CodexQuotaCycleReader` 仍有单条目 2 分钟周期缓存（有界备忘缓存），留待后续轮次；`MonitorCachePaths`/`UsageLogPaths` 的 `AsyncLocal` 作用域继续承担日志与缓存路径隔离，不是可移除项。
+
+测试期观察到一次偶发 `MonitorSettingsStoreRecoveryTests` 失败（`ObjectDisposedException`，Microsoft.Data.Sqlite 连接池在并行测试下的句柄竞态），单类重跑与全量重跑均通过；疑似与 monitor-settings 低频路径的 `Pooling=true` 有关，列入后续优先级。
+
+测试：Core 回归 553/553（本轮不改测试语义，替换调用目标）。
+
+第九轮（2026-09-18/19）验证：Core 回归 **553/553 通过，0 跳过**，Release 构建 **0 警告、0 错误**；桌面回归三组全部通过（主窗口 46 项检查、8 张渲染，设置 10 项、11 张渲染，分析 9 项、4 张渲染），报告在 `artifacts/desktop-probes/20260919-005227-*/desktop-regression.json`。`DshUsageReaderTests` 全量通过，确认路径作用域迁移等价；`ReaderCacheConsistencyTests` 在共享实例语义下继续约束缓存一致性。
+
 ## 后续优先级
 
 | 优先级 | 现有证据 | 下一步及验收条件 |
 | --- | --- | --- |
-| ~~P2：可复用桌面回归~~（已完成） | STA 探针正式化为 `tests/CodexTokenMonitor.Wpf.Probes`，`Scripts/Test-Desktop.ps1` 串行驱动三组隔离进程，`desktop-regression.yml` 可按套件触发并上传 JSON/PNG | 无遗留 |
-| 按迭代：来源读取去静态化 | `CodexUsageReader` 仍持静态尾读器、子代理过滤器字典与额度历史缓存，测试隔离依赖 `AsyncLocal` 路径作用域 | `UsageSourceRegistry` 持有实例 Reader，路径随实例走；验收为删除 reader 内静态可变状态后 553 项 Core 测试与三组桌面回归全部保持 |
-| 按功能迭代：来源扩展 | 来源定义和 Tab 已统一，Core 查询与 WPF 页面工厂分离 | 新来源分别注册读取能力和桌面页面，保持价格 JSON 字段与来源枚举的兼容迁移约定 |
+| ~~来源读取去静态化~~（Codex/DSH 已完成） | `CodexUsageReader` 实例化，共享实例经 `UsageSourceReaders.Codex` 暴露；DSH 全局测试覆盖属性已删 | 剩余 `CodexQuotaCycleReader` 的单条目周期缓存改实例持有（挂在 Codex reader 上）；验收同前 |
+| 测试稳定性：SQLite 连接池竞态 | 一次偶发 `ObjectDisposedException`（`MonitorSettingsDatabase.OpenConnection`，池化句柄），重跑即绿 | 复现或收紧：monitor-settings 低频路径评估 `Pooling=false` 或升级 Microsoft.Data.Sqlite 补丁；验收为连续 20 次全量回归 0 失败 |
 | 按功能迭代：额度和设置显示 | 主统计与每来源页面状态已独立；额度/设置摘要仍是窗口适配代码 | 随相关需求提取有状态契约的部分，继续保留图表和控件适配职责，不以 partial 文件数量或全面 MVVM 作为完成标准 |
+| 按功能迭代：来源扩展 | 来源定义和 Tab 已统一，Core 查询与 WPF 页面工厂分离 | 新来源分别注册读取能力和桌面页面，保持价格 JSON 字段与来源枚举的兼容迁移约定 |
 
 不以文件行数减少作为架构完成标准。每一轮应有一个清楚的责任边界、行为测试和运行验证；不要把分成多个 partial 文件当作已经解除耦合。
 

@@ -254,7 +254,7 @@ public sealed class QuotaSnapshotLookupTests
         {
             using (var lockStream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.None))
             {
-                CodexUsageReader.WarmQuotaSnapshotDay(dayStart);
+                UsageSourceReaders.Codex.WarmQuotaSnapshotDay(dayStart);
             }
 
             var cache = QuotaSnapshotCacheStore.Load("CodexTokenMonitor");

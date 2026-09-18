@@ -4,6 +4,7 @@
 
 ## 2026-09-18
 
+- Codex 读取器去静态化：`CodexUsageReader` 改为实例类，尾读器游标、子代理过滤器和额度历史缓存随实例持有；进程级共享实例经 `UsageSourceReaders.Codex` 暴露，读取行为与缓存语义不变。删除最后一个 reader 级全局测试覆盖属性 `DshUsageReader.OverrideSessionsRoot`，DSH 测试改用路径作用域。需要隔离的测试可直接构造独立读取器实例。
 - 主界面用统一的 `UiEventSuppressor` 程序化更新抑制边界替换原来散落的 5 个 `suppress*` 布尔和 `initializing` 标志：控件镜像赋值改为 `using` 作用域，异常时自动释放，不再可能出现"标志卡死导致刷新入口失效"；作用域可嵌套、防重复释放，配 6 项行为测试。桌面探针同步改用按窗口持有的抑制域，主/设置/分析三组回归全部通过。
 
 ## 2026-09-17

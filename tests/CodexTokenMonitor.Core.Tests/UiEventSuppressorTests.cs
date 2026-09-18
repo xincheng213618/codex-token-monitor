@@ -78,7 +78,7 @@ public sealed class UiEventSuppressorTests
     }
 
     [Fact]
-    public void ParallelScopes_CountIsThreadSafe()
+    public async Task ParallelScopes_CountIsThreadSafe()
     {
         var suppressor = new UiEventSuppressor();
         const int parallelScopes = 64;
@@ -92,7 +92,7 @@ public sealed class UiEventSuppressorTests
 
         // Every scope is open while the tasks wait; release them together.
         started.SetResult();
-        Task.WaitAll(tasks);
+        await Task.WhenAll(tasks);
 
         Assert.False(suppressor.IsSuppressing);
     }

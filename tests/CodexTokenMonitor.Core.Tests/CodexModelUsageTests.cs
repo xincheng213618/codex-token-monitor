@@ -26,7 +26,7 @@ public sealed class CodexModelUsageTests
         using var env = new EnvironmentScope();
         env.Write(Context(Day, "gpt-5.6-sol"),
             """{"type":"session_meta","payload":{"id":"a"}}""", Token(Day.AddHours(1), "repeated-meta"));
-        CodexUsageReader.WarmHistoricalDays(new[] { Day });
+        UsageSourceReaders.Codex.WarmHistoricalDays(new[] { Day });
         Assert.Equal("gpt-5.6-sol", Assert.Single(UsageCacheStore.Load().GetAllDetailEvents()).ModelId);
         Assert.True(CodexModelCost.Estimate(UsageCacheStore.Load().ReadRange(Day, Day.AddDays(1))).IsComplete);
     }
@@ -207,7 +207,7 @@ public sealed class CodexModelUsageTests
         env.Write(Context(Day.AddMinutes(-1), "gpt-5.6-sol"), Tier(Day.AddSeconds(-1), "priority"),
             """{"type":"session_meta","payload":{"id":"same"}}""", Token(Day.AddHours(1), "fast"),
             Tier(Day.AddHours(2), "default"), Token(Day.AddHours(3), "normal"));
-        CodexUsageReader.WarmHistoricalDays(new[] { Day });
+        UsageSourceReaders.Codex.WarmHistoricalDays(new[] { Day });
         var cache = UsageCacheStore.Load();
         foreach (var events in new[] { cache.GetAllDetailEvents(), cache.GetDetailEvents(DateOnly.FromDateTime(Day.DateTime)),
             cache.GetDetailEvents(Day, Day.AddDays(1)), cache.EnumerateDetailEvents(null, null).ToArray() })
@@ -313,9 +313,9 @@ public sealed class CodexModelUsageTests
             Context(Day.AddHours(2), "gpt-5.6-luna"),
             Token(Day.AddHours(2), "b"),
             Token(Day.AddHours(3), "c", "gpt-6-astra"));
-        var scanned = CodexUsageReader.ReadTransientDetailRows(Day, Day.AddDays(1));
+        var scanned = UsageSourceReaders.Codex.ReadTransientDetailRows(Day, Day.AddDays(1));
         Assert.Equal(new[] { "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra" }, scanned.Select(b => Assert.Single(b.ModelUsage).Key));
-        CodexUsageReader.WarmHistoricalDays(new[] { Day });
+        UsageSourceReaders.Codex.WarmHistoricalDays(new[] { Day });
         var cache = UsageCacheStore.Load();
         var events = cache.GetAllDetailEvents();
         Assert.Equal(3, events.Count);
@@ -351,16 +351,16 @@ public sealed class CodexModelUsageTests
         var first = start.AddTicks((now - start).Ticks / 3);
         var second = start.AddTicks((now - start).Ticks * 2 / 3);
         env.Write(Context(start, "gpt-5.6-sol"), Token(first, "first"));
-        var initial = CodexUsageReader.ReadDetailRows(start, now);
+        var initial = UsageSourceReaders.Codex.ReadDetailRows(start, now);
         Assert.Equal("gpt-5.6-sol", Assert.Single(Assert.Single(initial).ModelUsage).Key);
         File.AppendAllLines(env.Log, new[] { Settings(second, "gpt-5.6-luna"),
             """{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}""", Token(second, "second") });
-        var appended = CodexUsageReader.ReadDetailRows(start, BeijingClock.Now);
+        var appended = UsageSourceReaders.Codex.ReadDetailRows(start, BeijingClock.Now);
         Assert.Equal(2, appended.Count);
         Assert.Equal("gpt-5.6-luna", Assert.Single(appended.Last().ModelUsage).Key);
         Assert.Equal(1, CodexModelCost.Estimate(appended.Last()).FastEvents);
         env.Write(Token(second.AddTicks(1), "replacement"));
-        var replacement = CodexUsageReader.ReadDetailRows(start, BeijingClock.Now);
+        var replacement = UsageSourceReaders.Codex.ReadDetailRows(start, BeijingClock.Now);
         Assert.Contains(replacement, b => b.ModelUsage.Count == 0);
     }
 

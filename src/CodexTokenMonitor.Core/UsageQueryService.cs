@@ -279,7 +279,7 @@ internal sealed class CodexUsageQuotaReader : IUsageQuotaReader
         cancellationToken.ThrowIfCancellationRequested();
         // quota-history-v2.jsonl belongs to this application's persisted cache.
         // This path reads cached usage for the window estimates, never sessions.
-        return CodexUsageReader.ReadCachedQuotaEstimate(cancellationToken);
+        return UsageSourceReaders.Codex.ReadCachedQuotaEstimate(cancellationToken);
     }
 
     public IReadOnlyList<CodexQuotaSnapshot> ReadCachedTimeline(
@@ -289,7 +289,7 @@ internal sealed class CodexUsageQuotaReader : IUsageQuotaReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         // Missing anchors are derived only from application-owned quota caches.
-        return CodexUsageReader.ReadMaterializedQuotaTimeline(
+        return UsageSourceReaders.Codex.ReadMaterializedQuotaTimeline(
             anchors, supplementalSnapshots, refreshExisting: false, cancellationToken: cancellationToken);
     }
 }

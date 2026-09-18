@@ -26,7 +26,7 @@ internal static class QuotaCostCurveCalculator
 
             // The estimate window visualizes the statistics already shown by the
             // main window. It must not wait behind or restart raw-log backfill.
-            var usageRows = CodexUsageReader.ReadCachedDetailRows(
+            var usageRows = UsageSourceReaders.Codex.ReadCachedDetailRows(
                 period.PeriodStart, end, cancellationToken);
 
             usageRows = usageRows
@@ -38,7 +38,7 @@ internal static class QuotaCostCurveCalculator
                 continue;
             }
 
-            var timeline = CodexUsageReader.ReadCachedQuotaTimeline(
+            var timeline = UsageSourceReaders.Codex.ReadCachedQuotaTimeline(
                     usageRows.Select(item => item.StartLocal),
                     cancellationToken: cancellationToken)
                 .Where(item =>

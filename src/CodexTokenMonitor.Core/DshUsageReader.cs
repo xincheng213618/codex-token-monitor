@@ -49,8 +49,6 @@ internal static class DshUsageReader
     private const byte ZstdMagic3 = 0xFD;
 
     /// <summary>Test seam: overrides the sessions root instead of the user profile.</summary>
-    internal static string? OverrideSessionsRoot { get; set; }
-
     public static bool ClearCache()
     {
         return UsageCacheStore.Delete(CacheFolder);
@@ -448,7 +446,7 @@ internal static class DshUsageReader
 
     private static IEnumerable<string> EnumerateTranscriptFiles(DateTimeOffset startLocal)
     {
-        var sessionsRoot = UsageLogPaths.GetOverrideRoot(UsageSource.Dsh) ?? OverrideSessionsRoot ??
+        var sessionsRoot = UsageLogPaths.GetOverrideRoot(UsageSource.Dsh) ??
                            Path.Combine(
                                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                                SessionsRootName,

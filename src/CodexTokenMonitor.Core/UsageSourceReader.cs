@@ -19,16 +19,21 @@ internal interface IUsageSourceReader : IUsageQuery, IUsageCacheMaintenance { }
 
 internal static class UsageSourceReaders
 {
+    private static readonly Lazy<CodexUsageReader> SharedCodexReader = new(() => new CodexUsageReader());
+
+    /// <summary>The process-wide Codex reader backing the registry singleton.</summary>
+    internal static CodexUsageReader Codex => SharedCodexReader.Value;
+
     public static IReadOnlyList<IUsageSourceReader> All => UsageSourceRegistry.Readers;
     public static IUsageSourceReader For(UsageSource source) => UsageSourceRegistry.For(source).Reader;
 
-    internal static IUsageSourceReader CreateCodexReader() => new CodexUsageSourceReader();
+    internal static IUsageSourceReader CreateCodexReader() => new CodexUsageSourceReader(SharedCodexReader.Value);
     internal static IUsageSourceReader CreateClaudeCodeReader() => new ClaudeCodeUsageSourceReader();
     internal static IUsageSourceReader CreateZCodeReader() => new ZCodeUsageSourceReader();
     internal static IUsageSourceReader CreateWorkBuddyReader() => new WorkBuddyUsageSourceReader();
     internal static IUsageSourceReader CreateDshReader() => new DshUsageSourceReader();
 
-    private sealed class CodexUsageSourceReader : IUsageSourceReader
+    private sealed class CodexUsageSourceReader(CodexUsageReader reader) : IUsageSourceReader
     {
         public UsageSource Source => UsageSource.Codex;
         public string Title => UsageSourceRegistry.For(Source).Title;
@@ -36,21 +41,21 @@ internal static class UsageSourceReaders
 
         public bool ClearCache()
         {
-            return CodexUsageReader.ClearCache();
+            return reader.ClearCache();
         }
 
         public bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var deleted = CodexUsageReader.ClearCachedDay(date);
+            var deleted = reader.ClearCachedDay(date);
             var dayStart = StartOfDay(date);
-            _ = CodexUsageReader.ReadDetailRows(
+            _ = reader.ReadDetailRows(
                 dayStart,
                 EndForRefresh(dayStart),
                 includeLiveToday: true,
                 cancellationToken: cancellationToken);
-            CodexUsageReader.WarmQuotaSnapshotDay(dayStart, cancellationToken);
-            CodexUsageReader.WarmQuotaTimelineDay(dayStart, cancellationToken);
+            reader.WarmQuotaSnapshotDay(dayStart, cancellationToken);
+            reader.WarmQuotaTimelineDay(dayStart, cancellationToken);
             return deleted;
         }
 
@@ -59,7 +64,7 @@ internal static class UsageSourceReaders
             DateTimeOffset endInclusive,
             CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.GetIncompleteHistoricalDays(startInclusive, endInclusive, cancellationToken);
+            return reader.GetIncompleteHistoricalDays(startInclusive, endInclusive, cancellationToken);
         }
 
         public TokenUsageSummary ReadRange(
@@ -68,7 +73,7 @@ internal static class UsageSourceReaders
             bool includeLiveToday,
             CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadRange(startLocal, endLocal, includeLiveToday, cancellationToken);
+            return reader.ReadRange(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
         public TokenUsageSummary ReadCachedRange(
@@ -76,7 +81,7 @@ internal static class UsageSourceReaders
             DateTimeOffset endLocal,
             CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
+            return reader.ReadCachedRange(startLocal, endLocal, cancellationToken);
         }
 
         public IReadOnlyList<TokenUsageBucket> ReadCachedDetailRows(
@@ -84,7 +89,7 @@ internal static class UsageSourceReaders
             DateTimeOffset endLocal,
             CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
+            return reader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
         }
 
         public IReadOnlyList<TokenUsageBucket> ReadDetailRows(
@@ -93,7 +98,7 @@ internal static class UsageSourceReaders
             bool includeLiveToday,
             CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken);
+            return reader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken);
         }
 
         public IReadOnlyList<TokenUsageBucket> ReadTransientDetailRows(
@@ -101,7 +106,7 @@ internal static class UsageSourceReaders
             DateTimeOffset endLocal,
             CancellationToken cancellationToken = default)
         {
-            return CodexUsageReader.ReadTransientDetailRows(startLocal, endLocal, cancellationToken);
+            return reader.ReadTransientDetailRows(startLocal, endLocal, cancellationToken);
         }
 
         public DailyUsageSnapshot ReadDay(
@@ -111,11 +116,11 @@ internal static class UsageSourceReaders
             CancellationToken cancellationToken = default)
         {
             var rows = includeLiveToday
-                ? CodexUsageReader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken)
-                : CodexUsageReader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
+                ? reader.ReadDetailRows(startLocal, endLocal, includeLiveToday, cancellationToken)
+                : reader.ReadCachedDetailRows(startLocal, endLocal, cancellationToken);
             var summary = includeLiveToday
                 ? CreateSummaryFromRows(startLocal, endLocal, rows)
-                : CodexUsageReader.ReadCachedRange(startLocal, endLocal, cancellationToken);
+                : reader.ReadCachedRange(startLocal, endLocal, cancellationToken);
             return new DailyUsageSnapshot(summary, rows);
         }
 
@@ -130,7 +135,7 @@ internal static class UsageSourceReaders
             Action<DateTimeOffset>? dayCompleted = null,
             Action<int, int>? fileProgress = null)
         {
-            CodexUsageReader.WarmHistoricalDays(daysLocal, cancellationToken, dayCompleted, fileProgress);
+            reader.WarmHistoricalDays(daysLocal, cancellationToken, dayCompleted, fileProgress);
         }
     }
 

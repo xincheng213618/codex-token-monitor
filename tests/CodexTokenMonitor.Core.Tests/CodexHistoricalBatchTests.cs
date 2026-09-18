@@ -26,7 +26,7 @@ public sealed class CodexHistoricalBatchTests
         var completed = new List<DateTimeOffset>();
         var progress = new List<(int Completed, int Total)>();
 
-        CodexUsageReader.WarmHistoricalDays(
+        UsageSourceReaders.Codex.WarmHistoricalDays(
             new[] { FirstDay.ToUniversalTime(), laterDay, emptyDay, FirstDay },
             dayCompleted: completed.Add,
             fileProgress: (count, total) => progress.Add((count, total)));
@@ -44,7 +44,7 @@ public sealed class CodexHistoricalBatchTests
         // source again or add either local duplicates or imported data twice.
         var repeatedProgress = new List<(int Completed, int Total)>();
         var repeatedCompleted = new List<DateTimeOffset>();
-        CodexUsageReader.WarmHistoricalDays(new[] { FirstDay, laterDay, emptyDay },
+        UsageSourceReaders.Codex.WarmHistoricalDays(new[] { FirstDay, laterDay, emptyDay },
             dayCompleted: repeatedCompleted.Add,
             fileProgress: (count, total) => repeatedProgress.Add((count, total)));
         Assert.Empty(repeatedProgress);
@@ -62,11 +62,11 @@ public sealed class CodexHistoricalBatchTests
         using var locked = new FileStream(lockedPath, FileMode.Open, FileAccess.Read, FileShare.None);
         var completed = new List<DateTimeOffset>();
 
-        CodexUsageReader.WarmHistoricalDays(new[] { FirstDay, FirstDay.AddDays(1) },
+        UsageSourceReaders.Codex.WarmHistoricalDays(new[] { FirstDay, FirstDay.AddDays(1) },
             dayCompleted: completed.Add);
 
         Assert.Empty(completed);
-        Assert.Equal(2, CodexUsageReader.GetIncompleteHistoricalDays(FirstDay, FirstDay.AddDays(1)).Count);
+        Assert.Equal(2, UsageSourceReaders.Codex.GetIncompleteHistoricalDays(FirstDay, FirstDay.AddDays(1)).Count);
         var retained = environment.Cache.GetDetailEvents(DateOnly.FromDateTime(FirstDay.DateTime));
         Assert.Equal("codex:available", Assert.Single(retained).Key);
     }
@@ -80,7 +80,7 @@ public sealed class CodexHistoricalBatchTests
         using var cancellation = new CancellationTokenSource();
         var completed = new List<DateTimeOffset>();
 
-        Assert.Throws<OperationCanceledException>(() => CodexUsageReader.WarmHistoricalDays(
+        Assert.Throws<OperationCanceledException>(() => UsageSourceReaders.Codex.WarmHistoricalDays(
             new[] { FirstDay, FirstDay.AddDays(1) }, cancellation.Token, completed.Add,
             (count, _) =>
             {
@@ -104,12 +104,12 @@ public sealed class CodexHistoricalBatchTests
             Event(FirstDay, "first", 100), Event(laterDay, "second", 200));
         using var cancellation = new CancellationTokenSource();
 
-        Assert.Throws<OperationCanceledException>(() => CodexUsageReader.WarmHistoricalDays(
+        Assert.Throws<OperationCanceledException>(() => UsageSourceReaders.Codex.WarmHistoricalDays(
             new[] { FirstDay, laterDay }, cancellation.Token, _ => cancellation.Cancel()));
 
         AssertDay(environment.Cache, laterDay, 1, 210);
         Assert.False(environment.Cache.TryGetRecord(DateOnly.FromDateTime(FirstDay.DateTime), out _));
-        CodexUsageReader.WarmHistoricalDays(CodexUsageReader.GetIncompleteHistoricalDays(FirstDay, laterDay));
+        UsageSourceReaders.Codex.WarmHistoricalDays(UsageSourceReaders.Codex.GetIncompleteHistoricalDays(FirstDay, laterDay));
         AssertDay(environment.Cache, FirstDay, 1, 110);
         AssertDay(environment.Cache, laterDay, 1, 210);
     }
@@ -124,14 +124,14 @@ public sealed class CodexHistoricalBatchTests
             scannedThroughLocal: FirstDay.AddDays(1).AddTicks(-1));
         var completed = new List<DateTimeOffset>();
 
-        CodexUsageReader.WarmHistoricalDays(new[] { FirstDay }, dayCompleted: completed.Add);
+        UsageSourceReaders.Codex.WarmHistoricalDays(new[] { FirstDay }, dayCompleted: completed.Add);
 
         Assert.Empty(completed);
         Assert.True(environment.Cache.TryGetRecord(DateOnly.FromDateTime(FirstDay.DateTime), out var record));
         Assert.Equal(110, record.TotalTokens);
         Assert.Equal(1, record.Events);
         Assert.False(record.IsComplete);
-        Assert.Single(CodexUsageReader.GetIncompleteHistoricalDays(FirstDay, FirstDay));
+        Assert.Single(UsageSourceReaders.Codex.GetIncompleteHistoricalDays(FirstDay, FirstDay));
     }
 
     [Fact]
@@ -142,7 +142,7 @@ public sealed class CodexHistoricalBatchTests
         var today = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, Beijing);
         var completed = new List<DateTimeOffset>();
 
-        CodexUsageReader.WarmHistoricalDays(new[] { today, today.AddDays(1) }, dayCompleted: completed.Add);
+        UsageSourceReaders.Codex.WarmHistoricalDays(new[] { today, today.AddDays(1) }, dayCompleted: completed.Add);
 
         Assert.Empty(completed);
         Assert.False(environment.Cache.TryGetRecord(DateOnly.FromDateTime(today.DateTime), out _));

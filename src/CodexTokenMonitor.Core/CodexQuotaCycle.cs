@@ -69,7 +69,7 @@ internal static class CodexQuotaCycleReader
             }
         }
 
-        var snapshots = CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(
+        var snapshots = UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(
                 DefaultStart,
                 now.AddMinutes(1),
                 cancellationToken)

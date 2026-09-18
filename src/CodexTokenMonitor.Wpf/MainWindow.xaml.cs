@@ -801,9 +801,9 @@ public partial class MainWindow : Window
                 (cachedQuota, quota, quotaWarnings) = await Task.Run(() =>
                 {
                     using var diagnostics = CacheOperationDiagnostics.Begin();
-                    var cached = FreshQuotaOrNull(CodexUsageReader.ReadCachedQuotaEstimate(runtime.LifetimeToken));
+                    var cached = FreshQuotaOrNull(UsageSourceReaders.Codex.ReadCachedQuotaEstimate(runtime.LifetimeToken));
                     var establishedQuota = LatestFreshQuota(previousQuota, cached);
-                    var current = CodexUsageReader.ReadQuotaEstimate(establishedQuota, runtime.LifetimeToken);
+                    var current = UsageSourceReaders.Codex.ReadQuotaEstimate(establishedQuota, runtime.LifetimeToken);
                     return (cached, current, diagnostics.Warnings);
                 }, runtime.LifetimeToken);
             }

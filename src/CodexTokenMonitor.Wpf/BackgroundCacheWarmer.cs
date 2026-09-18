@@ -255,13 +255,13 @@ internal sealed class BackgroundCacheWarmer : IDisposable
                         .GetIncompleteHistoricalDays(BackgroundCacheStart, lastHistoricalDay, token)
                         .Select(day => DateOnly.FromDateTime(day.DateTime))
                         .ToHashSet());
-                var pendingQuota = CodexUsageReader.GetIncompleteQuotaSnapshotDays(
+                var pendingQuota = UsageSourceReaders.Codex.GetIncompleteQuotaSnapshotDays(
                         BackgroundCacheStart,
                         lastHistoricalDay,
                         token)
                     .Select(day => DateOnly.FromDateTime(day.DateTime))
                     .ToHashSet();
-                var pendingTimeline = CodexUsageReader.GetIncompleteQuotaTimelineDays(
+                var pendingTimeline = UsageSourceReaders.Codex.GetIncompleteQuotaTimelineDays(
                         BackgroundCacheStart,
                         lastHistoricalDay,
                         token)
@@ -364,7 +364,7 @@ internal sealed class BackgroundCacheWarmer : IDisposable
         await WaitForForegroundAsync(token);
         PublishTask(CodexQuotaKey, $"Codex 额度合并扫描 {days.Count} 天");
         var progressClock = Stopwatch.StartNew();
-        await RunExclusiveAsync(() => CodexUsageReader.WarmQuotaSnapshotDays(
+        await RunExclusiveAsync(() => UsageSourceReaders.Codex.WarmQuotaSnapshotDays(
             days, token,
             day => DispatchStatus(() =>
             {
@@ -392,8 +392,8 @@ internal sealed class BackgroundCacheWarmer : IDisposable
         {
             await WaitForForegroundAsync(token);
             PublishTask(CodexTimelineKey, $"Codex 额度曲线 {day:yyyy-MM-dd}");
-            await RunExclusiveAsync(() => CodexUsageReader.WarmQuotaTimelineDay(day, token), token);
-            if (CodexUsageReader.GetIncompleteQuotaTimelineDays(day, day, token).Count == 0)
+            await RunExclusiveAsync(() => UsageSourceReaders.Codex.WarmQuotaTimelineDay(day, token), token);
+            if (UsageSourceReaders.Codex.GetIncompleteQuotaTimelineDays(day, day, token).Count == 0)
             {
                 MarkCompleted(CodexTimelineKey);
             }

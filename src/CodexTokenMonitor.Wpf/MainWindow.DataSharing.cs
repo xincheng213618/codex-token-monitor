@@ -208,11 +208,11 @@ public partial class MainWindow
                     .ToArray();
                 if (days.Length > 0)
                 {
-                    CodexUsageReader.WarmHistoricalDays(days, cancellationToken);
-                    CodexUsageReader.WarmQuotaSnapshotDays(days, cancellationToken);
+                    UsageSourceReaders.Codex.WarmHistoricalDays(days, cancellationToken);
+                    UsageSourceReaders.Codex.WarmQuotaSnapshotDays(days, cancellationToken);
                 }
-                CodexUsageReader.ReadRangeFromDetailRows(today, now, cancellationToken: cancellationToken);
-                CodexUsageReader.ReadCachedAndHistoricalQuotaSnapshots(range.StartInclusive!.Value, now, cancellationToken);
+                UsageSourceReaders.Codex.ReadRangeFromDetailRows(today, now, cancellationToken: cancellationToken);
+                UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(range.StartInclusive!.Value, now, cancellationToken);
                 return CodexDataTransferService.Export(path, scope, cancellationToken);
             }, cancellationToken).ConfigureAwait(false);
         }

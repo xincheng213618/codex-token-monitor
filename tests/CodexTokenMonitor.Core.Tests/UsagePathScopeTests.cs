@@ -116,10 +116,10 @@ public sealed class UsagePathScopeTests
                 for (var index = 0; index < 4; index++)
                 {
                     AssertRoots(fixture, name);
-                    var row = Assert.Single(CodexUsageReader.ReadTransientDetailRows(Day, Day.AddDays(1)));
+                    var row = Assert.Single(UsageSourceReaders.Codex.ReadTransientDetailRows(Day, Day.AddDays(1)));
                     Assert.Equal(inputTokens, row.InputTokens);
                     Assert.Equal(inputTokens + 10, row.TotalTokens);
-                    var summary = CodexUsageReader.ReadRange(Day, Day.AddDays(1), includeLiveToday: false);
+                    var summary = UsageSourceReaders.Codex.ReadRange(Day, Day.AddDays(1), includeLiveToday: false);
                     Assert.Equal(inputTokens, summary.InputTokens);
                     Assert.Equal(inputTokens + 10, summary.TotalTokens);
                     Assert.StartsWith(fixture.Cache(name), UsageCacheStore.GetCachePath("CodexTokenMonitor"));
