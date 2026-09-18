@@ -161,6 +161,8 @@
 
 第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
 
+第十三轮（2026-09-19）对整个 `src/` 做静态可变状态审计，确认去静态化收官：剩余静态成员均为有意保留——`MonitorCachePaths`/`UsageLogPaths`/`CacheOperationDiagnostics` 的 `AsyncLocal` 作用域（既定测试隔离机制）、`CacheOperationDiagnostics.nextOperationId`（Interlocked 单调计数）、`PriceSettings.States` 弱引用快照表与 `ResetOpportunities`/`SubscriptionPlans` 的按路径设置表（第四/六轮文档化设计，带恢复测试）、`CodexDataTransferService.ImportGate`（进程级导入串行契约）与 `CodexModelCost.Catalogs` 弱表备忘（随 PriceSettings 实例回收）。Claude/ZCode/WorkBuddy 三个读取器本就无状态。
+
 第十轮（2026-09-19）把 `CodexQuotaCycleReader` 的单条目 2 分钟周期缓存改为实例持有：缓存字段与 `ReadWeeklyCycles`/`InvalidateCache` 随实例走，周期识别纯算法保持静态；实例由 `CodexUsageReader` 持有并经 `UsageSourceReaders.Codex.Cycles` 暴露，`ClearCache`/`ClearCachedDay` 失效本实例缓存。Core 回归 553/553，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-005753-*/`）。
 
 第九轮（2026-09-18/19）验证：Core 回归 **553/553 通过，0 跳过**，Release 构建 **0 警告、0 错误**；桌面回归三组全部通过（主窗口 46 项检查、8 张渲染，设置 10 项、11 张渲染，分析 9 项、4 张渲染），报告在 `artifacts/desktop-probes/20260919-005227-*/desktop-regression.json`。`DshUsageReaderTests` 全量通过，确认路径作用域迁移等价；`ReaderCacheConsistencyTests` 在共享实例语义下继续约束缓存一致性。
