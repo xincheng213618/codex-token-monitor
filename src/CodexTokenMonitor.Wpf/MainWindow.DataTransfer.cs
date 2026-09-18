@@ -450,7 +450,7 @@ public partial class MainWindow
             if (isClosed) return;
             var codexModule = CurrentCodexModule();
             codexModule.CurrentQuotaEstimate = null;
-            CodexQuotaCycleReader.InvalidateCache();
+            UsageSourceReaders.Codex.Cycles.InvalidateCache();
             foreach (var module in usageModules.Values)
             {
                 module.ClearDisplay();

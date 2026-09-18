@@ -22,7 +22,7 @@ internal static class QuotaEstimateCalculator
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        return CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now, cancellationToken);
+        return UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(currentQuota, now, cancellationToken);
     }
 
     public static QuotaEstimateLoadResult BuildLoadResult(

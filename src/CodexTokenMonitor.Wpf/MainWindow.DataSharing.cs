@@ -252,7 +252,7 @@ public partial class MainWindow
             result = await Task.Run(() => scope == CodexDataExportScope.Today
                 ? CodexDataTransferService.ImportToday(path, cancellationToken)
                 : CodexDataTransferService.ImportRecentDays(path, cancellationToken), cancellationToken).ConfigureAwait(false);
-            CodexQuotaCycleReader.InvalidateCache();
+            UsageSourceReaders.Codex.Cycles.InvalidateCache();
         }
         finally
         {
@@ -265,7 +265,7 @@ public partial class MainWindow
 
     private void NotifySharedDataImported(CodexDataImportResult result, bool refresh = true)
     {
-        CodexQuotaCycleReader.InvalidateCache();
+        UsageSourceReaders.Codex.Cycles.InvalidateCache();
         // Queue UI work after releasing the cache gate. Completing the remote
         // upload must not depend on a main-window refresh or a modal dialog.
         if (!Dispatcher.HasShutdownStarted && !runtime.IsStopping)

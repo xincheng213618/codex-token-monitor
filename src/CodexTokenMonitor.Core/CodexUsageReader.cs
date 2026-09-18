@@ -11,8 +11,12 @@ internal sealed class CodexUsageReader
     private const string SparkLimitName = "GPT-5.3-Codex-Spark";
     public static readonly TimeSpan BeijingOffset = TimeSpan.FromHours(8);
 
+    /// <summary>Cycle boundary cache owned by this reader instance.</summary>
+    internal CodexQuotaCycleReader Cycles => CycleReader;
+
     private LiveFileTailReader UsageTailReader = new();
     private LiveFileTailReader QuotaTailReader = new();
+    private readonly CodexQuotaCycleReader CycleReader = new();
     private ConcurrentDictionary<string, SubagentReplayFilter> UsageReplayFilters =
         new(StringComparer.OrdinalIgnoreCase);
     private ConcurrentDictionary<string, SubagentReplayFilter> QuotaReplayFilters =
@@ -76,7 +80,7 @@ internal sealed class CodexUsageReader
     public bool ClearCache()
     {
         ResetLiveFileCursors();
-        CodexQuotaCycleReader.InvalidateCache();
+        CycleReader.InvalidateCache();
         var deleted = UsageCacheStore.Delete(CacheFolder);
         lock (QuotaHistoryCacheSync)
         {
@@ -89,7 +93,7 @@ internal sealed class CodexUsageReader
     public bool ClearCachedDay(DateOnly date)
     {
         ResetLiveFileCursors();
-        CodexQuotaCycleReader.InvalidateCache();
+        CycleReader.InvalidateCache();
         var usageDeleted = UsageCacheStore.DeleteDay(CacheFolder, date);
         var quotaDeleted = QuotaSnapshotCacheStore.DeleteDay(CacheFolder, date);
         return usageDeleted || quotaDeleted;
@@ -660,7 +664,7 @@ internal sealed class CodexUsageReader
 
         cancellationToken.ThrowIfCancellationRequested();
         cache.Save();
-        CodexQuotaCycleReader.InvalidateCache();
+        CycleReader.InvalidateCache();
     }
 
     private IReadOnlyList<CodexQuotaSnapshot> ReadQuotaSnapshotsCached(

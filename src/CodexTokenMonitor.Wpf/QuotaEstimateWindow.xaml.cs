@@ -194,7 +194,7 @@ public partial class QuotaEstimateWindow : Window
                 var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
                 var result = await querySession.RunAsync(
                     "额度估算定位周期",
-                    token => CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now, token),
+                    token => UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(currentQuota, now, token),
                     requiresSharedIo: false);
                 if (querySession.IsStopping || !IsLoaded || !ReferenceEquals(WeeklyGrid.SelectedItem, selectedRow)) return;
                 if (result.CacheWarnings.Count > 0)

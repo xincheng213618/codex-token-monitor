@@ -2,6 +2,10 @@
 
 按日期分组的变更摘要（依据 git 提交历史，哈希可点击到对应提交）。从 2026-09-06 起，正式发布采用 `vYYYY.MM.DD` 日期版本号。
 
+## 2026-09-19
+
+- 周期识别器去静态化：`CodexQuotaCycleReader` 的 2 分钟周期边界缓存改为随 Codex 读取器实例持有（`UsageSourceReaders.Codex.Cycles`），周期识别纯算法保持静态；缓存失效与读取行为不变，至此读取链路不再有进程级静态可变状态。
+
 ## 2026-09-18
 
 - Codex 读取器去静态化：`CodexUsageReader` 改为实例类，尾读器游标、子代理过滤器和额度历史缓存随实例持有；进程级共享实例经 `UsageSourceReaders.Codex` 暴露，读取行为与缓存语义不变。删除最后一个 reader 级全局测试覆盖属性 `DshUsageReader.OverrideSessionsRoot`，DSH 测试改用路径作用域。需要隔离的测试可直接构造独立读取器实例。

@@ -76,7 +76,7 @@ public sealed class QuotaCachedQueryTests
         var quota = CurrentQuota();
         using (var parent = hasParentDiagnostics ? CacheOperationDiagnostics.Begin() : null)
         {
-            var failed = CodexQuotaCycleReader.ReadWeeklyCycles(quota, Now);
+            var failed = UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(quota, Now);
             Assert.DoesNotContain(failed, period => !period.IsCurrent);
             if (parent is not null)
                 Assert.Contains(parent.Warnings, warning => warning.Kind == CacheWarningKind.Corrupt);
@@ -87,7 +87,7 @@ public sealed class QuotaCachedQueryTests
         UsageCacheStore.Delete("CodexTokenMonitor");
         SeedPreviousCycle();
         using var recovered = CacheOperationDiagnostics.Begin();
-        var actual = CodexQuotaCycleReader.ReadWeeklyCycles(quota, Now);
+        var actual = UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(quota, Now);
 
         Assert.Contains(actual, period => !period.IsCurrent && period.ResetAt == Reset.AddDays(-7));
         Assert.Empty(recovered.Warnings);
@@ -99,12 +99,12 @@ public sealed class QuotaCachedQueryTests
         using var first = new IsolatedCache();
         SeedPreviousCycle();
         var quota = CurrentQuota();
-        var firstResult = CodexQuotaCycleReader.ReadWeeklyCycles(quota, Now);
+        var firstResult = UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(quota, Now);
         Assert.Contains(firstResult, period => !period.IsCurrent);
         using var second = new IsolatedCache();
         QuotaSnapshotCacheStore.Load("CodexTokenMonitor");
 
-        var secondResult = CodexQuotaCycleReader.ReadWeeklyCycles(quota, Now);
+        var secondResult = UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(quota, Now);
 
         Assert.DoesNotContain(secondResult, period => !period.IsCurrent);
         Assert.Single(secondResult);

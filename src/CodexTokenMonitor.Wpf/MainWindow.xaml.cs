@@ -1520,7 +1520,7 @@ public partial class MainWindow : Window
 
                 var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
                 cycles = await Task.Run(
-                    () => CodexQuotaCycleReader.ReadWeeklyCycles(quota, now, runtime.LifetimeToken),
+                    () => UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(quota, now, runtime.LifetimeToken),
                     runtime.LifetimeToken);
             }
             finally

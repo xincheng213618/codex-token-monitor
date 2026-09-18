@@ -12,7 +12,7 @@ internal static class QuotaCostCurveCalculator
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var periods = knownPeriods.Count > 0
             ? knownPeriods
-            : CodexQuotaCycleReader.ReadWeeklyCycles(currentQuota, now, cancellationToken);
+            : UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(currentQuota, now, cancellationToken);
         var curves = new List<QuotaCostCurveSeries>();
 
         foreach (var period in periods.OrderBy(item => item.PeriodStart))

@@ -23,7 +23,7 @@ internal sealed record CodexQuotaCycle(
     }
 }
 
-internal static class CodexQuotaCycleReader
+internal sealed class CodexQuotaCycleReader
 {
     private static readonly TimeSpan CycleCacheLifetime = TimeSpan.FromMinutes(2);
     private static readonly DateTimeOffset DefaultStart = new(
@@ -44,12 +44,12 @@ internal static class CodexQuotaCycleReader
     private const int TransientResetRunMaxSnapshots = 5;
     private const decimal TransientResetMaxUsedPercent = 5m;
     private const decimal HistoricalReplayUsedTolerance = 3m;
-    private static readonly object CycleCacheSync = new();
-    private static CycleCacheKey? cachedKey;
-    private static DateTimeOffset cycleCachedAtUtc;
-    private static IReadOnlyList<CodexQuotaCycle> cachedCycles = Array.Empty<CodexQuotaCycle>();
+    private readonly object CycleCacheSync = new();
+    private CycleCacheKey? cachedKey;
+    private DateTimeOffset cycleCachedAtUtc;
+    private IReadOnlyList<CodexQuotaCycle> cachedCycles = Array.Empty<CodexQuotaCycle>();
 
-    public static IReadOnlyList<CodexQuotaCycle> ReadWeeklyCycles(
+    public IReadOnlyList<CodexQuotaCycle> ReadWeeklyCycles(
         CodexQuotaEstimate? currentQuota,
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
@@ -131,7 +131,7 @@ internal static class CodexQuotaCycleReader
         return result;
     }
 
-    public static void InvalidateCache()
+    public void InvalidateCache()
     {
         lock (CycleCacheSync)
         {
