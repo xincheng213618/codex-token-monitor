@@ -1306,86 +1306,13 @@ public partial class MainWindow : Window
     private SelectedRange GetSelectedRange()
     {
         var module = CurrentModule();
-        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-        var selected = module.PickerValue;
-        var selectedDay = new DateTimeOffset(selected.Year, selected.Month, selected.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
-        var selectedDateTime = new DateTimeOffset(selected.Year, selected.Month, selected.Day, selected.Hour, selected.Minute, selected.Second, CodexUsageReader.BeijingOffset);
-
-        if (module.CustomStartLocal is not null)
-        {
-            var startFromNow = module.CustomStartLocal.Value;
-            var customEnd = now < startFromNow ? startFromNow : now;
-            return new SelectedRange(startFromNow, customEnd, $"当前起算 {startFromNow:MM-dd HH:mm:ss}", "事件明细（起点后）", RangeMode.Day, true);
-        }
-
-        if (module.Mode == RangeMode.Cycle)
-        {
-            var cycle = SelectedCycle();
-            if (cycle is null)
-            {
-                return new SelectedRange(now, now, "额度周期", "按天明细（额度周期）", RangeMode.Cycle);
-            }
-
-            var cycleEnd = cycle.IsCurrent ? now : cycle.PeriodEnd;
-            if (cycleEnd < cycle.PeriodStart)
-            {
-                cycleEnd = cycle.PeriodStart;
-            }
-
-            return new SelectedRange(
-                cycle.PeriodStart,
-                cycleEnd,
-                cycle.IsCurrent ? "当前周期" : $"周期 {cycle.PeriodStart:MM-dd HH:mm}",
-                "按天明细（额度周期）",
-                RangeMode.Cycle,
-                FollowsCurrent: cycle.IsCurrent);
-        }
-
-        DateTimeOffset start;
-        DateTimeOffset periodEnd;
-        string title;
-        string breakdownTitle;
-        bool followsCurrent;
-        switch (module.Mode)
-        {
-            case RangeMode.Week:
-                periodEnd = selectedDateTime > now ? now : selectedDateTime;
-                start = periodEnd.AddDays(-7);
-                followsCurrent = periodEnd >= now.AddSeconds(-2);
-                title = followsCurrent ? "近一周" : $"7天至 {periodEnd:MM-dd HH:mm}";
-                breakdownTitle = "按天明细（7天窗口）";
-                break;
-            case RangeMode.Month:
-                start = new DateTimeOffset(selectedDay.Year, selectedDay.Month, 1, 0, 0, 0, CodexUsageReader.BeijingOffset);
-                periodEnd = start.AddMonths(1);
-                followsCurrent = start.Year == now.Year && start.Month == now.Month;
-                title = followsCurrent ? "本月" : start.ToString("yyyy-MM");
-                breakdownTitle = "按天明细（本月）";
-                break;
-            default:
-                start = selectedDay;
-                periodEnd = start.AddDays(1);
-                followsCurrent = start.Date == now.Date;
-                title = followsCurrent ? "今天" : start.ToString("yyyy-MM-dd");
-                breakdownTitle = "事件明细（当天）";
-                break;
-        }
-
-        var end = periodEnd > now ? now : periodEnd;
-        if (end < start)
-        {
-            end = start;
-        }
-
-        return new SelectedRange(
-            start,
-            end,
-            title,
-            breakdownTitle,
+        return UsageRangePolicy.ResolveSelectedRange(
             module.Mode,
-            FollowsCurrent: followsCurrent);
+            module.PickerValue,
+            module.CustomStartLocal,
+            SelectedCycle(),
+            DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset));
     }
-
     private static bool ShouldAdvanceToCurrentPeriod(UsageSourceModule module, SelectedRange range)
     {
         return module.Mode is (RangeMode.Day or RangeMode.Week or RangeMode.Month) &&
