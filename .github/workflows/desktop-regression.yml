@@ -1,6 +1,10 @@
 name: desktop regression
 
 on:
+  # Manual dispatch stays the primary path; the weekly schedule catches
+  # regressions that accumulate across feature iterations without slowing PRs.
+  schedule:
+    - cron: "0 2 * * 1"
   workflow_dispatch:
     inputs:
       suite:
@@ -12,6 +16,10 @@ on:
           - main
           - settings
           - analysis
+
+concurrency:
+  group: desktop-regression
+  cancel-in-progress: false
 
 jobs:
   desktop:

@@ -161,6 +161,8 @@
 
 第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
 
+第十五轮（2026-09-19）给 `desktop-regression.yml` 增加每周一 02:00 UTC 定时触发与并发组：手动分发仍是主路径，定时兜底捕获跨功能迭代累积的回归，PR 门禁保持 Core 回归不变。
+
 第十四轮（2026-09-19）把主窗口 `GetSelectedRange` 的范围解析逐字移入 Core 的 `UsageRangePolicy.ResolveSelectedRange(mode, pickerValue, customStartLocal, cycle, now)`：窗口只提供模块状态与当前周期选择，纯函数返回 `SelectedRange`。规则（周/月/周期/自定义起算的边界钳制、跟随当前判定、标题文案）保持不变，新增 13 项无 WPF 行为测试覆盖当前/历史/未来钳制与周期反转。主窗口代码相应缩减约 70 行。验证：Core 回归 566/566，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-012412-*/`）。
 
 第十三轮（2026-09-19）对整个 `src/` 做静态可变状态审计，确认去静态化收官：剩余静态成员均为有意保留——`MonitorCachePaths`/`UsageLogPaths`/`CacheOperationDiagnostics` 的 `AsyncLocal` 作用域（既定测试隔离机制）、`CacheOperationDiagnostics.nextOperationId`（Interlocked 单调计数）、`PriceSettings.States` 弱引用快照表与 `ResetOpportunities`/`SubscriptionPlans` 的按路径设置表（第四/六轮文档化设计，带恢复测试）、`CodexDataTransferService.ImportGate`（进程级导入串行契约）与 `CodexModelCost.Catalogs` 弱表备忘（随 PriceSettings 实例回收）。Claude/ZCode/WorkBuddy 三个读取器本就无状态。
