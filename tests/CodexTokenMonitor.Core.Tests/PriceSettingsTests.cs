@@ -103,7 +103,7 @@ public sealed class PriceSettingsTests
     }
 
     [Theory]
-    [InlineData("V4 Flash", 1.50, 0.05, 4.50)]
+    [InlineData("V4.1 Flash", 1.00, 0.02, 4.00)]
     [InlineData("V4 Pro", 4.50, 0.15, 13.50)]
     public void Defaults_UseMergedDeepSeekPeakSchedule(string model, double input, double cached, double output)
     {
@@ -129,7 +129,42 @@ public sealed class PriceSettingsTests
 
         Assert.Collection(
             deepSeek,
-            item => Assert.Equal("V4 Flash", item.Model),
+            item => Assert.Equal("V4.1 Flash", item.Model),
             item => Assert.Equal("V4 Pro", item.Model));
+    }
+
+    [Fact]
+    public void Normalize_MigratesLegacyFlashPricingAndPromotesFlashAsComparisonDefault()
+    {
+        var settings = new PriceSettings
+        {
+            DisplayOrderVersion = 17,
+            DeepSeekUncachedInputPerMillion = 4.50m,
+            DeepSeekCachedInputPerMillion = 0.15m,
+            DeepSeekOutputPerMillion = 13.50m
+        };
+        foreach (var group in PricePresetGroups.All)
+        {
+            var legacy = settings.PresetsForGroup(group).Single(item => item.Provider == "DeepSeek" && item.Model == "V4.1 Flash");
+            legacy.Model = "V4 Flash";
+            legacy.UncachedInput = 1.50m;
+            legacy.CachedInput = 0.05m;
+            legacy.Output = 4.50m;
+            legacy.Source = "DeepSeek 官网峰谷定价（空闲价；北京时间高峰 ×2）";
+        }
+
+        var normalized = PriceSettingsStore.Normalize(settings);
+
+        Assert.Equal(18, normalized.DisplayOrderVersion);
+        Assert.Equal("DeepSeek V4.1 Flash", normalized.ToDeepSeekProfile().Name);
+        Assert.Equal(1.00m, normalized.DeepSeekUncachedInputPerMillion);
+        Assert.Equal(0.02m, normalized.DeepSeekCachedInputPerMillion);
+        Assert.Equal(4.00m, normalized.DeepSeekOutputPerMillion);
+        Assert.DoesNotContain(normalized.CodexPresets, item => item.Provider == "DeepSeek" && item.Model == "V4 Flash");
+        Assert.Equal("V4.1 Flash", normalized.CodexPresets[1].Model);
+        Assert.Equal("V4.1 Flash", normalized.ClaudeCodePresets[1].Model);
+        Assert.Equal("V4.1 Flash", normalized.ZCodePresets[1].Model);
+        Assert.Equal("V4.1 Flash", normalized.WorkBuddyPresets[1].Model);
+        Assert.Equal("V4.1 Flash", normalized.DshPresets[0].Model);
     }
 }

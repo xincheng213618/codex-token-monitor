@@ -110,6 +110,31 @@ public sealed class QuotaCalibrationStoreRecoveryTests
     }
 
     [Fact]
+    public void PlanNameMatchingIsCaseInsensitiveAndUpsertKeepsTheExistingIdentity()
+    {
+        using var fixture = new CalibrationFixture();
+        QuotaModelCapacityCalibrationStore.Upsert(
+            "Pro 20x", Period, new[] { Estimate("gpt-5.6-sol", 2400m) });
+
+        var exact = QuotaModelCapacityCalibrationStore.LoadExact(
+            "Pro 20X", Start, QuotaModelCapacitySource.CurrentPeriodApproved);
+        var previous = QuotaModelCapacityCalibrationStore.LoadLatestBefore(
+            "PRO 20X", Start.AddDays(7), new[] { "gpt-5.6-sol" },
+            QuotaModelCapacitySource.PreviousPeriodApproved);
+
+        Assert.Equal(2400m, Assert.Single(exact).AverageFullQuotaCost);
+        Assert.Equal(2400m, Assert.Single(previous).AverageFullQuotaCost);
+
+        QuotaModelCapacityCalibrationStore.Upsert(
+            "Pro 20X", Period, new[] { Estimate("gpt-5.6-sol", 2500m) });
+
+        Assert.Equal(1L, fixture.Scalar("SELECT COUNT(*) FROM quota_model_calibrations"));
+        Assert.Equal("Pro 20x", fixture.Scalar("SELECT plan_name FROM quota_model_calibrations"));
+        Assert.Equal(2500m, Assert.Single(QuotaModelCapacityCalibrationStore.LoadExact(
+            "Pro 20X", Start, QuotaModelCapacitySource.CurrentPeriodApproved)).AverageFullQuotaCost);
+    }
+
+    [Fact]
     public async Task ConcurrentPathsInitializeAndReadTheirOwnCalibrationTables()
     {
         using var fixture = new CalibrationFixture();

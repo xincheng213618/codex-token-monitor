@@ -16,7 +16,9 @@ internal sealed record QuotaModelCapacityEstimate(
     decimal MaximumFullQuotaCost,
     QuotaModelCapacitySource Source,
     DateTimeOffset CalibrationPeriodStart,
-    int MixedBandCount = 0);
+    int MixedBandCount = 0,
+    int HistoricalPeriodCount = 0,
+    int CurrentBandCount = 0);
 
 internal sealed record QuotaModelCapacityReport(
     string PlanName,
@@ -307,20 +309,20 @@ internal static class QuotaModelCapacityCalibrationService
             .Where(item => currentModels.Contains(item.ModelId, StringComparer.OrdinalIgnoreCase))
             .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
 
+        var historicalRows = QuotaModelCapacityCalibrationStore.LoadHistoryBefore(
+            planName,
+            period.PeriodStart,
+            currentModels,
+            QuotaModelCapacitySource.PreviousPeriodApproved);
+        var historicalPriors = RobustQuotaModelCapacityEstimator.BuildHistoricalPriors(
+                historicalRows,
+                period.PeriodStart)
+            .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
         var missingModels = currentModels
-            .Where(model => !currentApproved.ContainsKey(model))
+            .Where(model => !currentApproved.ContainsKey(model) && !historicalPriors.ContainsKey(model))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var previousApproved = new Dictionary<string, QuotaModelCapacityEstimate>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in QuotaModelCapacityCalibrationStore.LoadLatestBefore(
-                     planName,
-                     period.PeriodStart,
-                     missingModels,
-                     QuotaModelCapacitySource.PreviousPeriodApproved))
-        {
-            previousApproved[item.ModelId] = item;
-        }
 
-        if (missingModels.Any(model => !previousApproved.ContainsKey(model)) && previousPeriod is not null &&
+        if (missingModels.Count > 0 && previousPeriod is not null &&
             previousPeriod.PeriodStart < period.PeriodStart &&
             string.Equals(ResolvePlanName(previousPeriod), planName, StringComparison.OrdinalIgnoreCase))
         {
@@ -337,21 +339,22 @@ internal static class QuotaModelCapacityCalibrationService
             // rules. This promotes a previously inferred model (for example Sol)
             // into a saved baseline that the new period can continue adjusting.
             _ = Build(previousPeriod, previousResult, previousPeriod: null, cancellationToken);
-            foreach (var item in QuotaModelCapacityCalibrationStore.LoadLatestBefore(
-                         planName,
-                         period.PeriodStart,
-                         missingModels,
-                         QuotaModelCapacitySource.PreviousPeriodApproved))
-            {
-                previousApproved[item.ModelId] = item;
-            }
+            historicalRows = QuotaModelCapacityCalibrationStore.LoadHistoryBefore(
+                planName,
+                period.PeriodStart,
+                currentModels,
+                QuotaModelCapacitySource.PreviousPeriodApproved);
+            historicalPriors = RobustQuotaModelCapacityEstimator.BuildHistoricalPriors(
+                    historicalRows,
+                    period.PeriodStart)
+                .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
         }
 
         if (diagnostics.Warnings.Count > 0)
             return new QuotaModelCapacityReport(planName, Array.Empty<QuotaModelCapacityEstimate>());
 
         var approved = currentModels
-            .Select(model => currentApproved.GetValueOrDefault(model) ?? previousApproved.GetValueOrDefault(model))
+            .Select(model => historicalPriors.GetValueOrDefault(model) ?? currentApproved.GetValueOrDefault(model))
             .Where(item => item is not null)
             .Cast<QuotaModelCapacityEstimate>()
             .ToList();
@@ -360,20 +363,30 @@ internal static class QuotaModelCapacityCalibrationService
         var baselines = approved
             .Concat(inferred.Values)
             .ToList();
-        var blended = QuotaModelCapacityEstimator.BlendMixedModels(
+        var regressed = RobustQuotaModelCapacityEstimator.RegressCurrentPeriod(
                 result,
                 baselines,
-                baselines.Select(item => item.ModelId).ToList())
+                cancellationToken)
             .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
-        if (blended.Count > 0)
+        // Retain the previous scalar blend as a compatibility fallback for a
+        // singular or otherwise unusable regression input.
+        if (regressed.Count == 0)
+        {
+            regressed = QuotaModelCapacityEstimator.BlendMixedModels(
+                    result,
+                    baselines,
+                    baselines.Select(item => item.ModelId).ToList())
+                .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
+        }
+        if (regressed.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            QuotaModelCapacityCalibrationStore.Upsert(planName, period, blended.Values.ToList());
+            QuotaModelCapacityCalibrationStore.Upsert(planName, period, regressed.Values.ToList());
         }
         var estimates = currentModels
-            .Select(model => blended.GetValueOrDefault(model) ??
+            .Select(model => regressed.GetValueOrDefault(model) ??
                              currentApproved.GetValueOrDefault(model) ??
-                             previousApproved.GetValueOrDefault(model) ??
+                             historicalPriors.GetValueOrDefault(model) ??
                              inferred.GetValueOrDefault(model))
             .Where(item => item is not null)
             .Cast<QuotaModelCapacityEstimate>()

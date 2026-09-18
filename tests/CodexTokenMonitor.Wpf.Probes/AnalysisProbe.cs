@@ -117,6 +117,22 @@ internal static class AnalysisProbe
                 curvePoints = curveResult.Curves.Sum(item => item.Points.Count), weeklyRows = estimateResult.WeeklyRows.Count,
                 timelineBefore, timelineAfter = TimelineCount() });
 
+            Invoke(estimate, "QuotaCurveButton_Click", estimate, new RoutedEventArgs());
+            await WaitUntilAsync(() => estimate.OwnedWindows.Cast<Window>().Any(window => window is QuotaCostCurveWindow),
+                "estimate opens the quota curve on demand");
+            var onDemandCurve = estimate.OwnedWindows.Cast<Window>().Single(window => window is QuotaCostCurveWindow);
+            RegisterWindow(onDemandCurve);
+            onDemandCurve.Left = onDemandCurve.Top = -20000;
+            onDemandCurve.ShowInTaskbar = false;
+            await WaitUntilAsync(() => !Get<bool>(onDemandCurve, "isLoading"), "on-demand curve finishes loading");
+            Require(ReferenceEquals(Get<AnalysisQuerySession>(onDemandCurve, "querySession").Runtime, runtime),
+                "on-demand curve shares the estimate runtime");
+            Require(Get<QuotaCostCurveResult>(onDemandCurve, "loadedResult").Curves.Count > 0,
+                "on-demand curve receives cached data");
+            await CloseAsync(onDemandCurve);
+            Results.Add(new { check = "estimate-opens-curve-on-demand", embeddedCurveLoaded = false,
+                childRuntimeShared = true });
+
             // The constructor received no periods. The right-click child must
             // use the actual successfully loaded period set, including its predecessor.
             var loadedPeriods = Get<IReadOnlyList<CodexQuotaCycle>>(estimate, "loadedWeeklyPeriods");
@@ -154,7 +170,6 @@ internal static class AnalysisProbe
     {
         var curveBefore = Get<QuotaCostCurveResult>(curve, "loadedResult");
         var estimateBefore = Get<QuotaEstimateLoadResult>(estimate, "loadedEstimateResult");
-        var embeddedCurveBefore = Get<QuotaCostCurveResult>(estimate, "loadedCurveResult");
         var grid = Get<DataGrid>(estimate, "WeeklyGrid");
         var rowsBefore = grid.ItemsSource;
         Require(curveBefore.Curves.Count == 3 && estimateBefore.PeriodCount == 3 && grid.Items.Count == 3,
@@ -184,7 +199,6 @@ internal static class AnalysisProbe
             Require(ReferenceEquals(curveBefore, GetObject(curve, "loadedResult")), "cost curve preserves the successful result object");
             Require(ReferenceEquals(estimateBefore, GetObject(estimate, "loadedEstimateResult")) && ReferenceEquals(rowsBefore, grid.ItemsSource),
                 "estimate preserves the successful result and table objects");
-            Require(ReferenceEquals(embeddedCurveBefore, GetObject(estimate, "loadedCurveResult")), "estimate preserves the successful embedded curve");
 
             await RunManualEstimateAsync(estimate);
             manualFaultStatus = Get<TextBlock>(estimate, "ManualResultText").Text;
@@ -294,6 +308,8 @@ internal static class AnalysisProbe
         Require(recovered.HasData && grid.Items.Count == countBefore && recovered.Tokens == analysisBefore.Tokens, "restored database refresh recovers statistics");
         Require(!ReferenceEquals(analysisBefore, recovered), "successful retry publishes a new result");
         Require(Get<TextBlock>(window, "StatusText").ToolTip is null, "recovery clears diagnostic tooltip");
+        Require(Get<TextBlock>(window, "ModelCapacityValue").Text.Contains("本期稳健回归", StringComparison.Ordinal),
+            "cycle labels current-only robust regression accurately");
         await RenderAsync(window, "cycle-analysis-recovered.png");
         Results.Add(new { check = "cycle-corruption-recovery", faultStatus, preservedBandCount = countBefore,
             recoveredTokens = recovered.Tokens, tooltipCleared = true, sameTableAndChartPreservedDuringFailure = true });

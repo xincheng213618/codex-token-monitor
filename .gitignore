@@ -23,7 +23,7 @@ outputs/*
 
 # Scratch workspace from local Codex development
 work/
-artifacts/desktop-probes/
+artifacts/
 
 # OS noise
 Thumbs.db

@@ -2,7 +2,7 @@
 
 一个 Windows 桌面额度监控器，用来从本地日志统计 Codex、Claude Code、ZCode、WorkBuddy、DSH（DeepSeek Harness）的 token 用量、缓存命中、估算 API 等价费用，以及 Codex 5h / 7d 额度百分比变化。
 
-> 数据只读取本机日志和本机缓存，不会上传到远端。价格、套餐和额度估算都只是本地辅助分析，最终以官方账单和产品页面为准。
+> 数据只读取本机日志和本机缓存，不会上传到远端。价格、套餐和额度分析都只是本地辅助分析，最终以官方账单和产品页面为准。
 
 ## 功能
 
@@ -19,11 +19,10 @@
 - 支持恢复上次关闭时的显示状态（来源、时间范围、查询结果）。
 - Codex 额度：
   - 优先通过 Codex 本地 app-server（`codex app-server --stdio`）实时读取 5h / 7d 剩余额度百分比，自动发现可运行的 Codex CLI（Desktop 插件副本、npm 安装、PATH 上的 `codex.exe/.cmd/.bat`），不可用时回退到本机会话日志捕获的额度记录。
-  - 根据百分比变化和本地 token 消耗估算 100% 额度价值，支持历史 7d 周期表、手动百分比区间估算。
-  - 主界面额度面板显示 5h 额度、7d 额度、当前套餐、重置过期、重置评估，并提供一键“估算”窗口。
-  - “额度曲线”窗口按额度周期绘制 已用额度% vs 累计估算费用 曲线，按套餐筛选，多周期叠加对比。
+  - 根据当前 7d 周期的额度变化和本地 token 消耗，按 5% 额度分段分析模型构成、换算代价、消耗速度与用量预测。
+  - 主界面额度面板保留“额度估算”入口；窗口内继续提供当前 5h / 7d、手动区间和历史周期，并可按需新开额度曲线或分析所选周期。
 - 价格设置：
-  - 默认展示 GPT-5.6 Sol、DeepSeek V4 Pro、小米 MiMo V2.5 Pro 三档（Codex / ZCode / Claude Code / WorkBuddy 各自成组）。DeepSeek V4 Flash / Pro 会按北京时间自动合并峰谷计价：`09:00–12:00`、`14:00–18:00` 使用高峰价，其余使用空闲价。
+  - 默认展示 GPT-5.6 Sol、DeepSeek V4.1 Flash、小米 MiMo V2.5 Pro 三档（Codex / ZCode / Claude Code / WorkBuddy 各自成组）。DeepSeek V4.1 Flash / V4 Pro 会按北京时间自动合并峰谷计价：周一至周五 `09:00–12:00`、`14:00–18:00` 使用高峰价，其余使用空闲价。
   - 内置可编辑价格库，包含 OpenAI、DeepSeek、小米、Kimi、智谱/Z.AI、豆包、MiniMax、千问、混元、Claude、Grok 等参考档；支持新增/编辑价格预设（`$`、`¥`、Credits 三种单位）。
 - 套餐设置：
   - 可记录实际购买套餐和金额。
@@ -184,8 +183,7 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 - `src/CodexTokenMonitor.Wpf/MainWindow.xaml(.cs)`：WPF 主界面（来源 Tab、额度面板、范围选择、指标卡、时间轴、明细表、数据管理）。
 - `src/CodexTokenMonitor.Wpf/MainWindow.DataTransfer.cs`：主窗口的数据导入导出、CSV 和拖放处理（partial 分文件整理）；`MainWindow.DataSharing.cs`：共享服务生命周期与数据交换入口。
 - `src/CodexTokenMonitor.Wpf/Themes/MonitorTheme.xaml`：共享颜色与控件样式；`CostCardControl.xaml(.cs)`：费用卡片展示组件。
-- `src/CodexTokenMonitor.Wpf/QuotaEstimateWindow.xaml(.cs)`：额度估算窗口（当前 5h/7d、历史周期表、手动估算、内嵌额度曲线）。
-- `src/CodexTokenMonitor.Wpf/QuotaCostCurveWindow.xaml(.cs)` + `QuotaCostCurveControl.cs`：额度费用曲线窗口；计算器位于 `src/CodexTokenMonitor.Core/QuotaCostCurveCalculator.cs`。
+- `src/CodexTokenMonitor.Wpf/QuotaCycleAnalysisWindow.xaml(.cs)`：当前或所选 7d 周期的模型构成、分段代价、消耗时间线和预测窗口。
 - `src/CodexTokenMonitor.Wpf/WpfTokenTimelineControl.cs`：ScottPlot token 时间轴控件。
 - `src/CodexTokenMonitor.Wpf/BackgroundCacheWarmer.cs`：后台历史缓存预热；`CacheDetailsWindow.xaml(.cs)`：缓存详情窗口。
 - `src/CodexTokenMonitor.Wpf/LastDisplayStore.cs`：恢复上次显示状态。
@@ -194,7 +192,7 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 - `src/CodexTokenMonitor.Core/CodexAppServerQuotaReader.cs`：通过本地 app-server 协议实时读取 5h/7d 额度。
 - `src/CodexTokenMonitor.Core/CodexCliLocator.cs`：自动发现可运行的 Codex CLI。
 - `src/CodexTokenMonitor.Core/CodexQuotaCycle.cs`：7d 额度周期的识别与异常快照剔除。
-- `src/CodexTokenMonitor.Core/QuotaEstimateCalculator.cs` / `QuotaPace.cs` / `QuotaSnapshotLookup.cs`：额度估算、重置评估、快照查询。
+- `src/CodexTokenMonitor.Core/QuotaCycleAnalysisCalculator.cs` / `QuotaPace.cs` / `QuotaSnapshotLookup.cs`：周期分段分析、重置评估、快照查询。
 - `src/CodexTokenMonitor.Core/ClaudeUsageReader.cs` / `ZCodeUsageReader.cs` / `WorkBuddyUsageReader.cs` / `DshUsageReader.cs`：其他来源日志读取（DSH 读取 zstd 压缩的会话日志，按 frame 解压并容忍不完整尾帧）。
 - `src/CodexTokenMonitor.Core/UsageSourceReader.cs` / `UsageSourceRegistry.cs` / `UsageQueryModels.cs`：来源能力与元数据、查询范围和结果模型。
 - `src/CodexTokenMonitor.Wpf/UsageSourceModule.cs` / `UsageDisplayViewModel.cs`：每窗口的来源选择和显示缓存，以及主统计快照、空/失败/恢复状态。

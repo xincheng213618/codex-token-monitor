@@ -82,63 +82,43 @@
                 <TextBlock x:Name="ManualResultText" Grid.Row="1" Text="输入前后剩余百分比，估算当前周额度的费用规模。" Style="{StaticResource SectionDescription}" Margin="0,7,0,0" />
             </Grid>
         </Border>
-        <Grid Grid.Row="3">
-            <Grid.RowDefinitions><RowDefinition Height="1.1*" MinHeight="140" /><RowDefinition Height="10" /><RowDefinition Height="*" MinHeight="124" /></Grid.RowDefinitions>
-            <Border Grid.Row="0" Style="{StaticResource PanelBorder}" Padding="14,10">
-                <Grid>
-                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
-                    <Grid Margin="0,0,0,6">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                        <TextBlock Text="7d 额度与累计费用" Style="{StaticResource SectionTitle}" VerticalAlignment="Center" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal">
-                            <TextBlock Text="套餐" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <ComboBox x:Name="CurvePlanComboBox" Width="154" Margin="0,0,8,0" SelectionChanged="CurvePlanComboBox_SelectionChanged" IsEnabled="False" />
-                            <Button Style="{StaticResource ToolButton}" Content="放大曲线" Click="QuotaCurveButton_Click" />
-                        </StackPanel>
-                    </Grid>
-                    <ContentControl x:Name="EmbeddedCurveHost" Grid.Row="1" Visibility="Collapsed" />
-                    <StackPanel x:Name="CurveEmptyPanel" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="560" Margin="12" TextBlock.TextAlignment="Center">
-                        <TextBlock x:Name="CurveEmptyTitle" Text="正在整理额度曲线" Style="{StaticResource SectionTitle}" />
-                        <TextBlock x:Name="CurveEmptyDetail" Text="将结合已保存的额度快照与用量记录绘制。" Style="{StaticResource SectionDescription}" Margin="0,6,0,0" />
+        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="0,10,0,0">
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <Grid Margin="14,0,14,8">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="历史 7d 周期" Style="{StaticResource SectionTitle}" /><TextBlock x:Name="HistoryCountText" Foreground="{StaticResource MutedBrush}" Margin="12,0,0,0" /></StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Content="打开额度曲线" Style="{StaticResource ToolButton}" Margin="0,0,8,0" Click="QuotaCurveButton_Click" />
+                        <Button Content="分析所选周期" Style="{StaticResource CycleActionButton}" Click="AnalyzeCycleMenuItem_Click" />
                     </StackPanel>
                 </Grid>
-            </Border>
-            <GridSplitter Grid.Row="1" Height="4" VerticalAlignment="Center" HorizontalAlignment="Stretch" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" ShowsPreview="True" Background="{StaticResource BorderBrush}" />
-            <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="0,10,0,0">
-                <Grid>
-                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
-                    <Grid Margin="14,0,14,8">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="历史 7d 周期" Style="{StaticResource SectionTitle}" /><TextBlock x:Name="HistoryCountText" Foreground="{StaticResource MutedBrush}" Margin="12,0,0,0" /></StackPanel>
-                        <Button Grid.Column="1" Content="分析所选周期" Style="{StaticResource CycleActionButton}" Click="AnalyzeCycleMenuItem_Click" />
-                    </Grid>
-                    <DataGrid x:Name="WeeklyGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False" HeadersVisibility="Column" FrozenColumnCount="1" SelectionMode="Single"
-                              SelectionChanged="WeeklyGrid_SelectionChanged" PreviewMouseRightButtonDown="WeeklyGrid_PreviewMouseRightButtonDown">
-                        <DataGrid.ContextMenu><ContextMenu><MenuItem Header="分析此周期的模型与额度代价" Click="AnalyzeCycleMenuItem_Click" /></ContextMenu></DataGrid.ContextMenu>
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="周期" Binding="{Binding Period}" Width="224" />
-                            <DataGridTextColumn Header="历时" Binding="{Binding Duration}" Width="100" />
-                            <DataGridTextColumn Header="重置" Binding="{Binding ResetAt}" Width="96" />
-                            <DataGridTextColumn Header="快照" Binding="{Binding SnapshotCount}" Width="62" ElementStyle="{StaticResource NumericColumn}" />
-                            <DataGridTextColumn Header="剩余" Binding="{Binding Remaining}" Width="66" ElementStyle="{StaticResource NumericColumn}" />
-                            <DataGridTextColumn Header="已用" Binding="{Binding UsedPercent}" Width="62" ElementStyle="{StaticResource NumericColumn}" />
-                            <DataGridTextColumn Header="应%" Binding="{Binding ExpectedPercent}" Width="62" ElementStyle="{StaticResource NumericColumn}" />
-                            <DataGridTextColumn Header="节奏" Binding="{Binding Rhythm}" Width="116" />
-                            <DataGridTextColumn Header="Tokens" Binding="{Binding Tokens}" Width="104" ElementStyle="{StaticResource NumericColumn}" />
-                            <DataGridTextColumn Header="订阅折算 $（含 Fast）" Binding="{Binding UsedCost}" Width="168"><DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource NumericColumn}"><Setter Property="ToolTip" Value="{Binding CostDetail}" /></Style></DataGridTextColumn.ElementStyle></DataGridTextColumn>
-                            <DataGridTextColumn Header="已识别 Fast" Binding="{Binding FastCount}" Width="94"><DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource NumericColumn}"><Setter Property="ToolTip" Value="{Binding CostDetail}" /></Style></DataGridTextColumn.ElementStyle></DataGridTextColumn>
-                            <DataGridTextColumn Header="订阅折算 100% $" Binding="{Binding EstimatedLimit}" Width="138" ElementStyle="{StaticResource NumericColumn}" />
-                            <DataGridTextColumn Header="套餐" Binding="{Binding PlanNames}" Width="96" />
-                            <DataGridTextColumn Header="实际 ¥" Binding="{Binding PlanAmount}" Width="84" ElementStyle="{StaticResource NumericColumn}" />
-                        </DataGrid.Columns>
-                    </DataGrid>
-                    <StackPanel Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="16,38,16,10" TextBlock.TextAlignment="Center" IsHitTestVisible="False">
-                        <StackPanel.Style><Style TargetType="StackPanel"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding HasItems, ElementName=WeeklyGrid}" Value="False"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></StackPanel.Style>
-                        <TextBlock x:Name="HistoryEmptyText" Text="正在读取历史周期…" Style="{StaticResource SectionDescription}" />
-                    </StackPanel>
-                </Grid>
-            </Border>
-        </Grid>
+                <DataGrid x:Name="WeeklyGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False" HeadersVisibility="Column" FrozenColumnCount="1" SelectionMode="Single"
+                          PreviewMouseRightButtonDown="WeeklyGrid_PreviewMouseRightButtonDown">
+                    <DataGrid.ContextMenu><ContextMenu><MenuItem Header="分析此周期的模型与额度代价" Click="AnalyzeCycleMenuItem_Click" /></ContextMenu></DataGrid.ContextMenu>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="周期" Binding="{Binding Period}" Width="224" />
+                        <DataGridTextColumn Header="历时" Binding="{Binding Duration}" Width="100" />
+                        <DataGridTextColumn Header="重置" Binding="{Binding ResetAt}" Width="96" />
+                        <DataGridTextColumn Header="快照" Binding="{Binding SnapshotCount}" Width="62" ElementStyle="{StaticResource NumericColumn}" />
+                        <DataGridTextColumn Header="剩余" Binding="{Binding Remaining}" Width="66" ElementStyle="{StaticResource NumericColumn}" />
+                        <DataGridTextColumn Header="已用" Binding="{Binding UsedPercent}" Width="62" ElementStyle="{StaticResource NumericColumn}" />
+                        <DataGridTextColumn Header="应%" Binding="{Binding ExpectedPercent}" Width="62" ElementStyle="{StaticResource NumericColumn}" />
+                        <DataGridTextColumn Header="节奏" Binding="{Binding Rhythm}" Width="116" />
+                        <DataGridTextColumn Header="Tokens" Binding="{Binding Tokens}" Width="104" ElementStyle="{StaticResource NumericColumn}" />
+                        <DataGridTextColumn Header="订阅折算 $（含 Fast）" Binding="{Binding UsedCost}" Width="168"><DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource NumericColumn}"><Setter Property="ToolTip" Value="{Binding CostDetail}" /></Style></DataGridTextColumn.ElementStyle></DataGridTextColumn>
+                        <DataGridTextColumn Header="已识别 Fast" Binding="{Binding FastCount}" Width="94"><DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource NumericColumn}"><Setter Property="ToolTip" Value="{Binding CostDetail}" /></Style></DataGridTextColumn.ElementStyle></DataGridTextColumn>
+                        <DataGridTextColumn Header="订阅折算 100% $" Binding="{Binding EstimatedLimit}" Width="138" ElementStyle="{StaticResource NumericColumn}" />
+                        <DataGridTextColumn Header="套餐" Binding="{Binding PlanNames}" Width="96" />
+                        <DataGridTextColumn Header="实际 ¥" Binding="{Binding PlanAmount}" Width="84" ElementStyle="{StaticResource NumericColumn}" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <StackPanel Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="16,38,16,10" TextBlock.TextAlignment="Center" IsHitTestVisible="False">
+                    <StackPanel.Style><Style TargetType="StackPanel"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding HasItems, ElementName=WeeklyGrid}" Value="False"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></StackPanel.Style>
+                    <TextBlock x:Name="HistoryEmptyText" Text="正在读取历史周期…" Style="{StaticResource SectionDescription}" />
+                </StackPanel>
+            </Grid>
+        </Border>
         <Border Grid.Row="4" Style="{StaticResource DialogFooter}" Margin="0,12,0,0">
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>

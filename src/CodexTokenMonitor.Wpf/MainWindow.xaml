@@ -103,7 +103,13 @@
                     <TextBlock x:Name="ResetPaceValue" Text="-" Style="{StaticResource QuotaValue}" />
                     <TextBlock x:Name="ResetPaceDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <Button x:Name="QuotaEstimateButton" Grid.Column="6" Style="{StaticResource PrimaryButton}" Content="额度估算" VerticalAlignment="Center" Click="QuotaEstimateButton_Click" />
+                <Button x:Name="QuotaEstimateButton"
+                        Grid.Column="6"
+                        Style="{StaticResource PrimaryButton}"
+                        Content="额度估算"
+                        ToolTip="查看当前窗口、手动区间和历史周期；可继续分析所选周期"
+                        VerticalAlignment="Center"
+                        Click="QuotaEstimateButton_Click" />
             </Grid>
         </Border>
         <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,6" Margin="0,0,0,10">

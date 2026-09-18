@@ -21,6 +21,11 @@ internal static class DeepSeekPricingSchedule
     public static bool IsPeak(DateTimeOffset timestamp)
     {
         var beijing = timestamp.ToOffset(CodexUsageReader.BeijingOffset);
+        if (beijing.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+        {
+            return false;
+        }
+
         var time = beijing.TimeOfDay;
         return time >= TimeSpan.FromHours(9) && time < TimeSpan.FromHours(12) ||
                time >= TimeSpan.FromHours(14) && time < TimeSpan.FromHours(18);

@@ -75,7 +75,7 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 - 每个模型调用对应一条 `assistant/chunk { "type": "usage" }` 记录（usage chunk 永远不会被打包压缩），字段：`inputTokens`（未缓存）、`cacheReadTokens`、`cacheWriteTokens`、`outputTokens`、`reasoningTokens`，顶层 `time` 为毫秒时间戳。
 - 字段映射：`InputTokens = inputTokens + cacheReadTokens + cacheWriteTokens`、`CachedInputTokens = cacheReadTokens`、`CacheWriteInputTokens = cacheWriteTokens`、`UncachedInputTokens = inputTokens`、`OutputTokens = outputTokens`、`ReasoningOutputTokens = reasoningTokens`、`TotalTokens = input + output`。
 - 稳定 key 为 `(会话 id, seq)`，重复扫描/导入不重复计数；`assistant/message` 里的 `message.source` 记录 provider/model（如 `deepseek-official` / `deepseek-v4-flash`），`message.usage` 仅在无 usage chunk 时作为后备（当前版本不产生）。
-- 价格组映射到 DSH 组（默认首选 DeepSeek V4 Flash 峰谷合并档），每条事件按北京时间进入峰谷子汇总，后台预热会自动覆盖该来源。
+- 价格组映射到 DSH 组（默认首选 DeepSeek V4.1 Flash 峰谷合并档），每条事件按北京时间工作日峰谷规则进入子汇总，后台预热会自动覆盖该来源。
 
 ## 3. 缓存与统计管线
 
@@ -118,9 +118,9 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 - **异常快照剔除**：`CodexQuotaCycleReader.MarkTransientResetOutliers` 检测“短暂重置段”（≤5 个快照或 ≤3 分钟的孤立 reset run，且其周用量峰值 ≤5%）并标记 `IsAnomaly`，周期与曲线计算会忽略它们。
 - **7d 周期识别**（`CodexQuotaCycleReader.ReadWeeklyCycles`）：把快照按周 reset 时间聚类成周期；`StartsNewQuotaCycle` 判断新周期开始的信号：用量硬性回落到 ≤2%（且之前 ≥10%）、reset 时间前移、或 reset 变化且用量明显回落。周期起点用 `resetAt - 7d` 锚定；周期边界按额度窗口身份缓存 2 分钟，当前周期范围仍在界面查询时实时截断到现在。
 - 周期对象只保留周期边界、reset、快照数量和最大周用量百分比，不把几十万条历史快照继续挂在 UI 模块和周期缓存上；需要逐条快照的曲线/明细路径仍从 SQLite/历史源按范围读取。
-- **额度估算**（`QuotaEstimateCalculator`）：把“周期内 token 消耗的估算费用”与“额度百分比变化”关联，反推 100% 额度对应的费用/token 数；`MinimumStableQuotaDeltaPercent = 3%` 以下的变化视为不稳定，不参与估算。费用和 token 上限缩放统一通过 `QuotaMath` 做百分比校验、下溢/除零防护和上限饱和。
+- **周期分段分析**（`QuotaCycleAnalysisCalculator`）：把周期内模型记录与额度时间线对齐，按 5% 额度带聚合模型构成、等价费用和 100% 外推；当前周期补入起点与末次额度变化后的用量，结果再供容量标定、消耗时间线和预测复用。
+- **模型容量标定**（`RobustQuotaModelCapacityEstimator`）：同套餐、同模型的全部往期标定先在对数容量上按时间衰减与样本量加权，并用 Huber 权重降低离群周期影响；本期采用线性关系 `额度下降 = Σ(模型等价费用 / 模型容量)` 对所有可计价分段联合回归。历史范围决定先验强度，低占比或不可辨识模型不会被少量本期数据大幅拉动；无可用回归输入时保留旧的混合段比例校正作为兼容后备。
 - **重置评估**（`QuotaPaceAnalyzer`）：对每个 5h/7d 窗口比较“已用 % vs 按时间线性推进的应耗 %”，输出预计耗尽时间、自然重置前剩余、重置浪费评估和评级（`QuotaPaceReport`）。
-- **额度费用曲线**（Core 的 `QuotaCostCurveCalculator`）：对每个已知周期，取已缓存明细行累计费用（按日志中的实际模型及当前价格库），与同一时刻的周额度快照配对，得到 `(时间, 已用%, 累计费用)` 曲线；最多 1800 点/周期，剔除额度回退点，基线归零，并按套餐分组。通过 `ReadCachedQuotaTimeline` 在内存投影缺失额度点，不保存锚点、不扫描原始日志，因此不等待后台预热闸门。周期识别和快照聚合接收同一取消令牌，费用区间的插值点索引按曲线复用。
 - **周期分析查询**：`QuotaCycleAnalysisQueryService` 组合原周期范围判定、分析及校准；当前周期会读取实时明细，历史分析也可能写模型校准，两者均通过 `AnalysisQuerySession` 获取共享 I/O 闸门。缓存警告阻止后续校准及界面结果替换，周期列表的失败结果也不会进入两分钟内存缓存。
 
 ## 6. 跨电脑数据交换
@@ -180,7 +180,7 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 - `LiveFileTailReader` 每文件一把锁；额度读取有 `SyncRoot` 锁 + 20s/10s 缓存。
 - 用量读取器会把窗口生命周期取消令牌传入 JSONL/Zstd 文件扫描、尾读和后台预热；关闭会取消读取。被新选择替代的查询在取得 I/O 锁后检查版本并可跳过扫描；已经开始的扫描允许完成，其旧结果不会发布到界面。
 - 主窗口额度刷新也在后台读取缓存额度和实时额度，并复用用量 I/O 闸门；缓存快照/估算读取、app-server 的标准输入/输出等待和额度明细扫描接收同一个生命周期令牌，窗口关闭后会结束临时额度进程并丢弃尚未回到 UI 的结果。
-- 额度估算窗口的历史估算与缓存曲线并行加载，分别收集结果、异常和缓存警告，失败区域保留上次成功显示。所有任务都登记运行时，窗口关闭会取消它们，迟到异常仍被观察。主加载、手动估算与右键定位分别限制重复执行，关闭后不发布结果。
+- 主界面“额度估算”打开 `QuotaEstimateWindow`，加载当前窗口、手动区间估算与历史汇总，但不在启动链路计算曲线；用户点“打开额度曲线”后才新建 `QuotaCostCurveWindow`。历史表的“分析所选周期”打开 `QuotaCycleAnalysisWindow`，并复用已加载的周期及其上一周期。
 - `LastDisplayStore` 使用防抖写（`SemaphoreSlim` 写闸门 + 版本号，取消过期保存），关停调用 `FlushAsync`。存储 await 不捕获 UI 上下文，取得写锁后读取最新待保存状态，避免同步兼容入口死锁或较旧保存覆盖较新状态；保持 v5 内容格式。
 - `LatestRequestRunner` 串行执行主窗口用量刷新，只保留最新等待请求；查询带版本，过期请求的结果被丢弃。协调器在成功、异常及取消后恢复空闲，生命周期取消后不再接收新请求。回调在请求方的同步上下文开始执行。
 

@@ -9,10 +9,8 @@ public partial class QuotaEstimateWindow : Window
 {
     private readonly CodexQuotaEstimate currentQuota;
     private readonly AnalysisQuerySession querySession;
-    private readonly QuotaCostCurveControl embeddedCurveControl = new();
     private IReadOnlyList<CodexQuotaCycle> loadedWeeklyPeriods;
     private QuotaEstimateLoadResult? loadedEstimateResult;
-    private QuotaCostCurveResult? loadedCurveResult;
     private ResetOpportunitySummary? loadedResetSummary;
     private string? lastManualResult;
     private string? loadFailureStatus;
@@ -30,7 +28,6 @@ public partial class QuotaEstimateWindow : Window
         loadedWeeklyPeriods = knownWeeklyPeriods ?? Array.Empty<CodexQuotaCycle>();
         querySession = new AnalysisQuerySession(runtime);
         InitializeComponent();
-        EmbeddedCurveHost.Content = embeddedCurveControl;
         FiveHourValue.Text = currentQuota.FiveHour is { } fiveHour ? $"{Math.Max(0m, 100m - fiveHour.UsedPercent):N0}%" : "未返回";
         WeekValue.Text = currentQuota.Week is { } week ? $"{Math.Max(0m, 100m - week.UsedPercent):N0}%" : "未返回";
         FiveHourDetail.Text = currentQuota.FiveHour is null ? "当前未返回 5h 限制；有额度数据后显示费用折算。" : "正在计算用量与费用…";
@@ -52,8 +49,6 @@ public partial class QuotaEstimateWindow : Window
             if (loadedEstimateResult is null)
                 HistoryEmptyText.Text = "正在读取历史周期…";
             LoadingProgress.Visibility = Visibility.Visible;
-            if (loadedCurveResult is null)
-                ShowCurveState("正在整理额度曲线", "将结合已保存的额度快照与用量记录绘制。");
 
             var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
             var periods = loadedWeeklyPeriods;
@@ -61,19 +56,14 @@ public partial class QuotaEstimateWindow : Window
                 "额度估算窗口加载",
                 token => QuotaEstimateCalculator.BuildLoadResult(currentQuota, now, periods, token),
                 requiresSharedIo: false));
-            var curveTask = ObserveQueryAsync(querySession.RunAsync(
-                "额度估算窗口曲线",
-                token => QuotaCostCurveCalculator.Build(currentQuota, periods, token),
-                requiresSharedIo: false));
             var resetTask = ObserveQueryAsync(querySession.RunAsync(
                 "额度估算窗口重置卡",
                 _ => ResetOpportunityStore.Summarize(now),
                 requiresSharedIo: false));
-            await Task.WhenAll(estimateTask, curveTask, resetTask);
+            await Task.WhenAll(estimateTask, resetTask);
             if (querySession.IsStopping || !IsLoaded) return;
 
             var estimate = await estimateTask;
-            var curve = await curveTask;
             var reset = await resetTask;
             if (querySession.IsStopping || !IsLoaded) return;
             var failures = new List<string>();
@@ -120,16 +110,6 @@ public partial class QuotaEstimateWindow : Window
                 }
             }
 
-            if (curve.Result is { CacheWarnings.Count: 0 } curveResult)
-                ApplyCurveResult(curveResult.Value);
-            else
-            {
-                failures.Add("额度曲线：" + FailureSummary(curve.Result?.CacheWarnings, curve.Error, loadedCurveResult is not null));
-                details.Add(FailureDetail(curve.Result?.CacheWarnings, curve.Error));
-                if (loadedCurveResult is null)
-                    ShowCurveState("额度曲线暂不可用", "恢复缓存后，重新打开此窗口重试。");
-            }
-
             if (failures.Count > 0)
             {
                 loadFailureStatus = string.Join(" ", failures);
@@ -146,7 +126,6 @@ public partial class QuotaEstimateWindow : Window
             loadFailureDetail = ex.ToString();
             SetStatus(loadFailureStatus);
             if (loadedEstimateResult is null) HistoryEmptyText.Text = "历史用量暂不可用，请稍后重新打开此窗口。";
-            if (loadedCurveResult is null) ShowCurveState("额度曲线暂不可用", "请稍后重新打开此窗口。");
         }
         finally
         {
@@ -172,30 +151,6 @@ public partial class QuotaEstimateWindow : Window
     private static string FailureDetail(IReadOnlyList<CacheWarning>? warnings, Exception? error) =>
         warnings is { Count: > 0 } ? CacheFailureText.Detail(warnings) : error?.ToString() ?? "查询未完成";
 
-    private void ApplyCurveResult(QuotaCostCurveResult result)
-    {
-        loadedCurveResult = result;
-        var plans = result.Curves
-            .Select(item => item.PlanName)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(item => string.Equals(item, result.SelectedPlan, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-            .ThenBy(item => item)
-            .ToList();
-        CurvePlanComboBox.ItemsSource = plans;
-        CurvePlanComboBox.IsEnabled = plans.Count > 0;
-        CurvePlanComboBox.SelectedItem = plans.FirstOrDefault(item =>
-            string.Equals(item, result.SelectedPlan, StringComparison.OrdinalIgnoreCase)) ?? plans.FirstOrDefault();
-        ApplyEmbeddedCurvePlan();
-    }
-
-    private void ShowCurveState(string title, string detail)
-    {
-        EmbeddedCurveHost.Visibility = Visibility.Collapsed;
-        CurveEmptyPanel.Visibility = Visibility.Visible;
-        CurveEmptyTitle.Text = title;
-        CurveEmptyDetail.Text = detail;
-    }
-
     private static async Task<(AnalysisQueryResult<T>? Result, Exception? Error)> ObserveQueryAsync<T>(
         Task<AnalysisQueryResult<T>> task)
     {
@@ -209,30 +164,6 @@ public partial class QuotaEstimateWindow : Window
             // cannot discard another query's successful result.
             return (null, ex);
         }
-    }
-
-    private void CurvePlanComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (querySession.IsStopping) return;
-        ApplyEmbeddedCurvePlan();
-    }
-
-    private void WeeklyGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (querySession.IsStopping || loadedCurveResult is null || WeeklyGrid.SelectedItem is not QuotaWeeklyCycleRow selectedRow)
-        {
-            return;
-        }
-
-        var selectedCurve = loadedCurveResult.Curves.FirstOrDefault(item => item.PeriodStart == selectedRow.PeriodStart);
-        if (selectedCurve is not null &&
-            !string.Equals(CurvePlanComboBox.SelectedItem as string, selectedCurve.PlanName, StringComparison.OrdinalIgnoreCase))
-        {
-            CurvePlanComboBox.SelectedItem = selectedCurve.PlanName;
-            return;
-        }
-
-        ApplyEmbeddedCurvePlan();
     }
 
     private void WeeklyGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
@@ -327,31 +258,6 @@ public partial class QuotaEstimateWindow : Window
         }
 
         return null;
-    }
-
-    private void ApplyEmbeddedCurvePlan()
-    {
-        if (loadedCurveResult is null || CurvePlanComboBox.SelectedItem is not string selectedPlan)
-        {
-            if (loadedCurveResult is not null)
-                ShowCurveState("暂无可绘制的额度曲线", "需要同一周期内的用量记录与额度变化；积累数据后重新打开窗口查看。");
-            return;
-        }
-
-        var curves = loadedCurveResult.Curves
-            .Where(item => string.Equals(item.PlanName, selectedPlan, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        var selectedPeriodStart = (WeeklyGrid.SelectedItem as QuotaWeeklyCycleRow)?.PeriodStart;
-        embeddedCurveControl.SetData(curves, selectedPeriodStart);
-        if (curves.Any(curve => curve.Points.Select(point => Math.Round(point.UsedPercent, 3)).Distinct().Take(2).Count() >= 2))
-        {
-            CurveEmptyPanel.Visibility = Visibility.Collapsed;
-            EmbeddedCurveHost.Visibility = Visibility.Visible;
-        }
-        else
-        {
-            ShowCurveState("额度变化尚不足以绘制曲线", "保留当前记录，待出现更多额度变化后即可对比。");
-        }
     }
 
     private void ApplyCurrentRows(IReadOnlyList<QuotaCurrentWindowRow> rows)

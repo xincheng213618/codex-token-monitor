@@ -252,17 +252,17 @@ public sealed class UsageModelTests
         bucket.Add(offPeak, input: 2_000_000, cached: 1_000_000, output: 1_000_000, reasoning: 0, total: 3_000_000);
         bucket.Add(peak, input: 2_000_000, cached: 1_000_000, output: 1_000_000, reasoning: 0, total: 3_000_000);
         var profile = new PriceProfile(
-            "DeepSeek V4 Flash",
+            "DeepSeek V4.1 Flash",
             "¥",
-            1.50m,
-            0.05m,
-            4.50m,
+            1.00m,
+            0.02m,
+            4.00m,
             1_000_000m,
             PriceSchedule.DeepSeekBeijingPeakDouble);
 
         var cost = bucket.EstimateCost(profile);
 
-        Assert.Equal(18.15m, cost);
+        Assert.Equal(15.06m, cost);
     }
 
     [Theory]
@@ -279,5 +279,15 @@ public sealed class UsageModelTests
         var timestamp = new DateTimeOffset(2026, 8, 17, hour, minute, 0, TimeSpan.FromHours(8));
 
         Assert.Equal(expectedPeak, DeepSeekPricingSchedule.IsPeak(timestamp));
+    }
+
+    [Theory]
+    [InlineData(2026, 8, 22)]
+    [InlineData(2026, 8, 23)]
+    public void DeepSeekSchedule_TreatsWeekendHoursAsOffPeak(int year, int month, int day)
+    {
+        var timestamp = new DateTimeOffset(year, month, day, 10, 0, 0, TimeSpan.FromHours(8));
+
+        Assert.False(DeepSeekPricingSchedule.IsPeak(timestamp));
     }
 }

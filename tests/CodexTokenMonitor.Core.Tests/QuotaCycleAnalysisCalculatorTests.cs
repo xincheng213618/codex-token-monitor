@@ -260,6 +260,100 @@ public sealed class QuotaCycleAnalysisCalculatorTests
     }
 
     [Fact]
+    public void HistoricalPriorUsesAllPeriodsAndSuppressesAnOutlier()
+    {
+        var history = new[]
+        {
+            HistoricalEstimate("gpt-5.6-sol", 980m, Start.AddDays(-28)),
+            HistoricalEstimate("gpt-5.6-sol", 1_000m, Start.AddDays(-21)),
+            HistoricalEstimate("gpt-5.6-sol", 1_050m, Start.AddDays(-14)),
+            HistoricalEstimate("gpt-5.6-sol", 10_000m, Start.AddDays(-7))
+        };
+
+        var estimate = Assert.Single(RobustQuotaModelCapacityEstimator.BuildHistoricalPriors(history, Start));
+
+        Assert.InRange(estimate.AverageFullQuotaCost, 900m, 1_300m);
+        Assert.InRange(estimate.MinimumFullQuotaCost, 750m, 1_200m);
+        Assert.InRange(estimate.MaximumFullQuotaCost, 950m, 1_500m);
+        Assert.Equal(4, estimate.HistoricalPeriodCount);
+        Assert.Equal(QuotaModelCapacitySource.PreviousPeriodApproved, estimate.Source);
+    }
+
+    [Fact]
+    public void RobustRegressionSeparatesModelsAcrossDifferentMixtures()
+    {
+        var result = ResultWithBands(
+            RegressionBand(0, 5m, ("model-a", 40m), ("model-b", 20m)),
+            RegressionBand(1, 5m, ("model-a", 10m), ("model-b", 80m)));
+        var baselines = new[]
+        {
+            CapacityEstimate("model-a", 1_300m, Start),
+            CapacityEstimate("model-b", 1_600m, Start)
+        };
+
+        var estimates = RobustQuotaModelCapacityEstimator.RegressCurrentPeriod(result, baselines);
+
+        Assert.Equal(2, estimates.Count);
+        Assert.InRange(estimates.Single(item => item.ModelId == "model-a").AverageFullQuotaCost, 900m, 1_150m);
+        Assert.InRange(estimates.Single(item => item.ModelId == "model-b").AverageFullQuotaCost, 1_750m, 2_200m);
+        Assert.All(estimates, item => Assert.Equal(QuotaModelCapacitySource.CurrentPeriodBlended, item.Source));
+    }
+
+    [Fact]
+    public void LowShareModelRemainsPriorDominated()
+    {
+        var result = ResultWithBands(
+            RegressionBand(0, 5m, ("model-a", 49.95m), ("model-b", 0.05m)));
+        var baselines = new[]
+        {
+            HistoricalEstimate("model-a", 1_000m, Start.AddDays(-7)),
+            HistoricalEstimate("model-b", 2_000m, Start.AddDays(-7))
+        };
+
+        var estimate = RobustQuotaModelCapacityEstimator.RegressCurrentPeriod(result, baselines)
+            .Single(item => item.ModelId == "model-b");
+
+        Assert.InRange(estimate.AverageFullQuotaCost, 1_900m, 2_100m);
+        Assert.Equal(1, estimate.HistoricalPeriodCount);
+    }
+
+    [Fact]
+    public void RobustRegressionDownweightsAHighCostOutlierBand()
+    {
+        var result = ResultWithBands(
+            RegressionBand(0, 5m, ("model-a", 50m)),
+            RegressionBand(1, 5m, ("model-a", 50m)),
+            RegressionBand(2, 5m, ("model-a", 50m)),
+            RegressionBand(3, 5m, ("model-a", 50m)),
+            RegressionBand(4, 5m, ("model-a", 50m)),
+            RegressionBand(5, 5m, ("model-a", 200m)));
+        var baseline = new[] { CapacityEstimate("model-a", 1_000m, Start) };
+
+        var estimate = Assert.Single(RobustQuotaModelCapacityEstimator.RegressCurrentPeriod(result, baseline));
+
+        Assert.InRange(estimate.AverageFullQuotaCost, 850m, 1_250m);
+    }
+
+    [Fact]
+    public void RobustRegressionRejectsBandsWithUnpricedQuotaShare()
+    {
+        var priced = RegressionBand(0, 5m, ("model-a", 50m));
+        var band = priced with
+        {
+            Models = priced.Models.Concat(new[]
+            {
+                new QuotaCycleModelShare("unknown", 0.1m, 2m, 1, 0m, 0m, false)
+            }).ToList()
+        };
+
+        var estimates = RobustQuotaModelCapacityEstimator.RegressCurrentPeriod(
+            ResultWithBands(band),
+            new[] { CapacityEstimate("model-a", 1_000m, Start) });
+
+        Assert.Empty(estimates);
+    }
+
+    [Fact]
     public void FitFullQuotaCostUsesEachModelsCostShare()
     {
         var band = MixedCapacityBand(
@@ -322,6 +416,44 @@ public sealed class QuotaCycleAnalysisCalculatorTests
     }
 
     [Fact]
+    public void CalibrationBuildCarriesAllEarlierPeriodsIntoTheCurrentRegression()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "QuotaModelHistory-" + Guid.NewGuid().ToString("N"));
+        using var caches = MonitorCachePaths.PushLocalAppDataRoot(root);
+        using var logs = UsageLogPaths.PushRoot(Path.Combine(root, "logs"));
+        var current = Period();
+        SubscriptionPlanStore.Save(new[] { new SubscriptionPlanRecord
+        {
+            Id = "plan", StartLocal = current.PeriodStart.AddDays(-28), EndLocal = current.PeriodEnd.AddDays(1),
+            PlanName = "Pro 20x", AmountCny = 1_380m
+        } });
+        foreach (var (days, capacity) in new[] { (-21, 950m), (-14, 1_000m), (-7, 1_050m) })
+        {
+            var historical = current with
+            {
+                PeriodStart = current.PeriodStart.AddDays(days),
+                PeriodEnd = current.PeriodStart.AddDays(days + 7),
+                ResetAt = current.PeriodStart.AddDays(days + 7)
+            };
+            QuotaModelCapacityCalibrationStore.Upsert("Pro 20x", historical,
+                new[] { CapacityEstimate("model-a", capacity, historical.PeriodStart) });
+        }
+
+        var currentBand = CapacityBand(0, "model-a", 100m, 1_000m);
+        var report = QuotaModelCapacityCalibrationService.Build(
+            current,
+            ResultWithBandsAndModels(new[] { currentBand }, currentBand.Models.Single()),
+            previousPeriod: null);
+
+        var estimate = Assert.Single(report.Estimates);
+        Assert.Equal(3, estimate.HistoricalPeriodCount);
+        Assert.Equal(1, estimate.CurrentBandCount);
+        Assert.Equal(1, estimate.BandCount);
+        Assert.Equal(QuotaModelCapacitySource.CurrentPeriodBlended, estimate.Source);
+        Assert.InRange(estimate.AverageFullQuotaCost, 950m, 1_050m);
+    }
+
+    [Fact]
     public void CalibrationStoreLoadsOnlyTheExactRequestedPeriod()
     {
         var root = Path.Combine(Path.GetTempPath(), "QuotaModelCapacity-" + Guid.NewGuid().ToString("N"));
@@ -356,6 +488,14 @@ public sealed class QuotaCycleAnalysisCalculatorTests
             QuotaModelCapacitySource.PreviousPeriodApproved));
         Assert.Equal(2_400m, latest.AverageFullQuotaCost);
         Assert.Equal(previous.PeriodStart, latest.CalibrationPeriodStart);
+
+        var history = QuotaModelCapacityCalibrationStore.LoadHistoryBefore(
+            "PRO 20X",
+            Start,
+            new[] { "gpt-5.6-sol" },
+            QuotaModelCapacitySource.PreviousPeriodApproved);
+        Assert.Equal(2, history.Count);
+        Assert.Equal(new[] { 1_000m, 2_400m }, history.Select(item => item.AverageFullQuotaCost));
     }
 
     [Fact]
@@ -463,6 +603,33 @@ public sealed class QuotaCycleAnalysisCalculatorTests
                 true)).ToList());
     }
 
+    private static QuotaCycleAnalysisBand RegressionBand(
+        int index,
+        decimal drop,
+        params (string Model, decimal Cost)[] models)
+    {
+        var totalCost = models.Sum(item => item.Cost);
+        return new QuotaCycleAnalysisBand(
+            index,
+            index * drop,
+            (index + 1) * drop,
+            Start.AddMinutes(index),
+            Start.AddMinutes(index + 1),
+            drop,
+            100,
+            totalCost,
+            totalCost / drop * 100m,
+            models.OrderByDescending(item => item.Cost).First().Model,
+            models.Select(item => new QuotaCycleModelShare(
+                item.Model,
+                drop * item.Cost / totalCost,
+                item.Cost / totalCost * 100m,
+                1,
+                item.Cost,
+                item.Cost / totalCost * 100m,
+                true)).ToList());
+    }
+
     private static QuotaModelCapacityEstimate CapacityEstimate(
         string model,
         decimal value,
@@ -474,6 +641,19 @@ public sealed class QuotaCycleAnalysisCalculatorTests
         value,
         QuotaModelCapacitySource.CurrentPeriodApproved,
         periodStart);
+
+    private static QuotaModelCapacityEstimate HistoricalEstimate(
+        string model,
+        decimal value,
+        DateTimeOffset periodStart) => new(
+        model,
+        4,
+        value,
+        value * 0.9m,
+        value * 1.1m,
+        QuotaModelCapacitySource.PreviousPeriodApproved,
+        periodStart,
+        HistoricalPeriodCount: 1);
 
     private static QuotaCycleAnalysisSample Sample(int minute, decimal used, TokenUsageBucket usage) =>
         new(Start.AddMinutes(minute), used, usage);

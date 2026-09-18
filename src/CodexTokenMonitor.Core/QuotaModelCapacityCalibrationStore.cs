@@ -21,6 +21,7 @@ internal static class QuotaModelCapacityCalibrationStore
         Execute(nameof(Upsert), connection =>
         {
             using var transaction = connection.BeginTransaction();
+            var storedPlanName = ResolveStoredPlanName(connection, transaction, planName);
             foreach (var estimate in estimates)
             {
                 using var command = connection.CreateCommand();
@@ -41,7 +42,7 @@ internal static class QuotaModelCapacityCalibrationStore
                         sample_count = excluded.sample_count,
                         updated_at = excluded.updated_at
                     """;
-                command.Parameters.AddWithValue("$plan_name", planName);
+                command.Parameters.AddWithValue("$plan_name", storedPlanName);
                 command.Parameters.AddWithValue("$model_id", CodexModelCost.NormalizeModelId(estimate.ModelId));
                 command.Parameters.AddWithValue("$period_start", FormatDateTimeOffset(period.PeriodStart));
                 command.Parameters.AddWithValue("$period_end", FormatDateTimeOffset(period.PeriodEnd));
@@ -69,7 +70,7 @@ internal static class QuotaModelCapacityCalibrationStore
                 SELECT model_id, average_full_quota_cost, minimum_full_quota_cost,
                        maximum_full_quota_cost, sample_count
                 FROM quota_model_calibrations
-                WHERE plan_name = $plan_name AND period_start = $period_start
+                WHERE plan_name = $plan_name COLLATE NOCASE AND period_start = $period_start
                 ORDER BY model_id
                 """;
             command.Parameters.AddWithValue("$plan_name", planName);
@@ -112,7 +113,7 @@ internal static class QuotaModelCapacityCalibrationStore
                 SELECT model_id, period_start, average_full_quota_cost,
                        minimum_full_quota_cost, maximum_full_quota_cost, sample_count
                 FROM quota_model_calibrations
-                WHERE plan_name = $plan_name
+                WHERE plan_name = $plan_name COLLATE NOCASE
                 ORDER BY model_id, period_start DESC
                 """;
             command.Parameters.AddWithValue("$plan_name", planName);
@@ -143,6 +144,55 @@ internal static class QuotaModelCapacityCalibrationStore
         });
     }
 
+    public static IReadOnlyList<QuotaModelCapacityEstimate> LoadHistoryBefore(
+        string planName,
+        DateTimeOffset periodStart,
+        IReadOnlyCollection<string> modelIds,
+        QuotaModelCapacitySource source)
+    {
+        var requestedModels = modelIds
+            .Select(CodexModelCost.NormalizeModelId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (requestedModels.Count == 0)
+        {
+            return Array.Empty<QuotaModelCapacityEstimate>();
+        }
+
+        return Execute(nameof(LoadHistoryBefore), connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT model_id, period_start, average_full_quota_cost,
+                       minimum_full_quota_cost, maximum_full_quota_cost, sample_count
+                FROM quota_model_calibrations
+                WHERE plan_name = $plan_name COLLATE NOCASE
+                ORDER BY period_start, model_id
+                """;
+            command.Parameters.AddWithValue("$plan_name", planName);
+            var result = new List<QuotaModelCapacityEstimate>();
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var modelId = CodexModelCost.NormalizeModelId(reader.GetString(0));
+                var calibrationStart = ParseDateTimeOffset(reader.GetString(1));
+                if (!requestedModels.Contains(modelId) || calibrationStart >= periodStart)
+                {
+                    continue;
+                }
+
+                result.Add(new QuotaModelCapacityEstimate(
+                    modelId,
+                    reader.GetInt32(5),
+                    ParseDecimal(reader.GetString(2)),
+                    ParseDecimal(reader.GetString(3)),
+                    ParseDecimal(reader.GetString(4)),
+                    source,
+                    calibrationStart));
+            }
+            return result;
+        });
+    }
+
     private static T Execute<T>(string operation, Func<SqliteConnection, T> action)
     {
         var path = MonitorSettingsDatabase.Path;
@@ -166,6 +216,24 @@ internal static class QuotaModelCapacityCalibrationStore
                 throw;
             }
         }
+    }
+
+    private static string ResolveStoredPlanName(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string planName)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT plan_name
+            FROM quota_model_calibrations
+            WHERE plan_name = $plan_name COLLATE NOCASE
+            ORDER BY CASE WHEN plan_name = $plan_name THEN 0 ELSE 1 END, period_start DESC
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("$plan_name", planName);
+        return command.ExecuteScalar() as string ?? planName;
     }
 
     private static void EnsureInitialized(SqliteConnection connection, DatabaseState state)

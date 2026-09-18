@@ -171,14 +171,22 @@ public partial class QuotaCycleAnalysisWindow : Window
             var source = item.Source switch
             {
                 QuotaModelCapacitySource.CurrentPeriodApproved => "本期核准",
-                QuotaModelCapacitySource.CurrentPeriodBlended => "本期综合",
-                QuotaModelCapacitySource.PreviousPeriodApproved => "沿用上次",
+                QuotaModelCapacitySource.CurrentPeriodBlended => item.HistoricalPeriodCount > 0
+                    ? "历史回归+本期"
+                    : "本期稳健回归",
+                QuotaModelCapacitySource.PreviousPeriodApproved => "历史稳健值",
                 _ => "本期推算"
             };
             var pureBandCount = Math.Max(0, item.BandCount - item.MixedBandCount);
-            var sampleText = item.MixedBandCount > 0
-                ? $"{pureBandCount}纯+{item.MixedBandCount}混"
-                : $"{item.BandCount}段";
+            var sampleText = item.HistoricalPeriodCount > 0
+                ? item.CurrentBandCount > 0
+                    ? $"{item.HistoricalPeriodCount}期历史+{item.CurrentBandCount}段本期"
+                    : $"{item.HistoricalPeriodCount}期历史"
+                : item.CurrentBandCount > 0
+                    ? $"{item.CurrentBandCount}段本期"
+                    : item.MixedBandCount > 0
+                    ? $"{pureBandCount}纯+{item.MixedBandCount}混"
+                    : $"{item.BandCount}段";
             var range = item.MinimumFullQuotaCost == item.MaximumFullQuotaCost
                 ? $"{sampleText}，{source}"
                 : $"{FormatMoney(item.MinimumFullQuotaCost)}–{FormatMoney(item.MaximumFullQuotaCost)}，{sampleText}，{source}";
@@ -199,8 +207,8 @@ public partial class QuotaCycleAnalysisWindow : Window
             ? $"模型 100% 动态估算（{report.PlanName}）：{string.Join("   ·   ", display)}"
             : "没有满足条件的单模型分段";
         ModelCapacityBadge.ToolTip =
-            "模型归因按界面整数显示达到 99% 就按纯模型样本核准，多个样本取平均并保存到数据库；" +
-            "本期没有纯模型样本时沿用同套餐最近一次校准，再按本期混合段的模型成本占比动态调整。";
+            "同套餐往期校准会按时间与样本量形成稳健先验，并降低离群周期的影响；" +
+            "本期所有可计价分段再按模型成本联合回归更新。占比很小的模型更多沿用历史，避免被少量样本拉偏。";
     }
 
     private void Chart_BandSelected(object? sender, QuotaCycleAnalysisBand band)
