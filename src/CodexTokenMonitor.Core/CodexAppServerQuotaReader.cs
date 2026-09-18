@@ -7,18 +7,18 @@ namespace CodexTokenMonitor;
 /// This endpoint is independent from session token events, so it still works
 /// when no conversation has produced a fresh token_count log entry.
 /// </summary>
-internal static class CodexAppServerQuotaReader
+internal sealed class CodexAppServerQuotaReader
 {
     private const int InitializeRequestId = 1;
     private const int RateLimitsRequestId = 2;
-    private static readonly object SyncRoot = new();
+    private readonly object SyncRoot = new();
     private static readonly TimeSpan SuccessCacheDuration = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan FailureCacheDuration = TimeSpan.FromSeconds(10);
-    private static DateTimeOffset lastAttemptUtc = DateTimeOffset.MinValue;
-    private static CodexQuotaSnapshot? cachedSnapshot;
-    private static CodexCliCommand? selectedCommand;
+    private DateTimeOffset lastAttemptUtc = DateTimeOffset.MinValue;
+    private CodexQuotaSnapshot? cachedSnapshot;
+    private CodexCliCommand? selectedCommand;
 
-    public static CodexQuotaSnapshot? ReadCurrent(CancellationToken cancellationToken = default)
+    public CodexQuotaSnapshot? ReadCurrent(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var lockTaken = false;
@@ -108,7 +108,7 @@ internal static class CodexAppServerQuotaReader
         }
     }
 
-    private static async Task<CodexQuotaSnapshot?> ReadCurrentAsync(CancellationToken cancellationToken)
+    private async Task<CodexQuotaSnapshot?> ReadCurrentAsync(CancellationToken cancellationToken)
     {
         var failedCommand = selectedCommand;
         if (failedCommand is not null)
@@ -141,7 +141,7 @@ internal static class CodexAppServerQuotaReader
         return null;
     }
 
-    private static async Task<CodexQuotaSnapshot?> TryReadCurrentAsync(
+    private async Task<CodexQuotaSnapshot?> TryReadCurrentAsync(
         CodexCliCommand command,
         CancellationToken cancellationToken)
     {
@@ -162,7 +162,7 @@ internal static class CodexAppServerQuotaReader
         }
     }
 
-    private static async Task<CodexQuotaSnapshot?> ReadCurrentAsync(
+    private async Task<CodexQuotaSnapshot?> ReadCurrentAsync(
         CodexCliCommand command,
         CancellationToken cancellationToken)
     {
@@ -170,7 +170,7 @@ internal static class CodexAppServerQuotaReader
         return response is null ? null : ParseRateLimitsResponse(response, BeijingClock.Now);
     }
 
-    public static async Task<string?> ReadPlanTypeAsync(CancellationToken cancellationToken = default)
+    public async Task<string?> ReadPlanTypeAsync(CancellationToken cancellationToken = default)
     {
         foreach (var command in CodexCliLocator.FindAll())
         {

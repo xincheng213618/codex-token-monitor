@@ -25,7 +25,7 @@ public sealed class CodexAppServerQuotaReaderTests
         cancellation.Cancel();
 
         Assert.Throws<OperationCanceledException>(() =>
-            CodexAppServerQuotaReader.ReadCurrent(cancellation.Token));
+            UsageSourceReaders.Codex.AppServerQuota.ReadCurrent(cancellation.Token));
     }
 
     [Fact]

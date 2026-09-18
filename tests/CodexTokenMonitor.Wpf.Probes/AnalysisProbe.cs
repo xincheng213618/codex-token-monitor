@@ -71,9 +71,11 @@ internal static class AnalysisProbe
         foreach (var source in Enum.GetValues<UsageSource>())
             Require(UsageLogPaths.GetOverrideRoot(source)!.StartsWith(logRoot, StringComparison.OrdinalIgnoreCase), "isolated log root");
 
-        var appServerType = typeof(UsageSource).Assembly.GetType("CodexTokenMonitor.CodexAppServerQuotaReader")!;
-        var appServerAttempt = appServerType.GetField("lastAttemptUtc", BindingFlags.Static | BindingFlags.NonPublic)!;
-        var attemptBefore = appServerAttempt.GetValue(null);
+        // The shared reader instance owns the attempt timestamp now that the
+        // app-server quota reader is instance-scoped.
+        var appServer = UsageSourceReaders.Codex.AppServerQuota;
+        var appServerAttempt = appServer.GetType().GetField("lastAttemptUtc", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var attemptBefore = appServerAttempt.GetValue(appServer);
         var (quota, periods) = SeedCaches();
         using var runtime = new MonitorRuntime();
         suiteRuntime = runtime;
@@ -85,7 +87,7 @@ internal static class AnalysisProbe
 
         var stopped = await runtime.StopAsync(Budget);
         Require(stopped.Completed, "primary probe runtime drains");
-        Require(Equals(attemptBefore, appServerAttempt.GetValue(null)), "no app-server quota requests");
+        Require(Equals(attemptBefore, appServerAttempt.GetValue(appServer)), "no app-server quota requests");
         Require(!Directory.EnumerateFiles(logRoot, "*", SearchOption.AllDirectories).Any(), "source log fixtures remain empty");
         Require(Windows.All(ClosedWindows.Contains), "all shown windows reached real Closed");
         Results.Add(new { check = "isolation-and-exit", isolatedRoot, logRoot, mainWindowConstructed = false,

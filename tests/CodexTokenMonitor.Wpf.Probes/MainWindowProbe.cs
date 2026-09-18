@@ -66,9 +66,11 @@ internal static class MainWindowProbe
         Require(Path.GetFullPath(MonitorCachePaths.LocalAppData) == isolatedRoot, "cache isolation");
         new CodexDataSharingSettings { AutoStart = false }.Save();
         SeedCaches();
-        var appServerType = typeof(UsageSource).Assembly.GetType("CodexTokenMonitor.CodexAppServerQuotaReader")!;
-        var appServerAttempt = appServerType.GetField("lastAttemptUtc", BindingFlags.Static | BindingFlags.NonPublic)!;
-        var attemptBefore = appServerAttempt.GetValue(null);
+        // The shared reader instance owns the attempt timestamp now that the
+        // app-server quota reader is instance-scoped.
+        var appServer = UsageSourceReaders.Codex.AppServerQuota;
+        var appServerAttempt = appServer.GetType().GetField("lastAttemptUtc", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var attemptBefore = appServerAttempt.GetValue(appServer);
         var window = CreateWindow();
         var runtime = Get<MonitorRuntime>(window, "runtime");
         var mainWasLoaded = false;
@@ -214,7 +216,7 @@ internal static class MainWindowProbe
             Results.Add(new { check = "real-closing-drain", firstCloseDeferred = true, dispatcherResponsive = true,
                 resultPublished = false, gateReleasedBeforeDisposal = true, finalClosed = true });
 
-            Require(Equals(attemptBefore, appServerAttempt.GetValue(null)), "no live app-server quota reads");
+            Require(Equals(attemptBefore, appServerAttempt.GetValue(appServer)), "no live app-server quota reads");
             Require(GetObject(window, "dataSharingServer") is null, "no sharing server started");
             Require(!Directory.EnumerateFiles(logRoot, "*", SearchOption.AllDirectories).Any(), "no source log fixtures or writes");
             Require(LoadedWindows.Count == 0, "no main window entered Loaded");

@@ -13,10 +13,13 @@ internal sealed class CodexUsageReader
 
     /// <summary>Cycle boundary cache owned by this reader instance.</summary>
     internal CodexQuotaCycleReader Cycles => CycleReader;
+    /// <summary>Live app-server quota reader owned by this reader instance.</summary>
+    internal CodexAppServerQuotaReader AppServerQuota => AppServerQuotaReader;
 
     private LiveFileTailReader UsageTailReader = new();
     private LiveFileTailReader QuotaTailReader = new();
     private readonly CodexQuotaCycleReader CycleReader = new();
+    private readonly CodexAppServerQuotaReader AppServerQuotaReader = new();
     private ConcurrentDictionary<string, SubagentReplayFilter> UsageReplayFilters =
         new(StringComparer.OrdinalIgnoreCase);
     private ConcurrentDictionary<string, SubagentReplayFilter> QuotaReplayFilters =
@@ -138,7 +141,7 @@ internal sealed class CodexUsageReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         var now = DateTimeOffset.UtcNow.ToOffset(BeijingOffset);
-        var directSnapshot = CodexAppServerQuotaReader.ReadCurrent(cancellationToken);
+        var directSnapshot = AppServerQuotaReader.ReadCurrent(cancellationToken);
         if (directSnapshot is not null)
         {
             directSnapshot = NormalizeQuotaSnapshotWindows(directSnapshot);

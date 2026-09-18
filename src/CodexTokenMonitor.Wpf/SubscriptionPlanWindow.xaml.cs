@@ -231,7 +231,7 @@ internal partial class SubscriptionPlanWindow : Window
             var plan = await querySession.Runtime.Run("读取套餐账户信息", async runtimeToken =>
             {
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken, timeout.Token);
-                return await Task.Run(() => CodexAppServerQuotaReader.ReadPlanTypeAsync(linked.Token), linked.Token);
+                return await Task.Run(() => UsageSourceReaders.Codex.AppServerQuota.ReadPlanTypeAsync(linked.Token), linked.Token);
             });
             if (isClosed || querySession.IsStopping) return;
             AccountStatusText.Text = plan is null

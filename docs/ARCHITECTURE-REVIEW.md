@@ -157,6 +157,8 @@
 
 测试：Core 回归 553/553（本轮不改测试语义，替换调用目标）。
 
+第十二轮（2026-09-19）把 `CodexAppServerQuotaReader` 也改为实例类：`SyncRoot` 锁、20s/10s 成功/失败缓存与已选 CLI 命令随实例持有，`ReadCurrent`/`ReadPlanTypeAsync` 为实例方法，纯协议解析（`ParseRateLimitsResponse` 等）保持静态。实例由 `CodexUsageReader` 持有并经 `UsageSourceReaders.Codex.AppServerQuota` 暴露；订阅套餐窗口与主窗口回退路径改走共享实例。两个桌面探针原来反射静态字段 `lastAttemptUtc` 断言"探针期间零 app-server 调用"，改为从共享实例读取同一实例字段，断言语义不变。至此读取与额度链路没有进程级静态可变状态。验证：Core 回归 553/553，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-011607-*/`）。
+
 第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
 
 第十轮（2026-09-19）把 `CodexQuotaCycleReader` 的单条目 2 分钟周期缓存改为实例持有：缓存字段与 `ReadWeeklyCycles`/`InvalidateCache` 随实例走，周期识别纯算法保持静态；实例由 `CodexUsageReader` 持有并经 `UsageSourceReaders.Codex.Cycles` 暴露，`ClearCache`/`ClearCachedDay` 失效本实例缓存。Core 回归 553/553，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-005753-*/`）。
