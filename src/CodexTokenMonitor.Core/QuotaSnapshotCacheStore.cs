@@ -1073,7 +1073,9 @@ internal sealed class QuotaSnapshotCacheStore
         {
             DataSource = cachePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Pooling = true
+            // Pooling has handed out disposed native handles under parallel
+            // test load; store I/O is serialized by the shared gate anyway.
+            Pooling = false
         };
         var connection = new SqliteConnection(builder.ToString());
         try

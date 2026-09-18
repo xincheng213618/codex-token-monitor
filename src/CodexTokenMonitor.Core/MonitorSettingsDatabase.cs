@@ -18,7 +18,10 @@ internal static class MonitorSettingsDatabase
         {
             DataSource = path,
             Mode = create ? SqliteOpenMode.ReadWriteCreate : SqliteOpenMode.ReadWrite,
-            Pooling = true
+            // Pooling keeps native handles alive between connections; parallel
+            // test loads have handed out disposed ones. I/O here is rare and
+            // serialized by the shared gate, so pooling buys nothing.
+            Pooling = false
         }.ToString());
         try
         {

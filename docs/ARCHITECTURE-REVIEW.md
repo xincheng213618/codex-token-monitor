@@ -157,6 +157,8 @@
 
 测试：Core 回归 553/553（本轮不改测试语义，替换调用目标）。
 
+第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
+
 第十轮（2026-09-19）把 `CodexQuotaCycleReader` 的单条目 2 分钟周期缓存改为实例持有：缓存字段与 `ReadWeeklyCycles`/`InvalidateCache` 随实例走，周期识别纯算法保持静态；实例由 `CodexUsageReader` 持有并经 `UsageSourceReaders.Codex.Cycles` 暴露，`ClearCache`/`ClearCachedDay` 失效本实例缓存。Core 回归 553/553，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-005753-*/`）。
 
 第九轮（2026-09-18/19）验证：Core 回归 **553/553 通过，0 跳过**，Release 构建 **0 警告、0 错误**；桌面回归三组全部通过（主窗口 46 项检查、8 张渲染，设置 10 项、11 张渲染，分析 9 项、4 张渲染），报告在 `artifacts/desktop-probes/20260919-005227-*/desktop-regression.json`。`DshUsageReaderTests` 全量通过，确认路径作用域迁移等价；`ReaderCacheConsistencyTests` 在共享实例语义下继续约束缓存一致性。
@@ -166,7 +168,7 @@
 | 优先级 | 现有证据 | 下一步及验收条件 |
 | --- | --- | --- |
 | ~~来源读取去静态化~~（已完成） | `CodexUsageReader` 实例化，共享实例经 `UsageSourceReaders.Codex` 暴露；DSH 全局测试覆盖属性已删；`CodexQuotaCycleReader` 周期缓存挂到 Codex reader 实例上 | 无遗留 |
-| 测试稳定性：SQLite 连接池竞态 | 一次偶发 `ObjectDisposedException`（`MonitorSettingsDatabase.OpenConnection`，池化句柄），重跑即绿 | 复现或收紧：monitor-settings 低频路径评估 `Pooling=false` 或升级 Microsoft.Data.Sqlite 补丁；验收为连续 20 次全量回归 0 失败 |
+| ~~测试稳定性：SQLite 连接池竞态~~（已完成） | 一次偶发 `ObjectDisposedException`（`MonitorSettingsDatabase.OpenConnection`，池化句柄），重跑即绿 | 生产四个 store 全部 `Pooling=false`（I/O 由共享闸门串行化，池化无收益）；连续 20 次全量回归验证 |
 | 按功能迭代：额度和设置显示 | 主统计与每来源页面状态已独立；额度/设置摘要仍是窗口适配代码 | 随相关需求提取有状态契约的部分，继续保留图表和控件适配职责，不以 partial 文件数量或全面 MVVM 作为完成标准 |
 | 按功能迭代：来源扩展 | 来源定义和 Tab 已统一，Core 查询与 WPF 页面工厂分离 | 新来源分别注册读取能力和桌面页面，保持价格 JSON 字段与来源枚举的兼容迁移约定 |
 

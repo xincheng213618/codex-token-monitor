@@ -28,7 +28,7 @@ internal sealed class CodexHistorySharingStore(
         QuotaSnapshotCacheStore.Load(folder);
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = UsageCacheStore.GetCachePath(folder), Mode = SqliteOpenMode.ReadOnly
+            DataSource = UsageCacheStore.GetCachePath(folder), Mode = SqliteOpenMode.ReadOnly, Pooling = false
         }.ToString());
         connection.Open();
         using var command = connection.CreateCommand();
