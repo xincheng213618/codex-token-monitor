@@ -106,8 +106,8 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
 
         Assert.Contains(day, incomplete);
 
-        // The stale null-model event rows are dropped so the re-scan rebuilds
-        // the day from logs with model attribution.
+        // The stale event row must SURVIVE the migration (its log may be gone);
+        // the re-scan merge enriches matching keys instead of dropping rows.
         var dbPath = UsageCacheStore.GetCachePath(folder);
         using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
@@ -117,23 +117,9 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
         }.ToString()))
         {
             connection.Open();
-            using (var command = connection.CreateCommand())
-            {
-                command.CommandText = "SELECT COUNT(*) FROM usage_events WHERE event_key = 'zcode:legacy'";
-                var count = (long)command.ExecuteScalar()!;
-                if (count != 0)
-                {
-                    var markers = new List<string>();
-                    using var markerCommand = connection.CreateCommand();
-                    markerCommand.CommandText = "SELECT name FROM cache_maintenance";
-                    using var reader = markerCommand.ExecuteReader();
-                    while (reader.Read()) markers.Add(reader.GetString(0));
-                    Assert.Fail(
-                        $"zcode:legacy survived (count={count}); " +
-                        $"markers=[{string.Join(",", markers)}]; " +
-                        $"model_id={File.ReadAllText(dbPath).Length}");
-                }
-            }
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM usage_events WHERE event_key = 'zcode:legacy'";
+            Assert.Equal(1L, (long)command.ExecuteScalar()!);
         }
     }
 
