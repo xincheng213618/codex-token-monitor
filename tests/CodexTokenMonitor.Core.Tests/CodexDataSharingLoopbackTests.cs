@@ -1,0 +1,173 @@
+using System.Security.Cryptography;
+using Xunit;
+
+namespace CodexTokenMonitor.Tests;
+
+/// <summary>
+/// Real loopback: starts the Kestrel sharing server over isolated stores, then
+/// drives it with the real client. Delegates push the cache root themselves —
+/// Kestrel worker threads do not inherit the test's AsyncLocal scopes.
+/// </summary>
+public sealed class CodexDataSharingLoopbackTests : IDisposable
+{
+    private readonly string root = Path.Combine(Path.GetTempPath(), $"SharingLoopback-{Guid.NewGuid():N}");
+    private readonly string secondRoot = Path.Combine(Path.GetTempPath(), $"SharingLoopback-B-{Guid.NewGuid():N}");
+    private readonly IDisposable rootScope;
+    private readonly string accessKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+
+    public CodexDataSharingLoopbackTests()
+    {
+        rootScope = MonitorCachePaths.PushLocalAppDataRoot(root);
+        SeedUsageDay();
+    }
+
+    public void Dispose()
+    {
+        rootScope.Dispose();
+        foreach (var dir in new[] { root, secondRoot })
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup of the temporary trees.
+            }
+        }
+    }
+
+    private void SeedUsageDay()
+    {
+        var at = DateTimeOffset.UtcNow.AddHours(-1);
+        var events = Enumerable.Range(1, 3).Select(index => new TokenUsageEvent(
+            at.AddMinutes(index), InputTokens: 1_000 * index, CachedInputTokens: 0, OutputTokens: 0,
+            ReasoningOutputTokens: 0, TotalTokens: 1_000 * index, Key: $"share-event-{index}")).ToList();
+        var day = DateOnly.FromDateTime(at.DateTime);
+        var bucket = new TokenUsageBucket
+        {
+            StartLocal = new DateTimeOffset(day.Year, day.Month, day.Day, 0, 0, 0, CodexUsageReader.BeijingOffset)
+        };
+        foreach (var usageEvent in events)
+        {
+            bucket.Add(usageEvent);
+        }
+
+        UsageCacheStore.Load("CodexTokenMonitor").Put(
+            bucket, isComplete: true, scannedThroughLocal: day.ToDateTime(TimeOnly.MaxValue),
+            detailEvents: events, propagateErrors: true);
+    }
+
+    private CodexDataSharingServer StartServer()
+    {
+        // Kestrel threads do not inherit AsyncLocal cache scopes, so every
+        // delegate re-pushes the isolated root before touching the stores.
+        var server = new CodexDataSharingServer(
+            (path, cancellationToken) =>
+            {
+                using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+                return Task.FromResult(CodexDataTransferService.Export(path, CodexDataExportScope.RecentDays, cancellationToken));
+            },
+            (path, cancellationToken) =>
+            {
+                using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+                return Task.FromResult(CodexDataTransferService.ImportRecentDays(path, cancellationToken));
+            });
+        server.StartAsync(0, accessKey).GetAwaiter().GetResult();
+        return server;
+    }
+
+    private string ExportUploadPackage()
+    {
+        var packagePath = Path.Combine(Path.GetTempPath(), $"share-upload-{Guid.NewGuid():N}.codex.json");
+        var exported = CodexDataTransferService.Export(packagePath, CodexDataExportScope.RecentDays);
+        Assert.Equal(3, exported.UsageEventCount);
+        return packagePath;
+    }
+
+    [Fact]
+    public async Task WrongAccessKey_IsRejectedWithUnauthorized()
+    {
+        var server = StartServer();
+        await using (server)
+        {
+            using var client = new CodexDataSharingClient($"http://127.0.0.1:{server.Port}", "wrong-key-0000");
+
+            var failure = await Assert.ThrowsAsync<HttpRequestException>(
+                () => client.TestConnectionAsync(CancellationToken.None));
+
+            Assert.Equal(System.Net.HttpStatusCode.Unauthorized, failure.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task TestConnection_ReportsProtocolVersionAndDevice()
+    {
+        var server = StartServer();
+        await using (server)
+        {
+            using var client = new CodexDataSharingClient($"http://127.0.0.1:{server.Port}", accessKey);
+
+            var peer = await client.TestConnectionAsync(CancellationToken.None);
+
+            Assert.Equal(CodexDataSharingProtocol.Format, peer.Format);
+            Assert.Equal(CodexDataSharingProtocol.Version, peer.Version);
+            Assert.Equal(Environment.MachineName, peer.DeviceName);
+        }
+    }
+
+    [Fact]
+    public async Task UploadTwice_MergesIdempotentlyByStableKey()
+    {
+        var server = StartServer();
+        await using (server)
+        {
+            var packagePath = ExportUploadPackage();
+            try
+            {
+                using var client = new CodexDataSharingClient($"http://127.0.0.1:{server.Port}", accessKey);
+
+                var first = await client.UploadAsync(packagePath, CancellationToken.None);
+                Assert.Equal(3, first.AddedUsageEventCount);
+                Assert.Equal(0, first.ExistingUsageEventCount);
+
+                var second = await client.UploadAsync(packagePath, CancellationToken.None);
+                Assert.Equal(0, second.AddedUsageEventCount);
+                Assert.Equal(3, second.ExistingUsageEventCount);
+            }
+            finally
+            {
+                File.Delete(packagePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Download_ReturnsMergedPackageThatImportsIntoFreshStore()
+    {
+        var server = StartServer();
+        await using (server)
+        {
+            var packagePath = ExportUploadPackage();
+            var downloadPath = Path.Combine(Path.GetTempPath(), $"share-download-{Guid.NewGuid():N}.codex.json");
+            try
+            {
+                using var client = new CodexDataSharingClient($"http://127.0.0.1:{server.Port}", accessKey);
+                await client.UploadAsync(packagePath, CancellationToken.None);
+                await client.DownloadAsync(downloadPath, CancellationToken.None);
+                client.Dispose();
+
+                // Import the downloaded package into a second isolated store.
+                using var secondScope = MonitorCachePaths.PushLocalAppDataRoot(secondRoot);
+                var imported = CodexDataTransferService.Import(new[] { downloadPath });
+
+                Assert.Equal(3, imported.AddedUsageEventCount);
+            }
+            finally
+            {
+                File.Delete(downloadPath);
+                File.Delete(packagePath);
+            }
+        }
+    }
+}
