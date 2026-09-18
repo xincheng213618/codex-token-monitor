@@ -161,6 +161,8 @@
 
 第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
 
+第二十一轮（2026-09-19）让套餐导入可测试：`SubscriptionPlanImporter` 的扫描与解析管线提取为 `TryImportFromRoots`，新增 `TryImportFromCodexRoot(root)` 内部重载（原无参入口行为不变）；`SubscriptionPlanImporterTests` 6 项以真实 SQLite 夹具覆盖套餐表解析与名称归一、无关表忽略、同键去重保留最高金额、损坏库跳过与空根提示。验证：Core 回归 618/618，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-015658-*/`）。
+
 第二十轮（2026-09-19）补 `QuotaEstimateCalculatorTests` 7 项：手动区间估算的全部守卫文案（缺窗口、相同剩余、快照不足、起点/终点阈值未到）与含计费用量的成功外推路径（种子化额度快照 + 缓存用量，断言 "45%->15% (30%)" 与 100% 折算），以及 `BuildLoadResult` 保留已知周期需满足当前周期身份的契约。验证：Core 回归 612/612，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-015240-*/`）。
 
 第十九轮（2026-09-19）新增 `CodexModelContextTests` 10 项：turn_context 直接与嵌套 info 的模型读取、thread_settings_applied 覆盖、缺失模型不清空既有值、service_tier 小写归一与嵌套回退、坏 JSON/非对象根/无关行快速跳过、会话 id 变化同时重置模型与档位。验证：Core 回归 605/605，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-014707-*/`）。

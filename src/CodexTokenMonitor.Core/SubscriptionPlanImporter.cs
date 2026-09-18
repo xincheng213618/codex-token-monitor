@@ -16,9 +16,28 @@ internal static class SubscriptionPlanImporter
 
     public static SubscriptionPlanImportResult TryImportFromCodex()
     {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return TryImportFromRoots(new[]
+        {
+            Path.Combine(home, ".codex"),
+            Path.Combine(home, ".codex", "sqlite"),
+            Path.Combine(localAppData, "OpenAI", "Codex")
+        });
+    }
+
+    /// <summary>Scans one alternate root; lets tests exercise the import without
+    /// touching the real Codex home.</summary>
+    internal static SubscriptionPlanImportResult TryImportFromCodexRoot(string root)
+    {
+        return TryImportFromRoots(new[] { root });
+    }
+
+    private static SubscriptionPlanImportResult TryImportFromRoots(IEnumerable<string> roots)
+    {
         var records = new List<SubscriptionPlanRecord>();
         var filesChecked = 0;
-        foreach (var path in GetCandidateDatabasePaths())
+        foreach (var path in GetCandidateDatabasePaths(roots))
         {
             filesChecked++;
             records.AddRange(ReadPlansFromDatabase(path));
@@ -35,17 +54,9 @@ internal static class SubscriptionPlanImporter
         return new SubscriptionPlanImportResult(distinct, message);
     }
 
-    private static IEnumerable<string> GetCandidateDatabasePaths()
+    private static IEnumerable<string> GetCandidateDatabasePaths(IEnumerable<string> roots)
     {
         var result = new List<string>();
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var roots = new[]
-        {
-            Path.Combine(home, ".codex"),
-            Path.Combine(home, ".codex", "sqlite"),
-            Path.Combine(localAppData, "OpenAI", "Codex")
-        };
 
         foreach (var root in roots)
         {
