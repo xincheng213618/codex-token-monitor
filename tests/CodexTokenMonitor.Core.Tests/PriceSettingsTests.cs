@@ -6,6 +6,29 @@ public sealed class PriceSettingsTests
 {
 
     [Fact]
+    public void Normalize_InjectsNewCatalogPresetsIntoSavedSettings()
+    {
+        // Simulate settings saved by an older build (version 18) whose preset
+        // list predates the GLM-5.3 Flash catalog entry.
+        var settings = new PriceSettings { DisplayOrderVersion = 18 };
+        foreach (var group in PricePresetGroups.All)
+        {
+            ((List<PricePreset>)settings.PresetsForGroup(group)).RemoveAll(item => item.Model == "GLM-5.3 Flash");
+        }
+
+        Assert.DoesNotContain(settings.ZCodePresets, item => item.Model == "GLM-5.3 Flash");
+
+        var normalized = PriceSettingsStore.Normalize(settings);
+
+        Assert.Equal(19, normalized.DisplayOrderVersion);
+        var flash = Assert.Single(normalized.ZCodePresets, item => item.Model == "GLM-5.3 Flash");
+        Assert.Equal(0.80m, flash.UncachedInput);
+        Assert.Equal(0.23m, flash.CachedInput);
+        Assert.Equal(2.80m, flash.Output);
+        Assert.Equal("GLM-5.3 Flash", normalized.ZCodePresets[0].Model);
+    }
+
+    [Fact]
     public void ZCodeDefaults_ListGlm53FlashFirst()
     {
         var presets = PricePreset.DefaultsForGroup(PricePresetGroups.ZCode);
@@ -168,7 +191,7 @@ public sealed class PriceSettingsTests
 
         var normalized = PriceSettingsStore.Normalize(settings);
 
-        Assert.Equal(18, normalized.DisplayOrderVersion);
+        Assert.Equal(19, normalized.DisplayOrderVersion);
         Assert.Equal("DeepSeek V4.1 Flash", normalized.ToDeepSeekProfile().Name);
         Assert.Equal(1.00m, normalized.DeepSeekUncachedInputPerMillion);
         Assert.Equal(0.02m, normalized.DeepSeekCachedInputPerMillion);

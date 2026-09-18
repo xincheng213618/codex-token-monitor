@@ -161,6 +161,8 @@
 
 第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
 
+第二十五轮补充（同日）：首版发布后实测发现存量用户看不到新卡——价格目录版本化迁移只重排不注入新档，且旧缓存里无模型的"今天"事件会一直压住实际模型卡。修复：`DisplayOrderVersion` 18→19，`Normalize` 在版本刷新时用 `MergeMissingDefaults` 把目录新增档合入存量各价格组（用户删除的档位仅在版本刷新时恢复）；缓存迁移升级为"删除无模型 zcode 事件 + 标记整日重扫 + 重置 scanned_through"（今天由下一次自动刷新重建）。测试：新增存量注入用例，迁移用例改为断言事件行被删除，夹具补齐 `scanned_through_local`/`last_token_event_local` 基础列（缺列会触发无关的加列重扫标记）。验证：Core 回归 640/640，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-030931-*/`）。
+
 第二十五轮（2026-09-19，功能）：ZCode 来源实际模型计价。ZCode 读取器从 `model_io` 记录提取 `model.modelId` 进事件与缓存，桶构建统一改用事件版 `Add` 以保留 `ModelUsage`；`CodexModelCost` 新增按价格组的目录估算（不再仅限 OpenAI/$）并让 `ModelCostEstimate` 携带货币符号；主窗口为有模型用量的来源输出"实际模型 · 标准 API 等价"卡（ZCode 按智谱价格组人民币计）、明细列与复制行。价格库新增 GLM-5.3 Flash（¥0.80/0.23/2.80 每百万，bigmodel.cn 2026-09 标准价）并列为 ZCode 默认首卡。一次性 `zcode-model-context-v1` 缓存维护迁移把无模型的 zcode 事件所在日标记重扫（键前缀限定，不触碰其他来源）。测试：`ZCodeUsageReaderTests`（模型提取与汇总归因）、`CodexModelCostGroupTests`（人民币分组估算、大小写匹配、未知模型）、`UsageCacheStoreMigrationTests`（迁移只标记 zcode 键日期）、`PriceSettingsTests`（默认首卡）。验证：Core 回归 639/639，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-024733-*/`）。
 
 第二十四轮（2026-09-19）补共享 Today 端点回环（回环套件扩至 6 项）：`UploadTodayAsync`/`DownloadTodayAsync` 真实往返今日事件，且越界数据包（全部事件在昨天）被 `ImportToday` 的范围校验拒绝——服务端把 `InvalidDataException` 映射为 HTTP 400 并透传"本次同步范围之外"提示。另对全部 Core 类做覆盖率扫描，确认无零覆盖的生产类。验证：Core 回归 630/630，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-021116-*/`）。

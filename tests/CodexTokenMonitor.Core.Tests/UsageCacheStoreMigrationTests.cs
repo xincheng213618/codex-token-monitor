@@ -46,6 +46,7 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
             CREATE TABLE usage_days (
                 date TEXT PRIMARY KEY,
                 is_complete INTEGER NOT NULL,
+                scanned_through_local TEXT NULL,
                 events INTEGER NOT NULL,
                 input_tokens INTEGER NOT NULL,
                 cached_input_tokens INTEGER NOT NULL,
@@ -53,6 +54,7 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
                 output_tokens INTEGER NOT NULL,
                 reasoning_output_tokens INTEGER NOT NULL,
                 total_tokens INTEGER NOT NULL,
+                last_token_event_local TEXT NULL,
                 long_context_events INTEGER NOT NULL DEFAULT 0,
                 long_context_input_tokens INTEGER NOT NULL DEFAULT 0,
                 long_context_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -103,6 +105,36 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
         var incomplete = UsageCacheStore.GetIncompleteDays(folder, day, day.AddDays(1), CancellationToken.None);
 
         Assert.Contains(day, incomplete);
+
+        // The stale null-model event rows are dropped so the re-scan rebuilds
+        // the day from logs with model attribution.
+        var dbPath = UsageCacheStore.GetCachePath(folder);
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString()))
+        {
+            connection.Open();
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT COUNT(*) FROM usage_events WHERE event_key = 'zcode:legacy'";
+                var count = (long)command.ExecuteScalar()!;
+                if (count != 0)
+                {
+                    var markers = new List<string>();
+                    using var markerCommand = connection.CreateCommand();
+                    markerCommand.CommandText = "SELECT name FROM cache_maintenance";
+                    using var reader = markerCommand.ExecuteReader();
+                    while (reader.Read()) markers.Add(reader.GetString(0));
+                    Assert.Fail(
+                        $"zcode:legacy survived (count={count}); " +
+                        $"markers=[{string.Join(",", markers)}]; " +
+                        $"model_id={File.ReadAllText(dbPath).Length}");
+                }
+            }
+        }
     }
 
     [Fact]

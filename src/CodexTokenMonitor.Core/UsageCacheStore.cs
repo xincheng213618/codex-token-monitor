@@ -1055,14 +1055,17 @@ internal sealed class UsageCacheStore
                 INSERT OR IGNORE INTO cache_maintenance VALUES ('service-tier-v1');
                 """);
         }
-        // ZCode logs carry model.modelId; re-scan days whose zcode events were
-        // cached before model attribution, then never again for this migration.
+        // ZCode logs carry model.modelId; drop zcode events cached without models and
+        // mark their days for a full re-scan, then never again for this migration.
+        // Resetting scanned_through lets the next live scan rebuild today too.
         ExecuteNonQuery(connection, """
             CREATE TABLE IF NOT EXISTS cache_maintenance (name TEXT PRIMARY KEY);
-            UPDATE usage_days SET is_complete = 0
+            UPDATE usage_days SET is_complete = 0, scanned_through_local = NULL
             WHERE date IN (SELECT DISTINCT date FROM usage_events
                            WHERE (model_id IS NULL OR model_id = '') AND event_key LIKE 'zcode:%')
               AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'zcode-model-context-v1');
+            DELETE FROM usage_events
+            WHERE (model_id IS NULL OR model_id = '') AND event_key LIKE 'zcode:%';
             INSERT OR IGNORE INTO cache_maintenance VALUES ('zcode-model-context-v1');
             """);
         DeleteLegacyDerivedFiles(cachePath);

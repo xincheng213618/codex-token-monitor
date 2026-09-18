@@ -27,7 +27,7 @@ internal static class PricePresetGroups
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 18;
+    public int DisplayOrderVersion { get; set; } = 19;
     public string GptName { get; set; } = "GPT-5.6 Sol";
     public decimal GptUncachedInputPerMillion { get; set; } = 4.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.40m;
@@ -370,7 +370,7 @@ internal static class PriceSettingsStore
     {
         var settings = new PriceSettings
         {
-            DisplayOrderVersion = 18,
+            DisplayOrderVersion = 19,
             Presets = new(),
             CodexPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Codex), PricePresetGroups.Codex),
@@ -602,6 +602,13 @@ internal static class PriceSettingsStore
         var shouldRefreshDefaults = settings.DisplayOrderVersion < defaults.DisplayOrderVersion;
         if (shouldRefreshDefaults)
         {
+            // A version bump may add catalog presets; merge them into saved
+            // settings before re-applying the default display order.
+            MergeMissingDefaults(codexPresets, PricePresetGroups.Codex);
+            MergeMissingDefaults(claudePresets, PricePresetGroups.ClaudeCode);
+            MergeMissingDefaults(zCodePresets, PricePresetGroups.ZCode);
+            MergeMissingDefaults(workBuddyPresets, PricePresetGroups.WorkBuddy);
+            MergeMissingDefaults(dshPresets, PricePresetGroups.Dsh);
             codexPresets = ApplyDefaultDisplayOrder(codexPresets, PricePresetGroups.Codex);
             claudePresets = ApplyDefaultDisplayOrder(claudePresets, PricePresetGroups.ClaudeCode);
             zCodePresets = ApplyDefaultDisplayOrder(zCodePresets, PricePresetGroups.ZCode);
@@ -689,6 +696,22 @@ internal static class PriceSettingsStore
                 groupDefaults.Any(defaultItem => SameCatalogPreset(defaultItem, item)) ||
                 !allDefaults.Any(defaultItem => SameCatalogPreset(defaultItem, item)))
             .ToList();
+    }
+
+    private static void MergeMissingDefaults(List<PricePreset> saved, string group)
+    {
+        var normalizedGroup = PricePresetGroups.Normalize(group);
+        foreach (var preset in PricePreset.Defaults())
+        {
+            if (saved.Any(item => SameCatalogPreset(item, preset)))
+            {
+                continue;
+            }
+
+            var clone = preset.Clone();
+            clone.Group = normalizedGroup;
+            saved.Add(clone);
+        }
     }
 
     private static List<PricePreset> ApplyDefaultDisplayOrder(List<PricePreset> presets, string group)
