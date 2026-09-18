@@ -22,6 +22,7 @@
     <Compile Include="..\..\src\CodexTokenMonitor.Wpf\LastDisplayStore.cs" Link="DesktopPersistence\LastDisplayStore.cs" />
     <Compile Include="..\..\src\CodexTokenMonitor.Wpf\UsageDisplayViewModel.cs" Link="DesktopPresentation\UsageDisplayViewModel.cs" />
     <Compile Include="..\..\src\CodexTokenMonitor.Wpf\UsageSourceModule.cs" Link="DesktopPresentation\UsageSourceModule.cs" />
+    <Compile Include="..\..\src\CodexTokenMonitor.Wpf\UiEventSuppressor.cs" Link="DesktopPresentation\UiEventSuppressor.cs" />
   </ItemGroup>
 
 </Project>

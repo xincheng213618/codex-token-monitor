@@ -27,12 +27,7 @@ public partial class MainWindow : Window
     private readonly LatestRequestRunner<UsageRefreshRequest> usageRefreshRunner;
     private readonly object cycleRefreshSync = new();
     private UsageSource activeSource = UsageSource.Codex;
-    private bool initializing = true;
-    private bool suppressRangeRefresh;
-    private bool suppressDateRefresh;
-    private bool suppressCycleRefresh;
-    private bool suppressWeekTimeRefresh;
-    private bool suppressStartTimeRefresh;
+    private readonly UiEventSuppressor suppressUiEvents = new();
     private bool isRefreshing;
     private bool isQuotaRefreshing;
     private bool isClosed;
@@ -42,6 +37,9 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        // Controls raise change events while the constructor assigns their
+        // initial values; hold one suppression scope across the whole setup.
+        using var setupScope = suppressUiEvents.Begin();
         InitializeComponent();
         DataContext = displayViewModel;
         foreach (var definition in UsageSourceRegistry.All)
@@ -91,7 +89,6 @@ public partial class MainWindow : Window
             await RefreshUsageAsync(isAutomaticRefresh: true);
         });
         refreshTimer.Start();
-        initializing = false;
         Loaded += async (_, _) => await RunUiActionAsync(async () =>
         {
             await StartDataSharingOnLaunchAsync();
@@ -166,7 +163,7 @@ public partial class MainWindow : Window
     private void CostCardsViewport_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         ResizeCostCards();
-        if (initializing)
+        if (suppressUiEvents.IsSuppressing)
         {
             return;
         }
@@ -202,7 +199,7 @@ public partial class MainWindow : Window
 
     private async void RangeModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (initializing || suppressRangeRefresh)
+        if (suppressUiEvents.IsSuppressing)
         {
             return;
         }
@@ -212,7 +209,7 @@ public partial class MainWindow : Window
 
     private async void DatePicker_SelectedDateChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (initializing || suppressDateRefresh || DatePicker.SelectedDate is null)
+        if (suppressUiEvents.IsSuppressing || DatePicker.SelectedDate is null)
         {
             return;
         }
@@ -235,7 +232,7 @@ public partial class MainWindow : Window
 
     private async void WeekEndPicker_ValueChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
-        if (initializing || suppressWeekTimeRefresh || CurrentModule().Mode != RangeMode.Week || WeekEndPicker.Value is not DateTime selected)
+        if (suppressUiEvents.IsSuppressing || CurrentModule().Mode != RangeMode.Week || WeekEndPicker.Value is not DateTime selected)
         {
             return;
         }
@@ -253,7 +250,7 @@ public partial class MainWindow : Window
     private async void CustomStartPicker_ValueChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         var module = CurrentModule();
-        if (initializing || suppressStartTimeRefresh || module.CustomStartLocal is null || CustomStartPicker.Value is not DateTime selected)
+        if (suppressUiEvents.IsSuppressing || module.CustomStartLocal is null || CustomStartPicker.Value is not DateTime selected)
         {
             return;
         }
@@ -268,7 +265,7 @@ public partial class MainWindow : Window
 
     private async void CycleBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (initializing || suppressCycleRefresh || CurrentModule() is not CodexUsageModule codexModule)
+        if (suppressUiEvents.IsSuppressing || CurrentModule() is not CodexUsageModule codexModule)
         {
             return;
         }
@@ -307,7 +304,7 @@ public partial class MainWindow : Window
 
     private async void SourceTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (initializing || !ReferenceEquals(e.Source, SourceTabs))
+        if (suppressUiEvents.IsSuppressing || !ReferenceEquals(e.Source, SourceTabs))
         {
             return;
         }
@@ -471,9 +468,11 @@ public partial class MainWindow : Window
                 return;
             }
 
-            suppressCycleRefresh = true;
-            CycleBox.SelectedIndex = targetIndex;
-            suppressCycleRefresh = false;
+            using (suppressUiEvents.Begin())
+            {
+                CycleBox.SelectedIndex = targetIndex;
+            }
+
             codexModule.SelectedCycle = CycleBox.SelectedItem as CodexQuotaCycle;
             UpdateRangeControls();
             await RefreshUsageAsync();
@@ -517,9 +516,10 @@ public partial class MainWindow : Window
         if (mode == RangeMode.Cycle && !module.SupportsCycle)
         {
             mode = RangeMode.Day;
-            suppressRangeRefresh = true;
-            RangeModeBox.SelectedIndex = 0;
-            suppressRangeRefresh = false;
+            using (suppressUiEvents.Begin())
+            {
+                RangeModeBox.SelectedIndex = 0;
+            }
         }
 
         module.Mode = mode;
@@ -941,8 +941,10 @@ public partial class MainWindow : Window
             return false;
         }
 
-        var previousInitializing = initializing;
-        initializing = true;
+        // The restored source and range are programmatic assignments; keep
+        // their change events from enqueueing refreshes (and release the scope
+        // even if a restore step throws).
+        using var restoreScope = suppressUiEvents.Begin();
         SourceTabs.SelectedIndex = SourceToTabIndex(snapshot.Source);
         activeSource = snapshot.Source;
         RestoreModuleRange(module, snapshot.Range);
@@ -955,7 +957,7 @@ public partial class MainWindow : Window
 
         module.StoreDisplay(snapshot.Range, snapshot.Result);
         RestoreModuleControls(module);
-        initializing = previousInitializing;
+        restoreScope.Dispose();
         ApplySummary(snapshot.Range, snapshot.Result, module);
         SetStatus("已恢复上次显示，正在刷新...");
         return true;
@@ -1406,17 +1408,15 @@ public partial class MainWindow : Window
     {
         var module = CurrentModule();
         SyncRangeModeItems(module);
-        suppressRangeRefresh = true;
+        // The three pickers and the cycle list are mirror images of the module
+        // state; suppress the handlers for the whole mirror pass so a partially
+        // updated control set never enqueues its own refresh.
+        using var mirrorScope = suppressUiEvents.Begin();
         RangeModeBox.SelectedIndex = ModeToIndex(module.Mode);
-        suppressRangeRefresh = false;
 
-        suppressDateRefresh = true;
         DatePicker.SelectedDate = module.PickerValue.Date;
-        suppressDateRefresh = false;
 
-        suppressWeekTimeRefresh = true;
         WeekEndPicker.Value = module.PickerValue;
-        suppressWeekTimeRefresh = false;
 
         if (module.Mode == RangeMode.Cycle)
         {
@@ -1466,9 +1466,11 @@ public partial class MainWindow : Window
     {
         if (CurrentModule() is not CodexUsageModule codexModule)
         {
-            suppressCycleRefresh = true;
-            CycleBox.ItemsSource = null;
-            suppressCycleRefresh = false;
+            using (suppressUiEvents.Begin())
+            {
+                CycleBox.ItemsSource = null;
+            }
+
             return;
         }
 
@@ -1560,8 +1562,7 @@ public partial class MainWindow : Window
         bool keepSelection)
     {
         var selected = keepSelection ? codexModule.SelectedCycle ?? SelectedCycle() : null;
-        suppressCycleRefresh = true;
-        try
+        using (suppressUiEvents.Begin())
         {
             CycleBox.ItemsSource = cycles;
             if (cycles.Count > 0)
@@ -1576,10 +1577,6 @@ public partial class MainWindow : Window
             {
                 codexModule.SelectedCycle = null;
             }
-        }
-        finally
-        {
-            suppressCycleRefresh = false;
         }
     }
 
@@ -1631,10 +1628,11 @@ public partial class MainWindow : Window
         StartNowButton.SetResourceReference(BackgroundProperty, customStart is null ? "SubtleBrush" : "AccentBrush");
         StartNowButton.SetResourceReference(ForegroundProperty, customStart is null ? "TextBrush" : "SurfaceBrush");
 
-        suppressStartTimeRefresh = true;
-        CustomStartPicker.Value = customStart?.DateTime;
-        CustomStartPicker.Visibility = customStart is null ? Visibility.Collapsed : Visibility.Visible;
-        suppressStartTimeRefresh = false;
+        using (suppressUiEvents.Begin())
+        {
+            CustomStartPicker.Value = customStart?.DateTime;
+            CustomStartPicker.Visibility = customStart is null ? Visibility.Collapsed : Visibility.Visible;
+        }
     }
 
     private void UpdateWeekPickerState()
@@ -1829,14 +1827,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        suppressRangeRefresh = true;
-        RangeModeBox.Items.Clear();
-        foreach (var label in labels)
+        using (suppressUiEvents.Begin())
         {
-            RangeModeBox.Items.Add(label);
+            RangeModeBox.Items.Clear();
+            foreach (var label in labels)
+            {
+                RangeModeBox.Items.Add(label);
+            }
         }
-
-        suppressRangeRefresh = false;
     }
 
     private static int ModeToIndex(RangeMode mode)

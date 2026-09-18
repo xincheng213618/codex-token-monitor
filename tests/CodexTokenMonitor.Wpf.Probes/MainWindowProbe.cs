@@ -18,6 +18,7 @@ internal static class MainWindowProbe
     private static readonly List<MainWindow> Windows = new();
     private static readonly HashSet<MainWindow> LoadedWindows = new();
     private static readonly Dictionary<MainWindow, TaskCompletionSource> ClosedSignals = new();
+    private static readonly Dictionary<MainWindow, UiEventSuppressor.Scope> Suppressions = new();
     private static string outputRoot = "";
     private static string isolatedRoot = "";
 
@@ -75,7 +76,7 @@ internal static class MainWindowProbe
         window.Loaded += (_, _) => mainWasLoaded = true;
         window.Closed += (_, _) => closed.TrySetResult();
         Get<DispatcherTimer>(window, "refreshTimer").Stop();
-        Set(window, "initializing", true);
+        SetSuppressed(window, true);
         Get<CheckBox>(window, "AutoRefreshBox").IsChecked = false;
         var modules = Get<IReadOnlyDictionary<UsageSource, UsageSourceModule>>(window, "usageModules");
         try
@@ -270,7 +271,7 @@ internal static class MainWindowProbe
         Task completion;
         try
         {
-            Set(window, "initializing", false);
+            SetSuppressed(window, false);
             var visits = new[] { UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode, UsageSource.WorkBuddy,
                 UsageSource.Dsh, UsageSource.WorkBuddy, UsageSource.ZCode, UsageSource.ClaudeCode, UsageSource.Codex, UsageSource.Dsh };
             foreach (var source in visits)
@@ -295,7 +296,7 @@ internal static class MainWindowProbe
         }
         finally
         {
-            Set(window, "initializing", true);
+            SetSuppressed(window, true);
             gate.Release();
         }
         await completion.WaitAsync(TimeSpan.FromSeconds(20));
@@ -326,7 +327,7 @@ internal static class MainWindowProbe
         secondary.Loaded += (_, _) => secondaryLoaded = true;
         secondary.Closed += (_, _) => secondaryClosed.TrySetResult();
         Get<DispatcherTimer>(secondary, "refreshTimer").Stop();
-        Set(secondary, "initializing", true);
+        SetSuppressed(secondary, true);
         Get<CheckBox>(secondary, "AutoRefreshBox").IsChecked = false;
         var secondaryModules = Get<IReadOnlyDictionary<UsageSource, UsageSourceModule>>(secondary, "usageModules");
         try
@@ -667,7 +668,7 @@ internal static class MainWindowProbe
         Task completion;
         try
         {
-            Set(window, "initializing", false);
+            SetSuppressed(window, false);
             tabs.SelectedItem = tabs.Items.Cast<TabItem>().Single(tab => Equals(tab.Tag, UsageSource.ClaudeCode));
             tabs.SelectedItem = tabs.Items.Cast<TabItem>().Single(tab => Equals(tab.Tag, UsageSource.Codex));
             tabs.SelectedItem = tabs.Items.Cast<TabItem>().Single(tab => Equals(tab.Tag, UsageSource.ClaudeCode));
@@ -680,7 +681,7 @@ internal static class MainWindowProbe
         }
         finally
         {
-            Set(window, "initializing", true);
+            SetSuppressed(window, true);
             gate.Release();
         }
         await completion.WaitAsync(TimeSpan.FromSeconds(20));
@@ -750,9 +751,31 @@ internal static class MainWindowProbe
         window.Loaded += (_, _) => LoadedWindows.Add(window);
         window.Closed += (_, _) => closed.TrySetResult();
         Get<DispatcherTimer>(window, "refreshTimer").Stop();
-        Set(window, "initializing", true);
+        SetSuppressed(window, true);
         Get<CheckBox>(window, "AutoRefreshBox").IsChecked = false;
         return window;
+    }
+
+    /// <summary>
+    /// Holds the window's programmatic-update suppression the way the old
+    /// initializing boolean did: idempotent on re-entry, one release per hold.
+    /// </summary>
+    private static void SetSuppressed(MainWindow window, bool suppressed)
+    {
+        if (suppressed)
+        {
+            if (!Suppressions.ContainsKey(window))
+            {
+                Suppressions[window] = Get<UiEventSuppressor>(window, "suppressUiEvents").Begin();
+            }
+
+            return;
+        }
+
+        if (Suppressions.Remove(window, out var scope))
+        {
+            scope.Dispose();
+        }
     }
 
     private static async Task CloseWindowAsync(MainWindow window)

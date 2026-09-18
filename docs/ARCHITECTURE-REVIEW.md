@@ -1,6 +1,6 @@
 # 架构基线与迭代路线
 
-检查日期：2026-09-12。基于当前代码及隔离测试，记录本轮已落地的边界和后续工作。
+检查日期：2026-09-12，2026-09-18 增补第八轮。基于当前代码及隔离测试，记录本轮已落地的边界和后续工作。
 
 ## 判断
 
@@ -128,11 +128,27 @@
 
 选择 setter、LRU 与结果保存正文逐段对照一致，证据在 `work/architecture-round7/page-state-move-verification.json`。既有容量 8、命中提升顺序、失败保护、清空不重置选择、剥离大明细和 v5 显示恢复格式保持；搬迁后的纯页面代码继续作为链接源纳入无需 WPF 的行为测试。
 
+### 第八轮：程序化控件更新的统一抑制边界
+
+主窗口原来用 5 个 `suppress*` 布尔加 `initializing` 标志阻止控件镜像赋值触发各自的刷新处理器。布尔赋值没有 try/finally 保护：一旦赋值路径抛出，标志会永久停留，对应刷新入口就此失效；`TryRestoreLastDisplay` 捕获/恢复 `initializing` 的写法同样会在异常时把窗口留在抑制状态。
+
+第八轮引入 `UiEventSuppressor`（WPF 项目，链接进 Core.Tests）：计数式抑制，`Begin()` 返回可释放作用域，嵌套安全、重复释放安全、深度不下穿。主窗口的 6 个标志全部移除：
+
+- 构造函数持有整个建立过程的作用域，替代 `initializing = true/false`。
+- `UpdateRangeControls` 的三个选择器镜像、`ApplyCycleOptions`、`UpdateStartNowButtonState`、`SyncRangeModeItems`、`ShiftPeriodAsync` 与 `RangeModeChangedAsync` 的单点赋值、`TryRestoreLastDisplay` 的恢复段，全部改为 `using` 作用域；镜像赋值异常时作用域随栈展开释放，不再需要手写 finally。
+- 事件处理器入口统一检查 `IsSuppressing`。原五个标志的抑制范围（各自只挡自己的控件事件）收敛为一个作用域后语义不变：这些赋值块内只会触发本就被抑制的控件事件，实际事件流保持原有契约。
+- `TryRestoreLastDisplay` 的 `ApplySummary` 与状态提示仍运行在作用域之外，恢复语义逐行对应；区别仅在异常路径现在会正确释放。
+
+桌面探针原来用反射 `Set(window, "initializing", …)` 控制事件流，本轮改为按窗口持有 `UiEventSuppressor.Scope`（重复抑制幂等、释放对应一次持有），保持原布尔语义；探针因此不再依赖字段名，改依赖 `suppressUiEvents` 类型化成员。
+
+测试：`UiEventSuppressorTests` 覆盖基本抑制、嵌套释放顺序、重复释放、异常路径释放、孤儿作用域不能解除新作用域、并行作用域计数线程安全共 6 项。
+
 ## 后续优先级
 
 | 优先级 | 现有证据 | 下一步及验收条件 |
 | --- | --- | --- |
-| P2：可复用桌面回归 | 三组实际 WPF 隔离探针已覆盖主窗口、设置和分析，但仍在忽略目录中 | 建立正式 STA 探针项目与 PowerShell 串行入口，每组独立进程，固定双路径隔离、关闭与产物一致性检查，产出 JSON/PNG |
+| ~~P2：可复用桌面回归~~（已完成） | STA 探针正式化为 `tests/CodexTokenMonitor.Wpf.Probes`，`Scripts/Test-Desktop.ps1` 串行驱动三组隔离进程，`desktop-regression.yml` 可按套件触发并上传 JSON/PNG | 无遗留 |
+| 按迭代：来源读取去静态化 | `CodexUsageReader` 仍持静态尾读器、子代理过滤器字典与额度历史缓存，测试隔离依赖 `AsyncLocal` 路径作用域 | `UsageSourceRegistry` 持有实例 Reader，路径随实例走；验收为删除 reader 内静态可变状态后 553 项 Core 测试与三组桌面回归全部保持 |
 | 按功能迭代：来源扩展 | 来源定义和 Tab 已统一，Core 查询与 WPF 页面工厂分离 | 新来源分别注册读取能力和桌面页面，保持价格 JSON 字段与来源枚举的兼容迁移约定 |
 | 按功能迭代：额度和设置显示 | 主统计与每来源页面状态已独立；额度/设置摘要仍是窗口适配代码 | 随相关需求提取有状态契约的部分，继续保留图表和控件适配职责，不以 partial 文件数量或全面 MVVM 作为完成标准 |
 
@@ -183,7 +199,9 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 
 第七轮最终 WPF 回归为主窗口 **45 项行为/隔离检查、7 张渲染**，设置窗口 **10 项行为/隔离检查、11 张渲染**，分析窗口 **8 项行为/隔离检查、4 张渲染**，全部通过。新增真实五来源往返的 10 次 Tab 事件，验证日期、周范围、自定义起点和非默认历史周期选择均保留；另构造第二个真实主窗口，验证五组页面、ViewModel、运行时与 gate 独立，第二窗失败/恢复/关闭不改变第一窗的选择与成功显示。原周期 LRU 绕 gate、共享导入与异步关停检查保留。报告和图像分别位于 `work/architecture-round7/main-output-final/`、`settings-output/`、`analysis-output/`。
 
-以上检查使用隔离数据且未访问真实账户；已检查实际窗口渲染，取消竞态修复后再次验证首次失败和恢复画面。第七轮已完成缓存专用服务入口与每来源页面状态迁移。下一阶段将现有隔离桌面探针整理为正式可复用入口，让后续迭代能重复验证这些契约；cached 接口仍可能触发 SQLite 初始化，主查询额度时间线仍有物化，不据接口名称移除现有共用锁。
+第八轮（2026-09-18）验证：Core 回归 **553/553 通过，0 跳过**（新增 6 项 `UiEventSuppressorTests`），Release 构建 **0 警告、0 错误**。桌面回归三组全部通过：主窗口 **46 项检查、8 张渲染**（含 2026-09-18 额度估算改动新增项），设置窗口 **10 项、11 张渲染**，分析窗口 **9 项、4 张渲染**；报告在 `artifacts/desktop-probes/20260919-000223-*/desktop-regression.json`。主窗口五来源往返、真实源切换与独立窗口恢复检查均依赖新的抑制域语义，确认程序化赋值不触发刷新、真实用户选择正常排队。
+
+以上检查使用隔离数据且未访问真实账户；已检查实际窗口渲染，取消竞态修复后再次验证首次失败和恢复画面。第七轮已完成缓存专用服务入口与每来源页面状态迁移；隔离桌面探针现已正式化（探针项目 + 串行入口 + CI 工作流），后续迭代重复使用同一验证入口。cached 接口仍可能触发 SQLite 初始化，主查询额度时间线仍有物化，不据接口名称移除现有共用锁。
 
 现有额度回放修复保持，未改版本、发布或替换运行程序。
 

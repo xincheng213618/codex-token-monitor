@@ -161,6 +161,7 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 ```
 
 - 每来源模块（`UsageSourceModule` 子类）保存自己的模式、选中日期、自定义起点和显示缓存；切换 Tab 时恢复各自状态。
+- 程序化控件赋值（构造、`UpdateRangeControls` 的范围镜像、周期列表、自定义起点、上次显示恢复）通过 `UiEventSuppressor.Begin()` 计数作用域抑制事件处理器入口，`using` 释放保证异常时不会把刷新入口永久卡死；用户操作不受影响。
 - 查询结果的全量 `DetailRows` 只在当前查询期间供时间轴使用；模块的上次显示结果和周期 LRU 缓存只保留汇总/分桶，避免长期持有大范围事件明细。
 - `UsageTimelineBuilder` 在送入 WPF 图表前按分钟/10 分钟/小时预聚合事件，图表控件不再长期保存全量明细行。
 - `UsageSummaryBuilder` 从已有分桶重建区间汇总时使用 `MergeFrom`，会保留长上下文与 DeepSeek 峰时子计数，不把聚合桶误当成单条事件。
