@@ -1080,6 +1080,16 @@ internal sealed class UsageCacheStore
               AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'workbuddy-model-context-v1');
             INSERT OR IGNORE INTO cache_maintenance VALUES ('workbuddy-model-context-v1');
             """);
+        // Claude logs carry message.model; same one-shot re-scan for days
+        // whose claude events were cached before model attribution.
+        ExecuteNonQuery(connection, """
+            CREATE TABLE IF NOT EXISTS cache_maintenance (name TEXT PRIMARY KEY);
+            UPDATE usage_days SET is_complete = 0, scanned_through_local = NULL
+            WHERE date IN (SELECT DISTINCT date FROM usage_events
+                           WHERE (model_id IS NULL OR model_id = '') AND event_key LIKE 'claude:%')
+              AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'claude-model-context-v1');
+            INSERT OR IGNORE INTO cache_maintenance VALUES ('claude-model-context-v1');
+            """);
         DeleteLegacyDerivedFiles(cachePath);
     }
 

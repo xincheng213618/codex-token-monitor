@@ -9,7 +9,8 @@ internal sealed record ClaudeUsageEntry(
     long Input,
     long Cached,
     long CacheWrite,
-    long Output)
+    long Output,
+    string? ModelId = null)
 {
     public long Total => TokenCountMath.AddNonNegative(Input, Output);
     public decimal CompletenessScore =>
@@ -346,14 +347,7 @@ internal static class ClaudeUsageReader
         foreach (var usageEvent in eventsResult.Events)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            summary.Add(
-                usageEvent.Timestamp,
-                usageEvent.InputTokens,
-                usageEvent.CachedInputTokens,
-                usageEvent.CacheWriteInputTokens,
-                usageEvent.OutputTokens,
-                usageEvent.ReasoningOutputTokens,
-                usageEvent.TotalTokens);
+            summary.Add(usageEvent);
 
             var dayKey = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
             if (!dailyBuckets.TryGetValue(dayKey, out var bucket))
@@ -365,14 +359,7 @@ internal static class ClaudeUsageReader
                 dailyBuckets[dayKey] = bucket;
             }
 
-            bucket.Add(
-                usageEvent.Timestamp,
-                usageEvent.InputTokens,
-                usageEvent.CachedInputTokens,
-                usageEvent.CacheWriteInputTokens,
-                usageEvent.OutputTokens,
-                usageEvent.ReasoningOutputTokens,
-                usageEvent.TotalTokens);
+            bucket.Add(usageEvent);
         }
 
         summary.DailyBuckets.AddRange(
@@ -419,8 +406,12 @@ internal static class ClaudeUsageReader
                 0,
                 item.Total,
                 $"claude:{item.Key}",
-                item.CacheWrite))
+                item.CacheWrite,
+                ModelId: item.ModelId))
             .ToList();
+        throw new InvalidOperationException(
+            $"CLAUDEDEBUG files={files.Count} entries={events.Count} " +
+            $"roots=[{string.Join(" | ", GetLogRoots())}]");
         return new UsageEventScanResult(events, isComplete);
     }
 
@@ -560,7 +551,12 @@ internal static class ClaudeUsageReader
                 cacheRead);
             var cached = cacheRead;
 
-            return new ClaudeUsageEntry(key, timestamp, input, cached, cacheCreation, output);
+            var modelId = message.TryGetProperty("model", out var modelElement) &&
+                          modelElement.ValueKind == JsonValueKind.String
+                ? modelElement.GetString()
+                : null;
+
+            return new ClaudeUsageEntry(key, timestamp, input, cached, cacheCreation, output, modelId);
         }
         catch
         {
@@ -574,14 +570,7 @@ internal static class ClaudeUsageReader
             .Select(item =>
             {
                 var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
-                bucket.Add(
-                    item.Timestamp,
-                    item.InputTokens,
-                    item.CachedInputTokens,
-                    item.CacheWriteInputTokens,
-                    item.OutputTokens,
-                    item.ReasoningOutputTokens,
-                    item.TotalTokens);
+                bucket.Add(item);
                 return bucket;
             })
             .ToList();
@@ -594,14 +583,7 @@ internal static class ClaudeUsageReader
         var bucket = new TokenUsageBucket { StartLocal = bucketStart };
         foreach (var item in UsageEventMerger.Merge(events))
         {
-            bucket.Add(
-                item.Timestamp,
-                item.InputTokens,
-                item.CachedInputTokens,
-                item.CacheWriteInputTokens,
-                item.OutputTokens,
-                item.ReasoningOutputTokens,
-                item.TotalTokens);
+            bucket.Add(item);
         }
 
         return bucket;

@@ -1172,7 +1172,7 @@ public partial class MainWindow : Window
 
     private static bool SupportsModelCost(UsageSource source)
     {
-        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy;
+        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode;
     }
 
     private static string FormatActualBucketCost(UsageSource source, TokenUsageBucket bucket)
