@@ -7,12 +7,20 @@ namespace CodexTokenMonitor;
 
 public partial class QuotaForecastPanel : UserControl
 {
+    private static readonly TimeSpan[] Lookbacks =
+    {
+        TimeSpan.FromMinutes(15), TimeSpan.FromHours(1), TimeSpan.FromHours(3), TimeSpan.MaxValue
+    };
+    private static readonly string[] LookbackLabels = { "最近 15 分钟", "最近 1 小时", "最近 3 小时", "本周期" };
     private readonly DispatcherTimer ageTimer = new() { Interval = TimeSpan.FromSeconds(30) };
     private QuotaCycleAnalysisResult? analysis;
     private QuotaModelCapacityReport? capacities;
     private QuotaForecastResult? forecast;
     private bool ready;
     private bool changingSelection;
+    private bool changingLookback;
+    private int preferredLookbackIndex = 1;
+    private string? lookbackNotice;
 
     public QuotaForecastPanel()
     {
@@ -44,7 +52,13 @@ public partial class QuotaForecastPanel : UserControl
 
     private void ForecastInput_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (ready) Recalculate();
+        if (!ready || changingLookback) return;
+        if (ReferenceEquals(sender, LookbackBox))
+        {
+            preferredLookbackIndex = Math.Clamp(LookbackBox.SelectedIndex, 0, Lookbacks.Length - 1);
+            lookbackNotice = null;
+        }
+        Recalculate();
     }
 
     private void TargetBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -79,14 +93,32 @@ public partial class QuotaForecastPanel : UserControl
         var target = TargetBox.SelectedIndex == 1
             ? new DateTimeOffset(DateTime.SpecifyKind(TargetPicker.Value!.Value, DateTimeKind.Unspecified), CodexUsageReader.BeijingOffset)
             : analysis.Period.ResetAt;
-        var lookback = LookbackBox.SelectedIndex switch
-        {
-            0 => TimeSpan.FromMinutes(15), 2 => TimeSpan.FromHours(3),
-            3 => TimeSpan.MaxValue, _ => TimeSpan.FromHours(1)
-        };
+        var requestedLookbackIndex = preferredLookbackIndex;
+        var requestedLookback = Lookbacks[requestedLookbackIndex];
         var activity = ActivityBox.SelectedIndex switch { 1 => 75m, 2 => 50m, 3 => 25m, _ => 100m };
-        forecast = QuotaForecastCalculator.Build(analysis, capacities, lookback, target, activity,
-            priceCatalog: PriceSettingsStore.Current.CodexPresets);
+        var selection = QuotaForecastCalculator.BuildAdaptive(analysis, capacities, requestedLookback, Lookbacks,
+            target, activity, priceCatalog: PriceSettingsStore.Current.CodexPresets);
+        forecast = selection.Result;
+        if (selection.WasExpanded)
+        {
+            var effectiveLookbackIndex = Array.IndexOf(Lookbacks, selection.EffectiveLookback);
+            lookbackNotice = $"“{LookbackLabels[requestedLookbackIndex]}”不足以形成可靠斜率，已自动扩展为“{LookbackLabels[effectiveLookbackIndex]}”。";
+            changingLookback = true;
+            LookbackBox.SelectedIndex = effectiveLookbackIndex;
+            changingLookback = false;
+        }
+        else if (LookbackBox.SelectedIndex != requestedLookbackIndex)
+        {
+            // A previously expanded short window has become usable again.
+            lookbackNotice = null;
+            changingLookback = true;
+            LookbackBox.SelectedIndex = requestedLookbackIndex;
+            changingLookback = false;
+        }
+        LookbackNoticeText.Text = lookbackNotice;
+        LookbackNoticeText.Visibility = string.IsNullOrWhiteSpace(lookbackNotice)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
         var selectedKey = (ScenarioBox.SelectedItem as QuotaForecastScenarioRow)?.Key;
         var relevantModels = analysis.Models.Select(item => ModelKey(item.ModelId))
             .Concat(capacities.Estimates.Select(item => ModelKey(item.ModelId)))

@@ -75,6 +75,14 @@ internal sealed record QuotaForecastResult(
     public decimal? UsageCoveragePercent { get; init; }
 }
 
+internal sealed record QuotaForecastLookbackSelection(
+    TimeSpan RequestedLookback,
+    TimeSpan EffectiveLookback,
+    QuotaForecastResult Result)
+{
+    public bool WasExpanded => EffectiveLookback > RequestedLookback;
+}
+
 /// <summary>
 /// A linear, same-workload scenario calculation. The real elapsed sample window
 /// includes idle time. It predicts from the last observation, never from a made-up
@@ -88,6 +96,39 @@ internal static class QuotaForecastCalculator
     public const decimal MinimumUsageCoveragePercent = 95m;
     public const string SameWorkloadAssumption =
         "保持近期 Token 吞吐及输入、缓存、输出比例，按未来工作量比例缩放；包含空闲时间，Fast 仅乘额度倍率，不额外假定吞吐加速。";
+
+    public static QuotaForecastLookbackSelection BuildAdaptive(
+        QuotaCycleAnalysisResult analysis,
+        QuotaModelCapacityReport capacities,
+        TimeSpan requestedLookback,
+        IEnumerable<TimeSpan> availableLookbacks,
+        DateTimeOffset targetReset,
+        decimal activityPercent = 100m,
+        DateTimeOffset? nowLocal = null,
+        IEnumerable<PricePreset>? priceCatalog = null)
+    {
+        ArgumentNullException.ThrowIfNull(availableLookbacks);
+        var now = nowLocal ?? BeijingClock.Now;
+        var catalog = priceCatalog?.ToArray();
+        var requested = Build(analysis, capacities, requestedLookback, targetReset, activityPercent, now, catalog);
+        if (!ShouldExpandLookback(requested.Status))
+            return new QuotaForecastLookbackSelection(requestedLookback, requestedLookback, requested);
+
+        foreach (var candidate in availableLookbacks
+                     .Where(candidate => candidate > requestedLookback)
+                     .Distinct()
+                     .OrderBy(candidate => candidate))
+        {
+            var expanded = Build(analysis, capacities, candidate, targetReset, activityPercent, now, catalog);
+            if (expanded.Status == QuotaForecastStatus.Ready)
+                return new QuotaForecastLookbackSelection(requestedLookback, candidate, expanded);
+        }
+
+        // If no broader interval forms a trustworthy measured slope, keep the
+        // user's requested interval and its precise reason instead of silently
+        // changing the selection without producing a forecast.
+        return new QuotaForecastLookbackSelection(requestedLookback, requestedLookback, requested);
+    }
 
     public static QuotaForecastResult Build(
         QuotaCycleAnalysisResult analysis,
@@ -322,6 +363,11 @@ internal static class QuotaForecastCalculator
         CodexModelCost.NormalizeModelId(value), @"-\d{4}-\d{2}-\d{2}$", "");
 
     private static decimal Hours(TimeSpan duration) => duration.Ticks / (decimal)TimeSpan.TicksPerHour;
+
+    private static bool ShouldExpandLookback(QuotaForecastStatus status) => status is
+        QuotaForecastStatus.NoSamples or
+        QuotaForecastStatus.InsufficientSamples or
+        QuotaForecastStatus.NoQuotaDrop;
 
     private static QuotaForecastScenario Unavailable(string model, string mode, QuotaForecastStatus status,
         string source, int samples, decimal? multiplier = null, QuotaModelCapacitySource? calibrationSource = null) => new(

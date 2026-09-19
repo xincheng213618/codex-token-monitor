@@ -27,6 +27,8 @@
                     </ComboBox>
                 </StackPanel>
             </WrapPanel>
+            <TextBlock x:Name="LookbackNoticeText" Foreground="{StaticResource AccentBrush}" FontSize="11"
+                       TextWrapping="Wrap" Margin="0,0,0,8" Visibility="Collapsed" />
             <Grid Margin="0,0,0,5">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                 <TextBlock Text="目标时间（北京时间）" Style="{StaticResource SectionDescription}" VerticalAlignment="Center" />

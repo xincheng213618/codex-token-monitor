@@ -56,6 +56,50 @@ public sealed class QuotaForecastCalculatorTests
     }
 
     [Fact]
+    public void AdaptiveLookbackExpandsToTheShortestWindowWithAReliableSlope()
+    {
+        var analysis = Analysis(new[] { Point(0, 20m), Point(177, 36m), Point(180, 40m) });
+        var lookbacks = new[]
+        {
+            TimeSpan.FromMinutes(15), TimeSpan.FromHours(1), TimeSpan.FromHours(3), TimeSpan.MaxValue
+        };
+
+        var selection = QuotaForecastCalculator.BuildAdaptive(
+            analysis,
+            new QuotaModelCapacityReport("test", Array.Empty<QuotaModelCapacityEstimate>()),
+            TimeSpan.FromHours(1),
+            lookbacks,
+            Start.AddHours(6),
+            nowLocal: Start.AddHours(3),
+            priceCatalog: Array.Empty<PricePreset>());
+
+        Assert.True(selection.WasExpanded);
+        Assert.Equal(TimeSpan.FromHours(1), selection.RequestedLookback);
+        Assert.Equal(TimeSpan.FromHours(3), selection.EffectiveLookback);
+        Assert.Equal(QuotaForecastStatus.Ready, selection.Result.Status);
+        Assert.Equal(TimeSpan.FromHours(3), selection.Result.SampleDuration);
+    }
+
+    [Fact]
+    public void AdaptiveLookbackKeepsTheRequestedWindowWhenNoBroaderSlopeIsUsable()
+    {
+        var analysis = Analysis(new[] { Point(0, 40m), Point(177, 40m), Point(180, 40m) });
+
+        var selection = QuotaForecastCalculator.BuildAdaptive(
+            analysis,
+            new QuotaModelCapacityReport("test", Array.Empty<QuotaModelCapacityEstimate>()),
+            TimeSpan.FromHours(1),
+            new[] { TimeSpan.FromHours(1), TimeSpan.FromHours(3), TimeSpan.MaxValue },
+            Start.AddHours(6),
+            nowLocal: Start.AddHours(3),
+            priceCatalog: Array.Empty<PricePreset>());
+
+        Assert.False(selection.WasExpanded);
+        Assert.Equal(TimeSpan.FromHours(1), selection.EffectiveLookback);
+        Assert.Equal(QuotaForecastStatus.InsufficientSamples, selection.Result.Status);
+    }
+
+    [Fact]
     public void SameWorkloadModelsPreserveCacheAndOutputMixAndFastDoesNotBoostThroughputAgain()
     {
         var usage = new QuotaCycleUsageSample(Start.AddHours(1), 1_000_000, 800_000, 100_000,
