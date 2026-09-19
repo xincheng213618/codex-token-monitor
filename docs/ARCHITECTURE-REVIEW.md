@@ -161,6 +161,8 @@
 
 第十一轮（2026-09-19）关闭 SQLite 连接池竞态：`MonitorSettingsDatabase`、`UsageCacheStore`、`QuotaSnapshotCacheStore` 与共享历史只读连接全部改为 `Pooling=false`。生产 I/O 本就被 `MonitorRuntime.SharedIoGate` 串行化，池化没有可测收益，而并行测试负载下池化句柄已被观察到一次 `ObjectDisposedException`。`SubscriptionPlanImporter` 原本就是非池化。稳定性验证：**连续 20 次全量 Core 回归 553/553 全部通过，0 失败**，另跑三组桌面探针通过（报告 `artifacts/desktop-probes/20260919-010215-*/`）。
 
+第三十一轮（2026-09-19）：db 数据源端到端复核（只读对账，重启后预热完成态）。WorkBuddy：2504/2504 事件 100% 模型化，全部历史天 complete、0 缺口；ZCode v5：961/961 事件 100% 模型化——今天 671 条来自 db 实时读取、9/18 的 72 条来自 db 回填、6 月 218 条来自日志回填，历史 0 缺口；"缓存待重试"暂态已消失。ZCode/WorkBuddy 两个数据源的模型归因与数据完整性在真实数据上闭环。
+
 第二十九/三十轮（2026-09-19）：WorkBuddy/DSH 数据源盲区排查。WorkBuddy 的 projects 日志留存 124 天无轮转、无持久用量库（workbuddy.db 仅应用状态），现有扫描方案即正确；DSH 会话 zstd 文件留存正常（本机 5 个，8 月）。发现并修复 WorkBuddy 的时间戳解析盲区：秒级值会落入 1999 年并在预热范围（2026-01-01 起）之外永久挂起——读取器现在拒绝年份超出 [2023, 2100] 的记录，并清理了真实缓存中的 1999 残留日（源头为隔离加固前的测试泄漏，现行测试已有双作用域隔离）。WorkBuddy 模型归因回填经逐日对账确认 100% 完成（689/689、600/600 等全部历史天）。验证：Core 回归 656/656，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-152747-*/`）。
 
 第二十七轮（2026-09-19）：ZCode 读取器接入 CLI 自身的持久用量库（`~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表，字段与 model-io 逐一对账一致、logical_request_id 全表唯一）。分界规则：db 可读时以其最早记录时间为界，db 覆盖之后的时间段全部来自 db（键 `zcode-db:<logical_request_id>`，带模型、轮转免疫），日志只回填更早时段（6 月历史）；db 缺失或锁定时整体退回纯日志扫描。ZCode 缓存文件升为 `token-cache-v5.sqlite3`（键空间变更，干净重建）。动机：事故暴露 model-io 日志会被 CLI 轮转（今天 00:00–02:35 与 9/18 全天都被吞掉），而 db 完整保留（今天 121.8M+，9/18 73 条）。测试：`ZCodeCliUsageDatabaseTests` 4 项（db 行映射与稳定键、db 缺失退回、日志在 db 覆盖期被排除、无 db 时纯日志可用）。验证：Core 回归 650/650，桌面回归三组通过（报告 `artifacts/desktop-probes/20260919-150225-*/`）；实测重启后 v5 缓存即回填 9/18 的 72 条带模型事件。
