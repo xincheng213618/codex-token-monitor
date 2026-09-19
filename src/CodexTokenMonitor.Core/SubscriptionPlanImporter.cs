@@ -353,15 +353,21 @@ internal static class SubscriptionPlanImporter
             }
         }
 
-        if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsedOffset))
+        if (DateTime.TryParse(
+                text,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind,
+                out var parsed))
         {
-            value = parsedOffset.ToOffset(CodexUsageReader.BeijingOffset);
+            value = parsed.Kind == DateTimeKind.Unspecified
+                ? new DateTimeOffset(parsed, CodexUsageReader.BeijingOffset)
+                : new DateTimeOffset(parsed).ToOffset(CodexUsageReader.BeijingOffset);
             return value.Year is >= 2024 and <= 2035;
         }
 
-        if (DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var parsed))
+        if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var parsedOffset))
         {
-            value = new DateTimeOffset(parsed.Year, parsed.Month, parsed.Day, parsed.Hour, parsed.Minute, parsed.Second, CodexUsageReader.BeijingOffset);
+            value = parsedOffset.ToOffset(CodexUsageReader.BeijingOffset);
             return value.Year is >= 2024 and <= 2035;
         }
 

@@ -71,6 +71,22 @@ public sealed class SubscriptionPlanImporterTests : IDisposable
     }
 
     [Fact]
+    public void ImportFromRoot_ExplicitUtcDates_ConvertToBeijingTime()
+    {
+        FixtureDatabase(
+            "utc-plan.sqlite",
+            """CREATE TABLE plan_purchase (plan_name TEXT, start_time TEXT, end_time TEXT, amount_total REAL)""",
+            ("""INSERT INTO plan_purchase VALUES ($p0, $p1, $p2, $p3)""",
+             new object[] { "ChatGPT Plus", "2026-05-01T00:00:00Z", "2026-06-01T00:00:00Z", 128d }));
+
+        var result = SubscriptionPlanImporter.TryImportFromCodexRoot(root);
+
+        var record = Assert.Single(result.Records);
+        Assert.Equal(new DateTimeOffset(2026, 5, 1, 8, 0, 0, TimeSpan.FromHours(8)), record.StartLocal);
+        Assert.Equal(new DateTimeOffset(2026, 6, 1, 8, 0, 0, TimeSpan.FromHours(8)), record.EndLocal);
+    }
+
+    [Fact]
     public void ImportFromRoot_IrrelevantTables_AreIgnored()
     {
         FixtureDatabase(
