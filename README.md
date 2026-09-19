@@ -12,7 +12,7 @@
 - 当前周/月/周期范围若截止到现在，会叠加当天实时日志并随自动刷新更新；历史范围继续优先使用缓存。
 - 支持“从当前算”，方便比较同一任务在不同 AI 工具里的消耗。
 - 展示 input、cached input、cache write、uncached input、output、reasoning output、缓存命中率、事件数和 Coding Time（10 分钟空闲判定的活跃时长）。
-  - Codex 与 ZCode 页均提供"实际模型 · 标准 API 等价"费用卡；ZCode 按智谱/Z.AI 价格组人民币计价，默认对比档为 GLM-5.3 Flash（输入 ¥0.80 / 缓存命中 ¥0.23 / 输出 ¥2.80 每百万 tokens，参考 bigmodel.cn，可编辑）。
+  - Codex、ZCode 与 WorkBuddy 页均提供"实际模型 · 标准 API 等价"费用卡与明细"实际模型/模型费用"两列；ZCode 按智谱/Z.AI 价格组人民币计价，默认对比档为 GLM-5.3 Flash（输入 ¥0.80 / 缓存命中 ¥0.23 / 输出 ¥2.80 每百万 tokens，参考 bigmodel.cn，可编辑）；WorkBuddy 按 WorkBuddy 价格组计价（`hy3` 命中腾讯混元 hy3 档，端点 ID 等未知模型 0x 待填、可按模型 ID 补价）。
 - 以 ScottPlot 时间轴图表查看当天/周/月 token 峰值：总 Token 与缓存输入柱状图 + 累计总 Token 折线，可调节高度、带图例和轴标签。
 - 用 SQLite 缓存历史统计，历史日期切换更快；启动后后台自动预热历史日缓存。
 - 支持导出/导入 Codex 统计数据包，把多台电脑的 token 事件和额度快照合并到一台主统计电脑；重复导入会自动去重。

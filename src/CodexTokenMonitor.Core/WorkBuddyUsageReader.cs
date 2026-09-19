@@ -601,7 +601,10 @@ internal static class WorkBuddyUsageReader
                 timestamp = numeric > 10_000_000_000
                     ? DateTimeOffset.FromUnixTimeMilliseconds(numeric)
                     : DateTimeOffset.FromUnixTimeSeconds(numeric);
-                return true;
+                // Seconds-style garbage timestamps land decades in the past
+                // (observed as 1999 days) and would sit outside the warmer's
+                // range forever; reject them at the source.
+                return timestamp.Year is >= 2023 and <= 2100;
             }
 
             if (element.TryGetDouble(out var floating))

@@ -66,7 +66,7 @@ CodexTokenMonitor.slnx
 
 ### 2.3 Claude Code / ZCode / WorkBuddy / DSH
 
-Claude Code / ZCode / WorkBuddy 结构类似：各自读取本地日志目录，解析出与 Codex 相同的 `TokenUsageEvent` 字段（input/cached/cache write/output/reasoning/total），复用同一套聚合与缓存。Claude 的 `cache_creation_input_tokens` 映射为 cache write。ZCode 的 `model_io` 记录携带 `model.modelId`（如 `GLM-5.3-Flash`），读取时进入 `TokenUsageEvent.ModelId` 参与实际模型计价（价格组为智谱/Z.AI，人民币档）；旧缓存中无模型的 zcode 事件由一次性 `zcode-model-context-v1` 维护迁移标记对应日重扫。
+Claude Code / ZCode / WorkBuddy 结构类似：各自读取本地日志目录，解析出与 Codex 相同的 `TokenUsageEvent` 字段（input/cached/cache write/output/reasoning/total），复用同一套聚合与缓存。Claude 的 `cache_creation_input_tokens` 映射为 cache write。ZCode 的 `model_io` 记录携带 `model.modelId`（如 `GLM-5.3-Flash`），读取时进入 `TokenUsageEvent.ModelId` 参与实际模型计价（价格组为智谱/Z.AI，人民币档）；旧缓存中无模型的 zcode 事件由一次性 `zcode-model-context-v1` 维护迁移标记对应日重扫。WorkBuddy 的会话 JSONL 在 usage 行上同根携带 `providerData.model`（如 `hy3`、腾讯云端点 ID `ep-…`），同样进入 `ModelId` 参与实际模型计价（价格组为 WorkBuddy；`hy3` 命中腾讯混元档，端点 ID 无公开单价保持 0x 待填）；无模型的 workbuddy 事件由一次性 `workbuddy-model-context-v1` 维护迁移标记对应日重扫。
 
 DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 
@@ -155,7 +155,7 @@ DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 ├─ 应用标题与设置操作；下一行是来源 Tab（Codex / Claude Code / ZCode / WorkBuddy / DSH）与缓存详情
 ├─ 额度面板（仅 Codex）：5h 额度 / 7d 额度 / 当前套餐 / 重置过期 / 重置评估 + [估算]
 ├─ 范围选择条：模式（天/周/月/周期）｜<｜日期 或 周期下拉｜选7天｜>｜今天｜从当前算｜刷新日
-├─ 汇总卡：TOTAL TOKENS + 按价格预设横向排列的费用卡（Codex/ZCode 首张为"实际模型 · 标准 API 等价"，ZCode 按智谱价格组人民币计价）
+├─ 汇总卡：TOTAL TOKENS + 按价格预设横向排列的费用卡（Codex/ZCode/WorkBuddy 首张为"实际模型 · 标准 API 等价"，非 Codex 来源按各自价格组计价）
 ├─ 单行九项指标：Input / Cached / Cache Write / Uncached / Output / Reasoning / Cache Ratio / Events / Coding Time
 └─ 明细区：可拖高的时间轴（ScottPlot） + 明细表（DataGrid，冻结前两列、行/列虚拟化）
 ```
