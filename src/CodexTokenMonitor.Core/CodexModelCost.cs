@@ -2,14 +2,23 @@ using System.Text.RegularExpressions;
 
 namespace CodexTokenMonitor;
 
-internal sealed record ModelCostLine(string ModelId, TokenUsageBucket Usage, decimal? Cost);
+internal sealed record ModelCostLine(
+    string ModelId,
+    TokenUsageBucket Usage,
+    decimal? Cost,
+    string CurrencySymbol = "",
+    string UnitLabel = "");
+
+internal sealed record ModelCostTotal(string CurrencySymbol, string UnitLabel, decimal Amount);
 
 internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens, long UnpricedEvents,
     IReadOnlyList<ModelCostLine> Models)
 {
-    // Codex estimates are USD; source-group estimates take the currency of
-    // their first priced preset (e.g. ¥ for the ZCode group).
+    // Single-unit estimates keep the legacy scalar properties. Source groups
+    // may contain incompatible units (for example CNY and plan Credits), so
+    // callers must use CostTotals/Format instead of adding those amounts.
     public string CurrencySymbol { get; init; } = "$";
+    public IReadOnlyList<ModelCostTotal> CostTotals { get; init; } = Array.Empty<ModelCostTotal>();
     public decimal QuotaBaseCost { get; init; } = KnownCost;
     public decimal FastSurcharge { get; init; }
     public long FastEvents { get; init; }
@@ -17,7 +26,8 @@ internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens,
     public long UnknownFastRateEvents { get; init; }
     public decimal QuotaEquivalentCost => QuotaBaseCost > decimal.MaxValue - FastSurcharge ? decimal.MaxValue : QuotaBaseCost + FastSurcharge;
     public bool IsComplete => UnpricedTokens == 0 && UnpricedEvents == 0;
-    public decimal? CompleteCost => IsComplete ? KnownCost : null;
+    public bool HasMixedUnits => EffectiveCostTotals.Count > 1;
+    public decimal? CompleteCost => IsComplete && !HasMixedUnits ? KnownCost : null;
     public long MissingModelEvents => Math.Max(0, UnpricedEvents - Models.Where(item => item.Cost is null).Sum(item => item.Usage.Events));
     private string MissingSummary => string.Join("、", new[]
     {
@@ -26,11 +36,12 @@ internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens,
         Models.Any(item => item.Cost is null && !CodexModelCost.HasNoPublicPrice(item.ModelId)) ? "含 0x 待填" : null
     }.Where(item => item is not null));
     public string Format(string format = "N2") => IsComplete
-        ? $"{CurrencySymbol}{KnownCost.ToString(format, CultureInfo.InvariantCulture)}"
-        : $"{CurrencySymbol}{KnownCost.ToString(format, CultureInfo.InvariantCulture)}（{MissingSummary}）";
+        ? FormatKnownCosts(format)
+        : $"{FormatKnownCosts(format)}（{MissingSummary}）";
 
     public string FormatQuotaCost(string format = "N2")
     {
+        if (HasMixedUnits) return Format(format);
         var details = new List<string>();
         if (!IsComplete) details.Add(MissingSummary);
         if (UnknownFastRateEvents > 0) details.Add("Fast 倍率待补");
@@ -52,6 +63,32 @@ internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens,
             if (UnpricedEvents > namedEvents) missing.Add($"缺模型名称（{UnpricedEvents - namedEvents:N0} 条；已有 Token，无法选择对应单价。若来自旧版同步数据，请在来源电脑更新程序、完成统计后同步全部历史）");
             return IsComplete ? "" : $"未计价：{UnpricedEvents:N0} 条 / {UnpricedTokens:N0} Token：{string.Join("、", missing)}";
         }
+    }
+
+    private IReadOnlyList<ModelCostTotal> EffectiveCostTotals => CostTotals.Count > 0
+        ? CostTotals
+        : new[] { new ModelCostTotal(CurrencySymbol, "", KnownCost) };
+
+    private string FormatKnownCosts(string format)
+    {
+        var totals = EffectiveCostTotals;
+        var repeatedSymbols = totals.GroupBy(item => item.CurrencySymbol, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return string.Join(" + ", totals.Select(item =>
+            FormatAmount(item.Amount, item.CurrencySymbol, format) +
+            (repeatedSymbols.Contains(item.CurrencySymbol) && !string.IsNullOrWhiteSpace(item.UnitLabel)
+                ? $" [{item.UnitLabel}]"
+                : "")));
+    }
+
+    internal static string FormatAmount(decimal amount, string currencySymbol, string format)
+    {
+        var value = amount.ToString(format, CultureInfo.InvariantCulture);
+        return string.Equals(currencySymbol, "Credits", StringComparison.OrdinalIgnoreCase)
+            ? $"{value} Credits"
+            : $"{currencySymbol}{value}";
     }
 }
 
@@ -102,16 +139,15 @@ internal static class CodexModelCost
     private static ModelCostEstimate EstimateWith(Dictionary<string, PricePreset> prices, TokenUsageBucket usage)
     {
         long pricedTokens = 0, pricedEvents = 0;
-        decimal cost = 0, quotaBaseCost = 0;
+        decimal quotaBaseCost = 0;
         decimal fastSurcharge = 0;
         long fastEvents = 0, knownTierEvents = 0, unknownFastRateEvents = 0;
         var models = new List<ModelCostLine>();
-        string? currencySymbol = null;
+        var costTotals = new List<ModelCostTotal>();
         foreach (var (model, tokens) in usage.ModelUsage.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase))
         {
             TryFindPrice(prices, model, out var preset);
             var pending = IsPending(preset);
-            if (!pending && currencySymbol is null) currencySymbol = preset!.CurrencySymbol;
             decimal? amount = pending ? null : tokens.EstimateCost(preset!.ToProfile());
             var quotaProfile = pending ? null : CodexSubscriptionPricing.GetProfile(model, preset!.ToProfile());
             foreach (var (tier, tierUsage) in tokens.ServiceTierUsage)
@@ -129,21 +165,46 @@ internal static class CodexModelCost
                     fastSurcharge = fastSurcharge > decimal.MaxValue - extra ? decimal.MaxValue : fastSurcharge + extra;
                 }
             }
-            models.Add(new ModelCostLine(model, tokens, amount));
+            models.Add(new ModelCostLine(model, tokens, amount,
+                pending ? "" : preset!.CurrencySymbol,
+                pending ? "" : preset!.UnitLabel));
             if (amount is null) continue;
-            cost = cost > decimal.MaxValue - amount.Value ? decimal.MaxValue : cost + amount.Value;
+            AddCostTotal(costTotals, preset!.CurrencySymbol, preset.UnitLabel, amount.Value);
             var quotaAmount = tokens.EstimateCost(quotaProfile!);
             quotaBaseCost = quotaBaseCost > decimal.MaxValue - quotaAmount ? decimal.MaxValue : quotaBaseCost + quotaAmount;
             pricedTokens = TokenCountMath.AddNonNegative(pricedTokens, tokens.TotalTokens);
             pricedEvents = TokenCountMath.AddNonNegative(pricedEvents, tokens.Events);
         }
-        return new ModelCostEstimate(cost, TokenCountMath.SubtractNonNegative(usage.TotalTokens, pricedTokens),
+        var scalarCost = costTotals.Count == 1 ? costTotals[0].Amount : 0m;
+        var hasMixedUnits = costTotals.Count > 1;
+        return new ModelCostEstimate(scalarCost, TokenCountMath.SubtractNonNegative(usage.TotalTokens, pricedTokens),
             TokenCountMath.SubtractNonNegative(usage.Events, pricedEvents), models)
         {
-            CurrencySymbol = currencySymbol ?? "$",
-            QuotaBaseCost = quotaBaseCost, FastSurcharge = fastSurcharge, FastEvents = fastEvents,
+            CurrencySymbol = costTotals.Count == 1 ? costTotals[0].CurrencySymbol : hasMixedUnits ? "" : "$",
+            CostTotals = costTotals,
+            QuotaBaseCost = hasMixedUnits ? 0m : quotaBaseCost,
+            FastSurcharge = hasMixedUnits ? 0m : fastSurcharge,
+            FastEvents = fastEvents,
             UnknownTierEvents = TokenCountMath.SubtractNonNegative(usage.Events, knownTierEvents),
             UnknownFastRateEvents = unknownFastRateEvents
+        };
+    }
+
+    private static void AddCostTotal(List<ModelCostTotal> totals, string currencySymbol, string unitLabel, decimal amount)
+    {
+        var index = totals.FindIndex(item =>
+            string.Equals(item.CurrencySymbol, currencySymbol, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(item.UnitLabel, unitLabel, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            totals.Add(new ModelCostTotal(currencySymbol, unitLabel, amount));
+            return;
+        }
+
+        var current = totals[index];
+        totals[index] = current with
+        {
+            Amount = current.Amount > decimal.MaxValue - amount ? decimal.MaxValue : current.Amount + amount
         };
     }
 
@@ -192,7 +253,13 @@ internal static class CodexModelCost
             "GPT-5.4 mini Short" => "gpt-5.4-mini",
             "GPT-5.2 Reference" => "gpt-5.2",
             _ => ""
-        } : "";
+        } : model switch
+        {
+            "GLM-5.3 Flash" => "glm-5.3-flash",
+            "GLM-5.2 1M" => "glm-5.2",
+            "MiMo V2.5 Pro" => "mimo-v2.5-pro",
+            _ => ""
+        };
 
     public static string DescribeModels(TokenUsageBucket usage)
     {

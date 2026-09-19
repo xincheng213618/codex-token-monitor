@@ -25,7 +25,21 @@ public sealed class PriceSettingsTests
         Assert.Equal(0.80m, flash.UncachedInput);
         Assert.Equal(0.23m, flash.CachedInput);
         Assert.Equal(2.80m, flash.Output);
+        Assert.Equal("glm-5.3-flash", flash.ModelId);
         Assert.Equal("GLM-5.3 Flash", normalized.ZCodePresets[0].Model);
+    }
+
+    [Fact]
+    public void Normalize_AddsActualZCodeModelIdsToExistingPresets()
+    {
+        var settings = new PriceSettings();
+        settings.ZCodePresets.Single(item => item.Model == "GLM-5.2 1M").ModelId = "";
+        settings.ZCodePresets.Single(item => item.Model == "MiMo V2.5 Pro").ModelId = "";
+
+        var normalized = PriceSettingsStore.Normalize(settings);
+
+        Assert.Equal("glm-5.2", normalized.ZCodePresets.Single(item => item.Model == "GLM-5.2 1M").ModelId);
+        Assert.Equal("mimo-v2.5-pro", normalized.ZCodePresets.Single(item => item.Model == "MiMo V2.5 Pro").ModelId);
     }
 
     [Fact]

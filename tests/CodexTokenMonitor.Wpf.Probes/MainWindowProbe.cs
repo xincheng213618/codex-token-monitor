@@ -117,6 +117,7 @@ internal static class MainWindowProbe
                 await CheckRefresh(window, modules[source], RangeMode.Month, 880 * multiplier, 3);
                 await CheckRefresh(window, modules[source], RangeMode.Day, 770 * multiplier, 2, custom: true);
             }
+            await CheckZCodeActualCostAsync(window, modules[UsageSource.ZCode]);
 
             var codex = (CodexUsageModule)modules[UsageSource.Codex];
             await CheckRefresh(window, codex, RangeMode.Cycle, 770, 2);
@@ -588,6 +589,32 @@ internal static class MainWindowProbe
             tokens = result.Summary.TotalTokens, events = result.Summary.Events, rows = result.BreakdownRows.Count });
     }
 
+    private static async Task CheckZCodeActualCostAsync(MainWindow window, UsageSourceModule module)
+    {
+        Select(window, module, RangeMode.Day);
+        await RefreshAndDrainAsync(window);
+        var panel = Get<Panel>(window, "CostCardsPanel");
+        Require(panel.Children.Count > 0 && panel.Children[0] is CostCardControl,
+            "ZCode model usage shows an actual-model cost card");
+        var card = (CostCardControl)panel.Children[0];
+        var amount = Get<TextBlock>(card, "AmountText").Text;
+        var detail = card.ToolTip?.ToString() ?? "";
+        Require(amount.Contains("¥", StringComparison.Ordinal) &&
+                amount.Contains("Credits", StringComparison.OrdinalIgnoreCase) &&
+                amount.Contains(" + ", StringComparison.Ordinal),
+            "ZCode card keeps CNY and Credits as separate totals");
+        Require(detail.Contains("GLM-5.3-Flash", StringComparison.OrdinalIgnoreCase) &&
+                detail.Contains("mimo-v2.5-pro", StringComparison.OrdinalIgnoreCase) &&
+                !detail.Contains("订阅基准", StringComparison.Ordinal) &&
+                !detail.Contains("$0", StringComparison.Ordinal),
+            "ZCode cost tooltip uses the source price group and source units");
+        var headers = Get<DataGrid>(window, "BreakdownGrid").Columns.Select(column => column.Header?.ToString()).ToArray();
+        Require(headers.Any(header => string.Equals(header, "实际模型", StringComparison.Ordinal)) &&
+                headers.Any(header => string.Equals(header, "模型费用", StringComparison.Ordinal)),
+            "ZCode detail grid exposes its model and actual-cost columns");
+        Results.Add(new { check = "zcode-actual-model-cost", amount, mixedUnits = true, tooltipUsesZCodePrices = true });
+    }
+
     private static async Task CheckDisplayStateTransitionsAsync(MainWindow window, CodexUsageModule module)
     {
         Select(window, module, RangeMode.Day);
@@ -726,11 +753,17 @@ internal static class MainWindowProbe
         foreach (var source in Enum.GetValues<UsageSource>())
         {
             var multiplier = (int)source + 1;
+            string? Model(int index) => source == UsageSource.ZCode ? index switch
+            {
+                0 => "GLM-5.3-Flash",
+                1 => "mimo-v2.5-pro",
+                _ => "GLM-5.2"
+            } : null;
             var events = new[]
             {
-                new TokenUsageEvent(SeedDay.AddHours(9), 100 * multiplier, 20 * multiplier, 10 * multiplier, 0, 110 * multiplier, $"{source}:one"),
-                new TokenUsageEvent(SeedDay.AddHours(10), 200 * multiplier, 40 * multiplier, 20 * multiplier, 0, 220 * multiplier, $"{source}:two"),
-                new TokenUsageEvent(SeedDay.AddDays(1).AddHours(9), 500 * multiplier, 100 * multiplier, 50 * multiplier, 0, 550 * multiplier, $"{source}:three")
+                new TokenUsageEvent(SeedDay.AddHours(9), 100 * multiplier, 20 * multiplier, 10 * multiplier, 0, 110 * multiplier, $"{source}:one", ModelId: Model(0)),
+                new TokenUsageEvent(SeedDay.AddHours(10), 200 * multiplier, 40 * multiplier, 20 * multiplier, 0, 220 * multiplier, $"{source}:two", ModelId: Model(1)),
+                new TokenUsageEvent(SeedDay.AddDays(1).AddHours(9), 500 * multiplier, 100 * multiplier, 50 * multiplier, 0, 550 * multiplier, $"{source}:three", ModelId: Model(2))
             };
             var cache = UsageCacheStore.Load(folders[(int)source]);
             foreach (var group in events.GroupBy(item => item.Timestamp.Date))

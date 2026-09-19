@@ -95,6 +95,23 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
         command.ExecuteNonQuery();
     }
 
+    private static string[] ReadEventKeys(string path)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT event_key FROM usage_events ORDER BY event_key";
+        using var reader = command.ExecuteReader();
+        var keys = new List<string>();
+        while (reader.Read()) keys.Add(reader.GetString(0));
+        return keys.ToArray();
+    }
+
     [Fact]
     public void Load_MarksLegacyZcodeDayIncompleteOnce()
     {
@@ -145,5 +162,33 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
         var incomplete = UsageCacheStore.GetIncompleteDays(folder, day, day.AddDays(1), CancellationToken.None);
 
         Assert.DoesNotContain(day, incomplete);
+    }
+
+    [Fact]
+    public void Load_LegacyZcodeMigrationNeverRemovesEventKeys()
+    {
+        SeedLegacyCache();
+        var path = UsageCacheStore.GetCachePath(folder);
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false
+        }.ToString()))
+        {
+            connection.Open();
+            Execute(connection, """
+                INSERT INTO usage_events (date, event_key, timestamp_local, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, model_id)
+                    VALUES ('2026-09-10', 'zcode:named', '2026-09-10T09:00:00+08:00', 300, 0, 0, 0, 300, 'GLM-5.3-Flash');
+                INSERT INTO usage_events (date, event_key, timestamp_local, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens)
+                    VALUES ('2026-09-10', 'codex:legacy', '2026-09-10T10:00:00+08:00', 200, 0, 0, 0, 200);
+                """);
+        }
+        var before = ReadEventKeys(path);
+
+        _ = UsageCacheStore.Load(folder);
+
+        Assert.Equal(new[] { "codex:legacy", "zcode:legacy", "zcode:named" }, before);
+        Assert.Equal(before, ReadEventKeys(path));
     }
 }

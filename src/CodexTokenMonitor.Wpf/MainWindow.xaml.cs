@@ -1095,7 +1095,9 @@ public partial class MainWindow : Window
             }
             else if (summary.ModelUsage.Count > 0)
             {
-                builder.AppendLine($"实际模型 API 等价费用：{CodexModelCost.Estimate(summary, PricePresetGroups.ForSource(module.Source)).Format()}");
+                var priceGroup = PricePresetGroups.ForSource(module.Source);
+                builder.AppendLine($"实际模型 API 等价费用：{CodexModelCost.Estimate(summary, priceGroup).Format()}");
+                builder.AppendLine(BuildModelCostDetails(summary, priceGroup));
             }
             builder.AppendLine("相同 Token 换模型费用估算：");
             foreach (var preset in presets)
@@ -1133,18 +1135,37 @@ public partial class MainWindow : Window
         return $"{remaining:N0}%{reset}";
     }
 
-    private static string BuildModelCostDetails(TokenUsageBucket usage)
+    private static string BuildModelCostDetails(TokenUsageBucket usage, string? priceGroup = null)
     {
-        var estimate = CodexModelCost.Estimate(usage);
-        var lines = new List<string> { "按日志模型与当前价格库估算 API 等价费用；不是订阅账单。" };
-        lines.Add(estimate.SpeedDescription);
-        lines.Add($"订阅基准折算（含 Fast）：{estimate.FormatQuotaCost()}");
+        var isCodex = string.IsNullOrWhiteSpace(priceGroup) ||
+                      PricePresetGroups.Normalize(priceGroup) == PricePresetGroups.Codex;
+        var estimate = isCodex
+            ? CodexModelCost.Estimate(usage)
+            : CodexModelCost.Estimate(usage, priceGroup!);
+        var lines = new List<string>
+        {
+            isCodex
+                ? "按日志模型与当前价格库估算 API 等价费用；不是订阅账单。"
+                : "按日志模型与当前来源价格库估算；不同币种或计价单位分别显示，不做汇率或单位换算。"
+        };
+        if (isCodex)
+        {
+            lines.Add(estimate.SpeedDescription);
+            lines.Add($"订阅基准折算（含 Fast）：{estimate.FormatQuotaCost()}");
+        }
         foreach (var model in estimate.Models)
-            lines.Add($"{model.ModelId}{(CodexModelCost.IsReserveModel(model.ModelId) ? "（按 GPT-5.6 Luna）" : "")}: Input {model.Usage.InputTokens:N0} / Cached {model.Usage.CachedInputTokens:N0} / Cache Write {model.Usage.CacheWriteInputTokens:N0} / Output {model.Usage.OutputTokens:N0} · {(model.Cost is { } cost ? $"${cost:N4}" : CodexModelCost.HasNoPublicPrice(model.ModelId) ? "暂无公开 API 单价" : "$0 · 0x 待填写")}");
+        {
+            var formattedCost = model.Cost is { } cost
+                ? ModelCostEstimate.FormatAmount(cost, model.CurrencySymbol, "N4")
+                : CodexModelCost.HasNoPublicPrice(model.ModelId)
+                    ? "暂无公开 API 单价"
+                    : "0x · 待填写";
+            lines.Add($"{model.ModelId}{(CodexModelCost.IsReserveModel(model.ModelId) ? "（按 GPT-5.6 Luna）" : "")}: Input {model.Usage.InputTokens:N0} / Cached {model.Usage.CachedInputTokens:N0} / Cache Write {model.Usage.CacheWriteInputTokens:N0} / Output {model.Usage.OutputTokens:N0} · {formattedCost}");
+        }
         if (!estimate.IsComplete)
         {
             lines.Add(estimate.MissingPriceDescription);
-            lines.Add("未计价记录不计入美元金额；缺模型需从原日志补全，缺价格可在价格设置按模型 ID 填写。");
+            lines.Add("未计价记录不计入对应单位金额；缺模型需从原日志补全，缺价格可在价格设置按模型 ID 填写。");
         }
         return string.Join(Environment.NewLine, lines);
     }
@@ -1171,7 +1192,7 @@ public partial class MainWindow : Window
             string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
             comparison ? $"换用 {preset.Model}" : preset.Model,
             actual ? actualCost : FormatCost(summary.EstimateCost(profile), profile),
-            actual ? BuildModelCostDetails(summary) : comparison ? "按相同输入、缓存和输出 Token 换算，实际换模型后的用量可能不同。" : null,
+            actual ? BuildModelCostDetails(summary, priceGroup) : comparison ? "按相同输入、缓存和输出 Token 换算，实际换模型后的用量可能不同。" : null,
             actual)
         {
             Width = CostCardWidth,

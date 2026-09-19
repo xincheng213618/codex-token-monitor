@@ -43,6 +43,39 @@ public sealed class CodexModelCostGroupTests
     }
 
     [Fact]
+    public void GroupEstimate_MatchesActualGlm52IdToTheOneMillionPreset()
+    {
+        var cost = CodexModelCost.Estimate(Bucket("GLM-5.2", 1_000_000), PricePresetGroups.ZCode);
+
+        Assert.True(cost.IsComplete);
+        Assert.Equal("¥", cost.CurrencySymbol);
+        Assert.Equal(8.00m, cost.KnownCost);
+    }
+
+    [Fact]
+    public void GroupEstimate_KeepsYuanAndCreditsAsSeparateTotals()
+    {
+        var bucket = new TokenUsageBucket();
+        bucket.Add(new TokenUsageEvent(
+            DateTimeOffset.Now, InputTokens: 1_000_000, CachedInputTokens: 0, OutputTokens: 0,
+            ReasoningOutputTokens: 0, TotalTokens: 1_000_000, Key: "glm", ModelId: "GLM-5.3-Flash"));
+        bucket.Add(new TokenUsageEvent(
+            DateTimeOffset.Now.AddSeconds(1), InputTokens: 1, CachedInputTokens: 0, OutputTokens: 0,
+            ReasoningOutputTokens: 0, TotalTokens: 1, Key: "mimo", ModelId: "mimo-v2.5-pro"));
+
+        var cost = CodexModelCost.Estimate(bucket, PricePresetGroups.ZCode);
+
+        Assert.True(cost.IsComplete);
+        Assert.True(cost.HasMixedUnits);
+        Assert.Equal(2, cost.CostTotals.Count);
+        Assert.Equal(0m, cost.KnownCost);
+        Assert.Null(cost.CompleteCost);
+        Assert.Contains("¥0.80", cost.Format());
+        Assert.Contains("300.00 Credits", cost.Format());
+        Assert.DoesNotContain("¥300.80", cost.Format());
+    }
+
+    [Fact]
     public void GroupEstimate_UnknownModel_ReportsUnpriced()
     {
         var cost = CodexModelCost.Estimate(Bucket("totally-unknown-model", 1_000_000), PricePresetGroups.ZCode);

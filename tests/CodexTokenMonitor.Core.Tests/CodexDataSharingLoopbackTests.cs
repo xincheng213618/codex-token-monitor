@@ -10,21 +10,22 @@ namespace CodexTokenMonitor.Tests;
 /// </summary>
 public sealed class CodexDataSharingLoopbackTests : IDisposable
 {
-    private readonly string root = Path.Combine(Path.GetTempPath(), $"SharingLoopback-{Guid.NewGuid():N}");
-    private readonly string secondRoot = Path.Combine(Path.GetTempPath(), $"SharingLoopback-B-{Guid.NewGuid():N}");
+    private readonly string sourceRoot = Path.Combine(Path.GetTempPath(), $"SharingLoopback-Source-{Guid.NewGuid():N}");
+    private readonly string serverRoot = Path.Combine(Path.GetTempPath(), $"SharingLoopback-Server-{Guid.NewGuid():N}");
+    private readonly string importRoot = Path.Combine(Path.GetTempPath(), $"SharingLoopback-Import-{Guid.NewGuid():N}");
     private readonly IDisposable rootScope;
     private readonly string accessKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
 
     public CodexDataSharingLoopbackTests()
     {
-        rootScope = MonitorCachePaths.PushLocalAppDataRoot(root);
+        rootScope = MonitorCachePaths.PushLocalAppDataRoot(sourceRoot);
         SeedUsageDay();
     }
 
     public void Dispose()
     {
         rootScope.Dispose();
-        foreach (var dir in new[] { root, secondRoot })
+        foreach (var dir in new[] { sourceRoot, serverRoot, importRoot })
         {
             try
             {
@@ -65,23 +66,23 @@ public sealed class CodexDataSharingLoopbackTests : IDisposable
         var server = new CodexDataSharingServer(
             (path, cancellationToken) =>
             {
-                using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+                using var scope = MonitorCachePaths.PushLocalAppDataRoot(serverRoot);
                 return Task.FromResult(CodexDataTransferService.Export(path, CodexDataExportScope.RecentDays, cancellationToken));
             },
             (path, cancellationToken) =>
             {
-                using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+                using var scope = MonitorCachePaths.PushLocalAppDataRoot(serverRoot);
                 return Task.FromResult(CodexDataTransferService.ImportRecentDays(path, cancellationToken));
             },
             historyStore: null,
             exportToday: (path, cancellationToken) =>
             {
-                using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+                using var scope = MonitorCachePaths.PushLocalAppDataRoot(serverRoot);
                 return Task.FromResult(CodexDataTransferService.Export(path, CodexDataExportScope.Today, cancellationToken));
             },
             importToday: (path, cancellationToken) =>
             {
-                using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+                using var scope = MonitorCachePaths.PushLocalAppDataRoot(serverRoot);
                 return Task.FromResult(CodexDataTransferService.ImportToday(path, cancellationToken));
             });
         server.StartAsync(0, accessKey).GetAwaiter().GetResult();
@@ -170,7 +171,7 @@ public sealed class CodexDataSharingLoopbackTests : IDisposable
 
                 await client.DownloadTodayAsync(downloadPath, CancellationToken.None);
 
-                using var secondScope = MonitorCachePaths.PushLocalAppDataRoot(secondRoot);
+                using var secondScope = MonitorCachePaths.PushLocalAppDataRoot(importRoot);
                 var imported = CodexDataTransferService.Import(new[] { downloadPath });
                 Assert.Equal(3, imported.AddedUsageEventCount);
             }
@@ -251,7 +252,7 @@ public sealed class CodexDataSharingLoopbackTests : IDisposable
                 client.Dispose();
 
                 // Import the downloaded package into a second isolated store.
-                using var secondScope = MonitorCachePaths.PushLocalAppDataRoot(secondRoot);
+                using var secondScope = MonitorCachePaths.PushLocalAppDataRoot(importRoot);
                 var imported = CodexDataTransferService.Import(new[] { downloadPath });
 
                 Assert.Equal(3, imported.AddedUsageEventCount);
