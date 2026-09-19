@@ -36,7 +36,9 @@ internal sealed class UsageCacheStore
     public static string GetCachePath(string folderName)
     {
         return Path.Combine(MonitorCachePaths.LocalAppData, folderName,
-            folderName == "CodexTokenMonitor" ? "token-cache-v4.sqlite3" : CacheFileName);
+            folderName == "CodexTokenMonitor" ? "token-cache-v4.sqlite3"
+                : folderName == "ZCodeTokenMonitor" ? "token-cache-v5.sqlite3"
+                : CacheFileName);
     }
 
     public static bool Delete(string folderName)

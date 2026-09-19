@@ -394,6 +394,21 @@ internal static class ZCodeUsageReader
                 item.CacheWrite,
                 ModelId: item.ModelId))
             .ToList();
+
+        // The CLI's own database is durable across log rotation; when it is
+        // readable it becomes the source for everything since its earliest
+        // row, and the model-io logs only backfill older ranges.
+        var dbRead = ZCodeCliUsageDatabase.ReadEvents(startLocal, endLocal, cancellationToken);
+        if (dbRead.Available && dbRead.Earliest is { } dbEarliest)
+        {
+            events = events
+                .Where(item => item.Timestamp < dbEarliest)
+                .Concat(dbRead.Events)
+                .OrderBy(item => item.Timestamp)
+                .ToList();
+            isComplete = isComplete && dbRead.IsComplete;
+        }
+
         return new UsageEventScanResult(events, isComplete);
     }
 
