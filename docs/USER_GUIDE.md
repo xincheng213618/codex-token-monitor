@@ -15,7 +15,9 @@
 
 五个 Tab：**Codex**、**Claude Code**、**ZCode**、**WorkBuddy**、**DSH**。每个来源独立记忆当前模式、日期和自定义起点；切换来源时会立即排入该来源刷新，没有历史缓存也会自动开始读取。只有 Codex 有额度面板。
 
-**DSH**（DeepSeek Harness）统计你通过 dsh 命令行/网页使用 DeepSeek 模型的 token 消耗（含缓存命中），读取的是本机 `~/.dsh/sessions` 下的会话日志；主价格默认使用 DeepSeek V4.1 Flash。V4.1 Flash / V4 Pro 各保留一个合并档，程序会按每条事件的北京时间自动套用高峰或空闲价格，可在“价格设置”中调整顺序。
+**DSH**（DeepSeek Harness）统计你通过 dsh 命令行/网页使用 DeepSeek 模型的 token 消耗（含缓存命中），读取的是本机 `~/.dsh/sessions` 下的会话日志；主价格默认使用 DeepSeek V4.1 Flash。
+
+**ZCode** 的数据来自 ZCode CLI 自身的持久用量库（`~/.zcode/cli/db/db.sqlite`），不受 CLI 日志轮转影响——即使 model-io 日志被重写，已发生的用量也会完整保留并自动带模型归属。该库从 2026-09-18 起有记录；更早的历史（如 6 月）由 model-io 日志回填。V4.1 Flash / V4 Pro 各保留一个合并档，程序会按每条事件的北京时间自动套用高峰或空闲价格，可在“价格设置”中调整顺序。
 
 ### 2.2 额度面板（Codex）
 
