@@ -409,9 +409,6 @@ internal static class ClaudeUsageReader
                 item.CacheWrite,
                 ModelId: item.ModelId))
             .ToList();
-        throw new InvalidOperationException(
-            $"CLAUDEDEBUG files={files.Count} entries={events.Count} " +
-            $"roots=[{string.Join(" | ", GetLogRoots())}]");
         return new UsageEventScanResult(events, isComplete);
     }
 

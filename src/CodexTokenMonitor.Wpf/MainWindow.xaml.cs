@@ -628,7 +628,7 @@ public partial class MainWindow : Window
                 {
                     ApplySummary(range, cachedResult, module);
                     SetStatus($"周期结果缓存命中 {BeijingClock.DateTimeNow:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms");
-                    if (!cacheOnly && module.SupportsQuota)
+                    if (!cacheOnly && ShouldRefreshQuota(module))
                     {
                         _ = RefreshQuotaSummaryAsync();
                     }
@@ -714,7 +714,7 @@ public partial class MainWindow : Window
                 SetStatus(includeLiveToday
                     ? $"已刷新 {BeijingClock.DateTimeNow:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms"
                     : $"缓存命中 {BeijingClock.DateTimeNow:HH:mm:ss} · {stopwatch.ElapsedMilliseconds:N0}ms");
-                if (!cacheOnly && module.SupportsQuota)
+                if (!cacheOnly && ShouldRefreshQuota(module))
                 {
                     _ = RefreshQuotaSummaryAsync();
                 }
@@ -767,7 +767,51 @@ public partial class MainWindow : Window
         }
     }
 
-    private Task RefreshQuotaSummaryAsync() => runtime.Run("额度刷新", _ => RefreshQuotaSummaryCoreAsync());
+    private static bool ShouldRefreshQuota(UsageSourceModule module)
+    {
+        return module.SupportsQuota || module is ZCodeUsageModule;
+    }
+
+    private Task RefreshQuotaSummaryAsync() => runtime.Run("额度刷新", _ => CurrentModule() is ZCodeUsageModule
+        ? RefreshZCodeQuotaCoreAsync()
+        : RefreshQuotaSummaryCoreAsync());
+
+    private async Task RefreshZCodeQuotaCoreAsync()
+    {
+        if (isQuotaRefreshing || CurrentModule() is not ZCodeUsageModule zcodeModule)
+        {
+            return;
+        }
+
+        isQuotaRefreshing = true;
+        try
+        {
+            var snapshot = await Task.Run(
+                () => ZCodeQuotaReader.Shared.ReadCurrent(runtime.LifetimeToken),
+                runtime.LifetimeToken);
+            if (!isClosed && CurrentModule() is ZCodeUsageModule current && ReferenceEquals(current, zcodeModule))
+            {
+                zcodeModule.CurrentQuotaSnapshot = snapshot;
+                ApplyZCodeQuotaSummary(zcodeModule);
+            }
+        }
+        catch (OperationCanceledException) when (runtime.IsStopping || isClosed)
+        {
+            // Window shutdown cancels the shared quota read; the closing path
+            // owns the message surface in that case.
+        }
+        catch (Exception ex)
+        {
+            if (!isClosed)
+            {
+                SetStatus($"ZCode 额度刷新失败：{ex.Message}");
+            }
+        }
+        finally
+        {
+            isQuotaRefreshing = false;
+        }
+    }
 
     private async Task RefreshQuotaSummaryCoreAsync()
     {
@@ -1251,9 +1295,15 @@ public partial class MainWindow : Window
     {
         var show = module is CodexUsageModule;
         QuotaPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        ZCodeQuotaPanel.Visibility = module is ZCodeUsageModule ? Visibility.Visible : Visibility.Collapsed;
         ResetSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         PlanSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         ClearReserveUsageDisplay();
+        if (module is ZCodeUsageModule zcodeModule)
+        {
+            ApplyZCodeQuotaSummary(zcodeModule);
+        }
+
         if (!show)
         {
             return;
@@ -1278,6 +1328,54 @@ public partial class MainWindow : Window
 
         ApplyQuotaWindow(Quota5hValue, Quota5hDetail, effectiveQuota.FiveHour, QuotaWindowDisplayMode.FiveHour);
         ApplyQuotaWindow(QuotaWeekValue, QuotaWeekDetail, effectiveQuota.Week, QuotaWindowDisplayMode.Week);
+    }
+
+    private void ApplyZCodeQuotaSummary(ZCodeUsageModule module)
+    {
+        var balance = module.CurrentQuotaSnapshot?.PrimaryBalance;
+        if (module.CurrentQuotaSnapshot is not { } snapshot || balance is null)
+        {
+            ZCodeQuotaRemainingValue.Text = "--";
+            ZCodeQuotaRemainingDetail.Text = "等待 ZCode 额度";
+            ZCodeQuotaUsedValue.Text = "--";
+            ZCodeQuotaUsedDetail.Text = "需要已登录的 ZCode 桌面端";
+            ZCodeQuotaPlanValue.Text = "-";
+            ZCodeQuotaPlanDetail.Text = null;
+            ZCodeQuotaExpiryValue.Text = "-";
+            ZCodeQuotaExpiryDetail.Text = null;
+            return;
+        }
+
+        var usedPercent = balance.UsedPercent;
+        var remainingPercent = usedPercent is null
+            ? (decimal?)null
+            : Math.Max(0m, 100m - usedPercent.Value);
+        ZCodeQuotaRemainingValue.Text = remainingPercent is null ? "--" : $"{remainingPercent:N1}%";
+        ZCodeQuotaRemainingDetail.Text =
+            $"剩余 {FormatTokenMillions(balance.RemainingUnits)} / {FormatTokenMillions(balance.TotalUnits)}";
+        ZCodeQuotaUsedValue.Text = usedPercent is null ? "--" : $"{usedPercent:N1}%";
+        ZCodeQuotaUsedDetail.Text =
+            $"已用 {FormatTokenMillions(balance.UsedUnits)} · {balance.ModelName} · 数据 {snapshot.SnapshotLocal:HH:mm}";
+
+        ZCodeQuotaPlanValue.Text = snapshot.PlanName;
+        ZCodeQuotaPlanDetail.Text = string.IsNullOrWhiteSpace(snapshot.PlanDescription)
+            ? snapshot.PlanStatus
+            : snapshot.PlanDescription;
+
+        var expiry = balance.ExpiresAtLocal ?? balance.PeriodEndLocal;
+        if (expiry is { } expiryLocal)
+        {
+            ZCodeQuotaExpiryValue.Text = expiryLocal.ToString("MM-dd HH:mm");
+            var remainingTime = expiryLocal - BeijingClock.Now;
+            ZCodeQuotaExpiryDetail.Text = remainingTime > TimeSpan.Zero
+                ? $"还有 {remainingTime.TotalHours:N1} 小时"
+                : "已过期";
+        }
+        else
+        {
+            ZCodeQuotaExpiryValue.Text = "-";
+            ZCodeQuotaExpiryDetail.Text = null;
+        }
     }
 
     private void ApplyReserveUsage(CodexQuotaEstimate? quota)

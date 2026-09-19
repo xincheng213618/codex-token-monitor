@@ -43,8 +43,8 @@ public sealed class ClaudeModelAttributionTests : IDisposable
     [Fact]
     public void ReadTransientDetailRows_CarriesMessageModel()
     {
-        var start = DateTimeOffset.Now.AddMinutes(-60);
-        WriteLogRecord(start.AddMinutes(10).ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"), "mimo-v2.5-pro", 10_000, 500);
+        var start = DateTimeOffset.UtcNow.ToOffset(Beijing).AddMinutes(-60);
+        WriteLogRecord(start.AddMinutes(10).ToUniversalTime().ToString("O"), "mimo-v2.5-pro", 10_000, 500);
 
         var rows = ClaudeUsageReader.ReadTransientDetailRows(start, start.AddHours(1));
 
@@ -56,10 +56,10 @@ public sealed class ClaudeModelAttributionTests : IDisposable
     [Fact]
     public void ReadRange_SummaryTracksModelUsage()
     {
-        var start = DateTimeOffset.Now.AddMinutes(-60);
-        WriteLogRecord(start.AddMinutes(10).ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"), "mimo-v2.5-pro", 10_000, 500);
+        var start = DateTimeOffset.UtcNow.ToOffset(Beijing).AddMinutes(-60);
+        WriteLogRecord(start.AddMinutes(10).ToUniversalTime().ToString("O"), "mimo-v2.5-pro", 10_000, 500);
 
-        var summary = ClaudeUsageReader.ReadRange(start, start.AddHours(1), includeLiveToday: false);
+        var summary = ClaudeUsageReader.ReadRange(start, start.AddHours(1), includeLiveToday: true);
 
         Assert.Equal(1, summary.Events);
         Assert.Equal("mimo-v2.5-pro", Assert.Single(summary.ModelUsage).Key);

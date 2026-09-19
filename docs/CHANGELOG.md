@@ -2,6 +2,11 @@
 
 按日期分组的变更摘要（依据 git 提交历史，哈希可点击到对应提交）。从 2026-09-06 起，正式发布采用 `vYYYY.MM.DD` 日期版本号。
 
+## 2026-09-20（v2026.09.20）
+
+- ZCode 额度面板（对齐桌面端"今日余额"）：新增 `ZCodeQuotaReader`，复用 ZCode 桌面端登录凭据（`~/.zcode/v2/credentials.json`，按其 `enc:v1` AES-256-GCM 加密格式本地解密）与设备标识，直连 `zcode.z.ai/api/v1/zcode-plan/billing/balance` 读取套餐余额（如 "ZCode Weekend Build"），带桌面端同款 source 请求头（`Authorization`/`User-Agent`/`X-ZCode-App-Version`/`X-Device-Mid`）；成功缓存 5 分钟、失败 30 秒，被限流时 30 分钟内复用最近快照。ZCode 页新增额度面板：剩余余额/已用余额（百分比 + 百万 token 计数 + 数据时间）、当前套餐（名称/描述）、到期时间（含剩余小时数），随页面刷新与 30 秒定时器更新，Codex 页不受影响。凭据仅在内存解密、不明文落盘；`ZCODE_CREDENTIAL_SECRET` 环境变量与桌面端语义一致（优先于默认回退密钥）。配 8 项测试（信封解析、失败信封拒绝、多余额桶排序与主余额选择、加密往返、明文透传与损坏值拒绝、URL 构造、取消语义）。
+- 修复 Claude 读取器残留的诊断异常，恢复 Release 构建与 GitHub Actions 回归；测试加密夹具改用显式测试密钥，不包含本机路径或真实凭据。
+
 ## 2026-09-19
 
 - WorkBuddy 来源实际模型计价（对齐 Codex/ZCode）：WorkBuddy 会话日志在 usage 行上同根携带 `providerData.model`，现在进入用量事件与缓存并参与计价；WorkBuddy 页新增"实际模型 · 标准 API 等价"费用卡（按 WorkBuddy 价格组计价）、明细表"实际模型/模型费用"两列、"换用"前缀对比列与复制摘要行。`hy3` 直接按价格库既有"腾讯混元 hy3"档（¥1.00/¥0.25/¥4.00 每百万 tokens）计价；腾讯云端点 ID（`ep-…`）等无公开单价的模型按 0x 待填列出，可在价格设置按模型 ID 补价。既有缓存中无模型的 workbuddy 事件所在日会在下次启动时自动重扫补齐模型（一次性迁移，只标记、不删事件行）。

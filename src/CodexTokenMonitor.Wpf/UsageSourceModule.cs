@@ -155,6 +155,8 @@ internal sealed class ZCodeUsageModule : UsageSourceModule
         : base(UsageSource.ZCode)
     {
     }
+
+    public ZCodeQuotaSnapshot? CurrentQuotaSnapshot { get; set; }
 }
 
 internal sealed class WorkBuddyUsageModule : UsageSourceModule

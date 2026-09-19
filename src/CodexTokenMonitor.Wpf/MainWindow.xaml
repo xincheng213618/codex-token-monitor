@@ -112,6 +112,33 @@
                         Click="QuotaEstimateButton_Click" />
             </Grid>
         </Border>
+        <Border x:Name="ZCodeQuotaPanel" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,10" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="1.35*" /><ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                    <TextBlock Text="剩余余额" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ZCodeQuotaRemainingValue" Text="--" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="ZCodeQuotaRemainingDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="0,0,16,0">
+                    <TextBlock Text="已用余额" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ZCodeQuotaUsedValue" Text="--" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="ZCodeQuotaUsedDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Margin="0,0,16,0">
+                    <TextBlock Text="当前套餐" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ZCodeQuotaPlanValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" />
+                    <TextBlock x:Name="ZCodeQuotaPlanDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" Margin="0,0,0,0">
+                    <TextBlock Text="到期时间" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ZCodeQuotaExpiryValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    <TextBlock x:Name="ZCodeQuotaExpiryDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+            </Grid>
+        </Border>
         <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,6" Margin="0,0,0,10">
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="统计范围" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,12,0" />
