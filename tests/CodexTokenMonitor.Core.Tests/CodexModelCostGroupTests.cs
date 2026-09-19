@@ -92,4 +92,33 @@ public sealed class CodexModelCostGroupTests
 
         Assert.Equal("$", cost.CurrencySymbol);
     }
+
+    [Fact]
+    public void WorkBuddyGroupEstimate_PricesHy3WithYuanRates()
+    {
+        // The WorkBuddy logs report Tencent Hunyuan usage as "hy3"; 1M uncached
+        // input + 1M output at the Hunyuan Hy3 reference prices: 1.00 + 4.00
+        // = 5.00 yuan. Cached reads would use 0.25.
+        var bucket = new TokenUsageBucket();
+        bucket.Add(new TokenUsageEvent(
+            DateTimeOffset.Now, InputTokens: 1_000_000, CachedInputTokens: 0, OutputTokens: 1_000_000,
+            ReasoningOutputTokens: 0, TotalTokens: 2_000_000, Key: "workbuddy-hy3-full", ModelId: "hy3"));
+        var cost = CodexModelCost.Estimate(bucket, PricePresetGroups.WorkBuddy);
+
+        Assert.True(cost.IsComplete);
+        Assert.Equal("¥", cost.CurrencySymbol);
+        Assert.Equal(5.00m, cost.KnownCost);
+        Assert.Contains("¥5.00", cost.Format());
+    }
+
+    [Fact]
+    public void WorkBuddyGroupEstimate_EndpointIds_StayUnpriced()
+    {
+        // Tencent endpoint ids carry no public per-model price; they must stay
+        // explicitly unpriced instead of silently matching another preset.
+        var cost = CodexModelCost.Estimate(Bucket("ep-i72eb58u", 1_000_000), PricePresetGroups.WorkBuddy);
+
+        Assert.False(cost.IsComplete);
+        Assert.Equal(1_000_000, cost.UnpricedTokens);
+    }
 }

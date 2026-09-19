@@ -10,7 +10,8 @@ internal sealed record WorkBuddyUsageEntry(
     long Cached,
     long CacheWrite,
     long Output,
-    long Total)
+    long Total,
+    string? ModelId = null)
 {
     public decimal CompletenessScore =>
         (decimal)TokenCountMath.NonNegative(Input) +
@@ -347,14 +348,7 @@ internal static class WorkBuddyUsageReader
         foreach (var usageEvent in eventsResult.Events)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            summary.Add(
-                usageEvent.Timestamp,
-                usageEvent.InputTokens,
-                usageEvent.CachedInputTokens,
-                usageEvent.CacheWriteInputTokens,
-                usageEvent.OutputTokens,
-                usageEvent.ReasoningOutputTokens,
-                usageEvent.TotalTokens);
+            summary.Add(usageEvent);
 
             var dayKey = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
             if (!dailyBuckets.TryGetValue(dayKey, out var bucket))
@@ -366,14 +360,7 @@ internal static class WorkBuddyUsageReader
                 dailyBuckets[dayKey] = bucket;
             }
 
-            bucket.Add(
-                usageEvent.Timestamp,
-                usageEvent.InputTokens,
-                usageEvent.CachedInputTokens,
-                usageEvent.CacheWriteInputTokens,
-                usageEvent.OutputTokens,
-                usageEvent.ReasoningOutputTokens,
-                usageEvent.TotalTokens);
+            bucket.Add(usageEvent);
         }
 
         summary.DailyBuckets.AddRange(
@@ -420,7 +407,8 @@ internal static class WorkBuddyUsageReader
                 0,
                 item.Total,
                 $"workbuddy:{item.Key}",
-                item.CacheWrite))
+                item.CacheWrite,
+                ModelId: item.ModelId))
             .ToList();
         return new UsageEventScanResult(events, isComplete);
     }
@@ -571,7 +559,14 @@ internal static class WorkBuddyUsageReader
                         ? uuid
                         : $"{file}|{timestamp.UtcTicks}|{input}|{cached}|{output}|{total}";
 
-            return new WorkBuddyUsageEntry(key, timestamp, input, cached, cacheWrite, output, total);
+            // Provider records live on the same row as message.usage: the raw
+            // model id ("hy3", endpoint ids like "ep-…") drives actual-model
+            // pricing; requestModelId is the fallback when model is absent.
+            var modelId = root.TryGetProperty("providerData", out var providerData)
+                ? GetString(providerData, "model") ?? GetString(providerData, "requestModelId")
+                : null;
+
+            return new WorkBuddyUsageEntry(key, timestamp, input, cached, cacheWrite, output, total, modelId);
         }
         catch
         {
@@ -643,14 +638,7 @@ internal static class WorkBuddyUsageReader
             .Select(item =>
             {
                 var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
-                bucket.Add(
-                    item.Timestamp,
-                    item.InputTokens,
-                    item.CachedInputTokens,
-                    item.CacheWriteInputTokens,
-                    item.OutputTokens,
-                    item.ReasoningOutputTokens,
-                    item.TotalTokens);
+                bucket.Add(item);
                 return bucket;
             })
             .ToList();
@@ -663,14 +651,7 @@ internal static class WorkBuddyUsageReader
         var bucket = new TokenUsageBucket { StartLocal = bucketStart };
         foreach (var item in UsageEventMerger.Merge(events))
         {
-            bucket.Add(
-                item.Timestamp,
-                item.InputTokens,
-                item.CachedInputTokens,
-                item.CacheWriteInputTokens,
-                item.OutputTokens,
-                item.ReasoningOutputTokens,
-                item.TotalTokens);
+            bucket.Add(item);
         }
 
         return bucket;
@@ -752,6 +733,15 @@ internal static class WorkBuddyUsageReader
         return value.ValueKind is JsonValueKind.Number && value.TryGetInt64(out var result)
             ? result
             : 0;
+    }
+
+    private static string? GetString(JsonElement element, string name)
+    {
+        return element.ValueKind == JsonValueKind.Object &&
+               element.TryGetProperty(name, out var property) &&
+               property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
     }
 
     private static string? GetStringValue(JsonElement element)

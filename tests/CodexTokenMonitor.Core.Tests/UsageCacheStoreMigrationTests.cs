@@ -165,6 +165,48 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_MarksLegacyWorkBuddyDayIncompleteOnce()
+    {
+        SeedLegacyCache();
+        // Rewrite the event as a workbuddy key: the workbuddy model migration
+        // must flag the day exactly like its zcode counterpart does.
+        var path = UsageCacheStore.GetCachePath(folder);
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false
+        }.ToString()))
+        {
+            connection.Open();
+            Execute(connection, "UPDATE usage_events SET event_key = 'workbuddy:legacy'");
+        }
+
+        var day = new DateTimeOffset(2026, 9, 10, 0, 0, 0, TimeSpan.FromHours(8));
+
+        _ = UsageCacheStore.Load(folder);
+        var incomplete = UsageCacheStore.GetIncompleteDays(folder, day, day.AddDays(1), CancellationToken.None);
+
+        Assert.Contains(day, incomplete);
+
+        // The stale event row must SURVIVE the migration (its log may be gone);
+        // the re-scan merge enriches matching keys instead of dropping rows.
+        var dbPath = UsageCacheStore.GetCachePath(folder);
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString()))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM usage_events WHERE event_key = 'workbuddy:legacy'";
+            Assert.Equal(1L, (long)command.ExecuteScalar()!);
+        }
+    }
+
+    [Fact]
     public void Load_LegacyZcodeMigrationNeverRemovesEventKeys()
     {
         SeedLegacyCache();
