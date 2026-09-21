@@ -41,6 +41,9 @@ internal sealed class CodexQuotaCycleReader
     private static readonly TimeSpan TransientCycleMaxDuration = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan TransientResetRunMaxDuration = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan EstablishedResetRunMinDuration = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan CompetingResetMaxShift = TimeSpan.FromHours(1);
+    private static readonly TimeSpan CompetingResetMaxObservedDuration = TimeSpan.FromHours(1);
+    private static readonly TimeSpan CompetingResetSuccessorPersistence = TimeSpan.FromMinutes(10);
     private const int TransientResetRunMaxSnapshots = 5;
     private const decimal TransientResetMaxUsedPercent = 5m;
     private const decimal HistoricalReplayUsedTolerance = 3m;
@@ -204,6 +207,25 @@ internal sealed class CodexQuotaCycleReader
         {
             cancellationToken.ThrowIfCancellationRequested();
             changed = false;
+            var competingResetIndexes = FindSupersededCompetingResetStreams(current, cancellationToken);
+            if (competingResetIndexes.Count > 0)
+            {
+                for (var index = 0; index < current.Count; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (competingResetIndexes.Contains(index))
+                    {
+                        anomalies.Add(current[index]);
+                    }
+                }
+
+                current = current
+                    .Where((_, index) => !competingResetIndexes.Contains(index))
+                    .ToList();
+                changed = true;
+                continue;
+            }
+
             var runs = BuildResetRuns(current);
             if (runs.Count < 3)
             {
@@ -273,6 +295,98 @@ internal sealed class CodexQuotaCycleReader
         return MarkTransientResetOutliers(snapshots, cancellationToken)
             .Where(item => !item.IsAnomaly)
             .ToList();
+    }
+
+    private static HashSet<int> FindSupersededCompetingResetStreams(
+        IReadOnlyList<CodexQuotaSnapshot> snapshots,
+        CancellationToken cancellationToken)
+    {
+        var streams = BuildCompetingResetStreams(snapshots, cancellationToken);
+        var removeIndexes = new HashSet<int>();
+        for (var index = 0; index < streams.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var candidate = streams[index];
+            if (candidate.MaxWeekUsedPercent > TransientResetMaxUsedPercent ||
+                candidate.ObservedDuration > CompetingResetMaxObservedDuration ||
+                !StartsNearNominalWindow(candidate))
+            {
+                continue;
+            }
+
+            for (var nextIndex = index + 1; nextIndex < streams.Count; nextIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var successor = streams[nextIndex];
+                var resetShift = successor.ResetAt - candidate.ResetAt;
+                if (resetShift <= ResetClusterTolerance)
+                {
+                    continue;
+                }
+
+                if (resetShift > CompetingResetMaxShift)
+                {
+                    break;
+                }
+
+                if (successor.FirstWeekUsedPercent is not { } successorFirstUsed ||
+                    successorFirstUsed > TransientResetMaxUsedPercent ||
+                    !StartsNearNominalWindow(successor) ||
+                    successor.First.SnapshotLocal <= candidate.First.SnapshotLocal ||
+                    successor.First.SnapshotLocal > candidate.Last.SnapshotLocal ||
+                    successor.Last.SnapshotLocal - candidate.Last.SnapshotLocal < CompetingResetSuccessorPersistence)
+                {
+                    continue;
+                }
+
+                // Imported or concurrently collected quota snapshots can expose
+                // two newly reset weekly windows at the same time. When the
+                // later window remains established after the earlier low-usage
+                // stream disappears, the earlier stream is not a trustworthy
+                // historical cycle. Mark only the derived snapshot view; the
+                // underlying usage and quota cache remain intact.
+                foreach (var snapshotIndex in candidate.SnapshotIndexes)
+                {
+                    removeIndexes.Add(snapshotIndex);
+                }
+
+                break;
+            }
+        }
+
+        return removeIndexes;
+    }
+
+    private static List<CompetingResetStream> BuildCompetingResetStreams(
+        IReadOnlyList<CodexQuotaSnapshot> snapshots,
+        CancellationToken cancellationToken)
+    {
+        var indexed = snapshots
+            .Select((snapshot, index) => (Snapshot: snapshot, Index: index))
+            .Where(item => item.Snapshot.WeekResetAtLocal is not null && item.Snapshot.WeekUsedPercent is not null)
+            .OrderBy(item => item.Snapshot.WeekResetAtLocal)
+            .ThenBy(item => item.Snapshot.SnapshotLocal)
+            .ToList();
+        var streams = new List<CompetingResetStream>();
+        foreach (var item in indexed)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var resetAt = item.Snapshot.WeekResetAtLocal!.Value;
+            if (streams.Count == 0 || !IsSameQuotaReset(streams[^1].ResetAt, resetAt))
+            {
+                streams.Add(new CompetingResetStream(resetAt));
+            }
+
+            streams[^1].Add(item.Index, item.Snapshot);
+        }
+
+        return streams;
+    }
+
+    private static bool StartsNearNominalWindow(CompetingResetStream stream)
+    {
+        var nominalStart = stream.ResetAt - WeeklyQuotaWindow;
+        return (stream.First.SnapshotLocal - nominalStart).Duration() <= ResetClusterTolerance;
     }
 
     private static List<ResetRun> BuildResetRuns(IReadOnlyList<CodexQuotaSnapshot> snapshots)
@@ -526,6 +640,43 @@ internal sealed class CodexQuotaCycleReader
         public decimal? FirstWeekUsedPercent { get; }
 
         public decimal? LastWeekUsedPercent { get; }
+    }
+
+    private sealed class CompetingResetStream(DateTimeOffset resetAt)
+    {
+        private CodexQuotaSnapshot? first;
+        private CodexQuotaSnapshot? last;
+        private decimal maxWeekUsedPercent;
+
+        public DateTimeOffset ResetAt { get; } = resetAt;
+
+        public List<int> SnapshotIndexes { get; } = new();
+
+        public CodexQuotaSnapshot First => first!;
+
+        public CodexQuotaSnapshot Last => last!;
+
+        public TimeSpan ObservedDuration => Last.SnapshotLocal - First.SnapshotLocal;
+
+        public decimal MaxWeekUsedPercent => maxWeekUsedPercent;
+
+        public decimal? FirstWeekUsedPercent => First.WeekUsedPercent;
+
+        public void Add(int index, CodexQuotaSnapshot snapshot)
+        {
+            SnapshotIndexes.Add(index);
+            if (first is null || snapshot.SnapshotLocal < first.SnapshotLocal)
+            {
+                first = snapshot;
+            }
+
+            if (last is null || snapshot.SnapshotLocal > last.SnapshotLocal)
+            {
+                last = snapshot;
+            }
+
+            maxWeekUsedPercent = Math.Max(maxWeekUsedPercent, snapshot.WeekUsedPercent!.Value);
+        }
     }
 
     private sealed record CycleCacheKey(
