@@ -1,5 +1,12 @@
 namespace CodexTokenMonitor;
 
+internal enum AutomaticRefreshAction
+{
+    RefreshLive,
+    AdvanceCurrentPeriod,
+    RefreshQuotaOnly
+}
+
 internal static class UsageRangePolicy
 {
     private static readonly TimeSpan LiveEndTolerance = TimeSpan.FromSeconds(2);
@@ -11,6 +18,23 @@ internal static class UsageRangePolicy
         var localNow = nowLocal.ToOffset(CodexUsageReader.BeijingOffset);
         return range.Start <= localNow &&
                range.End >= localNow.Subtract(LiveEndTolerance);
+    }
+
+    public static AutomaticRefreshAction GetAutomaticRefreshAction(
+        RangeMode mode, SelectedRange range, SelectedRange? lastDisplayedRange, DateTimeOffset nowLocal)
+    {
+        // A range that followed the clock on the last refresh can become
+        // historical at midnight. Advance it before the live-range check.
+        if (mode is RangeMode.Day or RangeMode.Week or RangeMode.Month &&
+            !range.FollowsCurrent && lastDisplayedRange?.FollowsCurrent == true &&
+            lastDisplayedRange.Mode == mode && lastDisplayedRange.Start == range.Start)
+        {
+            return AutomaticRefreshAction.AdvanceCurrentPeriod;
+        }
+
+        return ShouldReadLiveToday(range, nowLocal)
+            ? AutomaticRefreshAction.RefreshLive
+            : AutomaticRefreshAction.RefreshQuotaOnly;
     }
 
     /// <summary>

@@ -6,14 +6,14 @@ public sealed class UsageSourceRegistryTests
 {
     private static readonly UsageSource[] Sources =
     {
-        UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode, UsageSource.WorkBuddy, UsageSource.Dsh
+        UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode, UsageSource.WorkBuddy, UsageSource.Dsh, UsageSource.Kimi
     };
 
     [Fact]
     public void Registry_PreservesPersistedIdsTitlesAndDisplayOrder()
     {
-        var titles = new[] { "Codex", "Claude Code", "ZCode", "WorkBuddy", "DSH" };
-        Assert.Equal(new[] { 0, 1, 2, 3, 4 }, Sources.Select(source => (int)source));
+        var titles = new[] { "Codex", "Claude Code", "ZCode", "WorkBuddy", "DSH", "Kimi" };
+        Assert.Equal(new[] { 0, 1, 2, 3, 4, 5 }, Sources.Select(source => (int)source));
         Assert.Equal(Sources, Enum.GetValues<UsageSource>());
         Assert.Equal(Sources, UsageSourceRegistry.All.Select(definition => definition.Source));
         Assert.Equal(titles, UsageSourceRegistry.All.Select(definition => definition.Title));
@@ -49,6 +49,8 @@ public sealed class UsageSourceRegistryTests
     [InlineData("deepseek harness", "DSH")]
     [InlineData("deepseek-harness", "DSH")]
     [InlineData("harness", "DSH")]
+    [InlineData("kimi code", "Kimi")]
+    [InlineData("kimi work", "Kimi")]
     [InlineData("", "Codex")]
     [InlineData("unknown provider", "Codex")]
     public void PriceGroups_PreserveLegacyAliasesAndUnknownFallback(string input, string expected)
@@ -77,7 +79,7 @@ public sealed class UsageSourceRegistryTests
         var types = new[]
         {
             typeof(CodexUsageModule), typeof(ClaudeCodeUsageModule), typeof(ZCodeUsageModule),
-            typeof(WorkBuddyUsageModule), typeof(DshUsageModule)
+            typeof(WorkBuddyUsageModule), typeof(DshUsageModule), typeof(KimiUsageModule)
         };
         Assert.Equal(Sources, firstWindow.Keys);
         Assert.Equal(types, firstWindow.Values.Select(module => module.GetType()));

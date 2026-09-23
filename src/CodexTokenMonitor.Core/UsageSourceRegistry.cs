@@ -56,7 +56,10 @@ internal static class UsageSourceRegistry
             "work buddy", "buddy"),
         new UsageSourceDefinition(UsageSource.Dsh, "DSH", PricePresetGroups.Dsh, false,
             UsageSourceReaders.CreateDshReader,
-            "deepseek harness", "deepseek-harness", "harness")
+            "deepseek harness", "deepseek-harness", "harness"),
+        new UsageSourceDefinition(UsageSource.Kimi, "Kimi", PricePresetGroups.Kimi, false,
+            UsageSourceReaders.CreateKimiReader,
+            "kimi code", "kimi work")
     });
 
     private static readonly IReadOnlyDictionary<UsageSource, UsageSourceDefinition> BySource =

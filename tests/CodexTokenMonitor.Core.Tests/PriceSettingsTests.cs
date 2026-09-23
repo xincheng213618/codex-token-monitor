@@ -4,6 +4,69 @@ namespace CodexTokenMonitor.Tests;
 
 public sealed class PriceSettingsTests
 {
+    [Fact]
+    public void KimiGroup_MigratesMissingPropertyWithoutChangingExistingPricesOrOrder()
+    {
+        var original = PriceSettingsStore.Defaults();
+        original.CodexPresets.Reverse();
+        original.CodexPresets[0].UncachedInput = 123.45m;
+        var json = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(original))!.AsObject();
+        json.Remove(nameof(PriceSettings.KimiPresets));
+        var loaded = System.Text.Json.JsonSerializer.Deserialize<PriceSettings>(json.ToJsonString())!;
+        var normalized = PriceSettingsStore.Normalize(loaded);
+        Assert.Equal(original.CodexPresets.Select(item => item.Model), normalized.CodexPresets.Select(item => item.Model));
+        Assert.Equal(123.45m, normalized.CodexPresets[0].UncachedInput);
+        Assert.Equal("k2d8-preview", normalized.KimiPresets[0].ModelId);
+        Assert.All(normalized.KimiPresets, item => Assert.Equal(PricePresetGroups.Kimi, item.Group));
+        var clone = normalized.Clone();
+        clone.KimiPresets[0].UncachedInput = 42;
+        Assert.Equal(1, normalized.KimiPresets[0].UncachedInput);
+        Assert.Equal(42, PriceSettingsStore.Normalize(clone).KimiPresets[0].UncachedInput);
+    }
+
+    [Fact]
+    public void KimiPreview_DefaultPriceIdentifiesThirdPartyReferenceAndCurrency()
+    {
+        var preset = Assert.Single(PriceSettingsStore.Defaults().KimiPresets, item => item.ModelId == "k2d8-preview");
+        Assert.Contains("B.AI 第三方参考价", preset.Source);
+        Assert.Contains("非 Kimi 官方账单", preset.Source);
+        Assert.Equal("$", preset.CurrencySymbol);
+        Assert.Equal("USD / 1M tokens", preset.UnitLabel);
+        Assert.Equal(1_000_000m, preset.Divisor);
+        Assert.Equal(1m, preset.UncachedInput);
+        Assert.Equal(0.25m, preset.CachedInput);
+        Assert.Equal(1m, preset.CacheWriteInput);
+        Assert.Equal(4m, preset.Output);
+        Assert.Equal("K2.8 Preview", preset.Model);
+    }
+
+    [Fact]
+    public void KimiPreview_MigratesOnlyUntouchedPlaceholderWithoutDuplicatingOrReordering()
+    {
+        var settings = PriceSettingsStore.Defaults();
+        settings.KimiPresets.Reverse();
+        var placeholder = settings.KimiPresets.Single(item => item.ModelId == "k2d8-preview");
+        placeholder.CurrencySymbol = "¥";
+        placeholder.UnitLabel = "CNY / 1M tokens";
+        placeholder.UncachedInput = placeholder.CachedInput = placeholder.Output = 0;
+        placeholder.CacheWriteInput = null;
+        placeholder.Source = CodexModelCost.PlaceholderPriceSource;
+        var normalized = PriceSettingsStore.Normalize(settings);
+        var migrated = Assert.Single(normalized.KimiPresets, item => item.ModelId == "k2d8-preview");
+        Assert.Equal(PricePreset.KimiPreviewPriceSource, migrated.Source);
+        Assert.Equal("$", migrated.CurrencySymbol);
+        Assert.Equal(settings.KimiPresets.Select(item => item.Model), normalized.KimiPresets.Select(item => item.Model));
+        var reloaded = System.Text.Json.JsonSerializer.Deserialize<PriceSettings>(System.Text.Json.JsonSerializer.Serialize(normalized))!;
+        Assert.Single(PriceSettingsStore.Normalize(reloaded).KimiPresets, item => item.ModelId == "k2d8-preview");
+
+        placeholder.UncachedInput = 7m;
+        var edited = PriceSettingsStore.Normalize(settings).KimiPresets.First(item => item.ModelId == "k2d8-preview");
+        Assert.Equal(7m, edited.UncachedInput);
+        Assert.Equal("¥", edited.CurrencySymbol);
+        placeholder.UncachedInput = 0;
+        placeholder.Source = "用户报价";
+        Assert.Equal("用户报价", PriceSettingsStore.Normalize(settings).KimiPresets.First(item => item.ModelId == "k2d8-preview").Source);
+    }
 
     [Fact]
     public void Normalize_InjectsNewCatalogPresetsIntoSavedSettings()
@@ -20,7 +83,7 @@ public sealed class PriceSettingsTests
 
         var normalized = PriceSettingsStore.Normalize(settings);
 
-        Assert.Equal(19, normalized.DisplayOrderVersion);
+        Assert.Equal(20, normalized.DisplayOrderVersion);
         var flash = Assert.Single(normalized.ZCodePresets, item => item.Model == "GLM-5.3 Flash");
         Assert.Equal(0.80m, flash.UncachedInput);
         Assert.Equal(0.23m, flash.CachedInput);
@@ -104,6 +167,52 @@ public sealed class PriceSettingsTests
     }
 
     [Theory]
+    [InlineData("OpenAI", "GPT-6 Sol", "gpt-6-sol", 2, .20, 2.50, 10)]
+    [InlineData("OpenAI", "GPT-6 Luna", "gpt-6-luna", .10, .01, .125, .50)]
+    [InlineData("Claude", "Fable 5.1 API", "claude-fable-5-1", 10, .25, 12.50, 50)]
+    [InlineData("Claude", "Opus 5.5 API", "claude-opus-5-5", 4, .20, 5, 20)]
+    [InlineData("Claude", "Opus 5 API", "claude-opus-5", 5, .50, 6.25, 25)]
+    [InlineData("Claude", "Sonnet 5 API", "claude-sonnet-5", 2, .20, 2.50, 10)]
+    public void Defaults_IncludeCurrentModelIdsAndStandardPricing(
+        string provider, string model, string modelId, double input, double cached, double cacheWrite, double output)
+    {
+        var preset = Assert.Single(PricePreset.Defaults(), item => item.Provider == provider && item.Model == model);
+        Assert.Equal(modelId, preset.ModelId);
+        Assert.Equal((decimal)input, preset.UncachedInput);
+        Assert.Equal((decimal)cached, preset.CachedInput);
+        Assert.Equal((decimal)cacheWrite, preset.CacheWriteInput);
+        Assert.Equal((decimal)output, preset.Output);
+        Assert.Equal("$", preset.CurrencySymbol);
+        Assert.Equal(1_000_000m, preset.Divisor);
+    }
+
+    [Fact]
+    public void Normalize_AddsNewPricesToSavedSettingsWithoutReplacingEditedRates()
+    {
+        var settings = PriceSettingsStore.Defaults();
+        settings.DisplayOrderVersion = 19;
+        foreach (var group in PricePresetGroups.All)
+        {
+            settings.PresetsForGroup(group).RemoveAll(item =>
+                item.Model is "GPT-6 Sol" or "GPT-6 Luna" or "Fable 5.1 API" or
+                    "Opus 5.5 API" or "Opus 5 API" or "Sonnet 5 API");
+        }
+        var edited = settings.ClaudeCodePresets.Single(item => item.Model == "Fable 5 API");
+        edited.CachedInput = 3m;
+        edited.Source = "用户报价";
+
+        var normalized = PriceSettingsStore.Normalize(settings);
+
+        Assert.Equal(20, normalized.DisplayOrderVersion);
+        Assert.Equal("GPT-6 Sol", normalized.CodexPresets[0].Model);
+        Assert.Equal("Fable 5.1 API", normalized.ClaudeCodePresets[0].Model);
+        Assert.Equal(3m, normalized.ClaudeCodePresets.Single(item => item.Model == "Fable 5 API").CachedInput);
+        Assert.Equal("用户报价", normalized.ClaudeCodePresets.Single(item => item.Model == "Fable 5 API").Source);
+        Assert.Single(normalized.CodexPresets, item => item.ModelId == "gpt-6-sol");
+        Assert.Single(normalized.ClaudeCodePresets, item => item.ModelId == "claude-opus-5-5");
+    }
+
+    [Theory]
     [InlineData("GPT-5.6 Sol", 5)]
     [InlineData("GPT-5.6 Terra", 2.5)]
     [InlineData("GPT-5.6 Luna", .25)]
@@ -142,7 +251,7 @@ public sealed class PriceSettingsTests
     }
 
     [Theory]
-    [InlineData("Claude Code", "Claude", "Fable 5 API")]
+    [InlineData("Claude Code", "Claude", "Fable 5.1 API")]
     [InlineData("WorkBuddy", "Kimi（月之暗面）", "K3")]
     public void Defaults_PromoteNewestModelForRelevantSource(string group, string provider, string model)
     {
@@ -205,7 +314,7 @@ public sealed class PriceSettingsTests
 
         var normalized = PriceSettingsStore.Normalize(settings);
 
-        Assert.Equal(19, normalized.DisplayOrderVersion);
+        Assert.Equal(20, normalized.DisplayOrderVersion);
         Assert.Equal("DeepSeek V4.1 Flash", normalized.ToDeepSeekProfile().Name);
         Assert.Equal(1.00m, normalized.DeepSeekUncachedInputPerMillion);
         Assert.Equal(0.02m, normalized.DeepSeekCachedInputPerMillion);

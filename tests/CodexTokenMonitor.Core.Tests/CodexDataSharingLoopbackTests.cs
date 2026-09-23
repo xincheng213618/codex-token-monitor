@@ -40,9 +40,12 @@ public sealed class CodexDataSharingLoopbackTests : IDisposable
 
     private void SeedUsageDay()
     {
-        var at = DateTimeOffset.UtcNow.AddHours(-1);
+        // Today-sync fixtures must stay in the Beijing calendar day even in
+        // the first hour after midnight (and before the UTC date rolls over).
+        var now = BeijingClock.Now;
+        var at = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
         var events = Enumerable.Range(1, 3).Select(index => new TokenUsageEvent(
-            at.AddMinutes(index), InputTokens: 1_000 * index, CachedInputTokens: 0, OutputTokens: 0,
+            at.AddTicks(index), InputTokens: 1_000 * index, CachedInputTokens: 0, OutputTokens: 0,
             ReasoningOutputTokens: 0, TotalTokens: 1_000 * index, Key: $"share-event-{index}")).ToList();
         var day = DateOnly.FromDateTime(at.DateTime);
         var bucket = new TokenUsageBucket

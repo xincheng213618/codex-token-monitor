@@ -252,7 +252,13 @@ internal static class AnalysisProbe
         await runtime.SharedIoGate.WaitAsync();
         try
         {
+            var timelineBefore = TimelineCount();
             await ShowAsync(window);
+            await WaitUntilAsync(() => Get<bool>(window, "hasSuccessfulResult"), "cycle renders cached preview while parent gate remains held");
+            Require(Get<DataGrid>(window, "BandGrid").Items.Count > 0, "cached cycle preview has visible bands");
+            Require(Get<TextBlock>(window, "StatusText").Text.Contains("缓存分析", StringComparison.Ordinal), "preview is labelled while full refresh waits");
+            Require(TimelineCount() == timelineBefore, "cycle preview does not persist quota anchors");
+            await RenderAsync(window, "cycle-preview-while-waiting.png");
             Require(Get<bool>(window, "analysisLoading") && LocalOperationCount(session) > 0, "analysis waits for parent shared gate");
             var answered = false;
             await window.Dispatcher.InvokeAsync(() => answered = true, DispatcherPriority.Background);
@@ -261,7 +267,8 @@ internal static class AnalysisProbe
             await WaitUntilAsync(() => LocalOperationCount(session) == 0, "closed window query drains");
             Require(session.IsStopping && !runtime.IsStopping, "closing a window does not stop application runtime");
             await runtime.Run("probe parent remains usable", _ => Task.CompletedTask);
-            Results.Add(new { check = "single-window-close", dispatcherResponsive = true, queryDrained = true, parentStillUsable = true });
+            Results.Add(new { check = "single-window-close", cachedPreviewVisibleBehindGate = true,
+                previewDoesNotWriteTimeline = true, dispatcherResponsive = true, queryDrained = true, parentStillUsable = true });
         }
         finally
         {
@@ -328,10 +335,12 @@ internal static class AnalysisProbe
         {
             await ShowAsync(window);
             Require(LocalOperationCount(session) > 0, "child query admitted before parent shutdown");
+            var chart = GetObject(window, "chart")!;
+            var resultAtStop = GetObject(chart, "result");
             var stopped = await runtime.StopAsync(Budget);
             Require(stopped.Completed && stopped.PendingOperations.Count == 0, "parent waits for registered child to drain");
             await WaitUntilAsync(() => !Get<bool>(window, "analysisLoading"), "cancelled child UI load completes");
-            Require(!Get<bool>(window, "hasSuccessfulResult"), "shutdown prevents late child publication");
+            Require(ReferenceEquals(resultAtStop, GetObject(chart, "result")), "shutdown prevents late child publication");
             var called = false;
             try
             {

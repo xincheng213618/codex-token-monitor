@@ -220,4 +220,44 @@ public sealed class UsageRangePolicyTests
             new SelectedRange(now.AddDays(-7), now.AddSeconds(-3), "stale", "", RangeMode.Week),
             now));
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void AutomaticRefresh_AdvancesPreviouslyCurrentRangeAcrossMidnight(int modeValue)
+    {
+        var mode = (RangeMode)modeValue;
+        var beforeMidnight = new DateTimeOffset(2026, 9, 30, 23, 59, 30, Beijing);
+        var afterMidnight = new DateTimeOffset(2026, 10, 1, 0, 1, 0, Beijing);
+        var previous = UsageRangePolicy.ResolveSelectedRange(mode, beforeMidnight, null, null, beforeMidnight);
+        var selected = UsageRangePolicy.ResolveSelectedRange(mode, beforeMidnight, null, null, afterMidnight);
+
+        Assert.True(previous.FollowsCurrent);
+        Assert.False(selected.FollowsCurrent);
+        Assert.Equal(AutomaticRefreshAction.AdvanceCurrentPeriod,
+            UsageRangePolicy.GetAutomaticRefreshAction(mode, selected, previous, afterMidnight));
+    }
+
+    [Fact]
+    public void AutomaticRefresh_DoesNotReplaceHistoricalSelection()
+    {
+        var now = new DateTimeOffset(2026, 10, 1, 0, 1, 0, Beijing);
+        var yesterday = now.AddDays(-1);
+        var selected = UsageRangePolicy.ResolveSelectedRange(RangeMode.Day, yesterday, null, null, now);
+        var previous = UsageRangePolicy.ResolveSelectedRange(RangeMode.Day, yesterday, null, null, now.AddSeconds(-1));
+
+        Assert.Equal(AutomaticRefreshAction.RefreshQuotaOnly,
+            UsageRangePolicy.GetAutomaticRefreshAction(RangeMode.Day, selected, previous, now));
+    }
+
+    [Fact]
+    public void AutomaticRefresh_KeepsCurrentMonthLiveWithinTheSameMonth()
+    {
+        var now = new DateTimeOffset(2026, 9, 20, 0, 1, 0, Beijing);
+        var selected = UsageRangePolicy.ResolveSelectedRange(RangeMode.Month, now.AddDays(-1), null, null, now);
+
+        Assert.Equal(AutomaticRefreshAction.RefreshLive,
+            UsageRangePolicy.GetAutomaticRefreshAction(RangeMode.Month, selected, null, now));
+    }
 }

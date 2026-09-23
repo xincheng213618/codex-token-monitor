@@ -3,7 +3,8 @@ namespace CodexTokenMonitor;
 internal sealed record QuotaCycleAnalysisRequest(
     CodexQuotaCycle Period,
     CodexQuotaWindowEstimate? CurrentWeek = null,
-    CodexQuotaCycle? PreviousPeriod = null);
+    CodexQuotaCycle? PreviousPeriod = null,
+    decimal BandSizePercent = QuotaCycleAnalysisCalculator.DefaultBandSizePercent);
 
 internal sealed record QuotaCycleAnalysisLoadResult(
     QuotaCycleAnalysisResult Analysis,
@@ -13,7 +14,8 @@ internal sealed record QuotaCycleAnalysisLoadResult(
 internal interface IQuotaCycleAnalysisSource
 {
     IReadOnlyList<CodexQuotaSnapshot> ReadSnapshots(DateTimeOffset start, DateTimeOffset end, CancellationToken token);
-    QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek, CancellationToken token);
+    QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek,
+        decimal bandSizePercent, CancellationToken token);
     QuotaModelCapacityReport BuildCapacities(CodexQuotaCycle period, QuotaCycleAnalysisResult analysis,
         CodexQuotaCycle? previousPeriod, CancellationToken token);
 }
@@ -30,12 +32,17 @@ internal sealed class QuotaCycleAnalysisQueryService(
     private readonly IQuotaCycleAnalysisSource source = source ?? new DefaultSource();
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
+    // A provisional view must neither scan source logs nor train/persist model
+    // calibrations using potentially incomplete days. It can bypass the I/O gate.
+    public QuotaCycleAnalysisLoadResult ExecuteCached(QuotaCycleAnalysisRequest request, CancellationToken token = default) =>
+        new QuotaCycleAnalysisQueryService(new CachedSource(), clock).Execute(request, token);
+
     public QuotaCycleAnalysisLoadResult Execute(QuotaCycleAnalysisRequest request, CancellationToken token = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         token.ThrowIfCancellationRequested();
         using var diagnostics = CacheOperationDiagnostics.Begin(propagateToParent: true);
-        var (period, currentWeek, previousPeriod) = request;
+        var (period, currentWeek, previousPeriod, bandSizePercent) = request;
         var range = new QuotaAnalysisRefreshRange(period, currentWeek, false, "");
         if (period.IsCurrent)
         {
@@ -51,12 +58,13 @@ internal sealed class QuotaCycleAnalysisQueryService(
             range = QuotaAnalysisRefreshRange.ResolveCurrentAnalysisPeriod(period, currentWeek, now, snapshots);
         }
 
-        var analysis = source.BuildAnalysis(range.Period, range.CurrentWeek, token);
+        var analysis = source.BuildAnalysis(range.Period, range.CurrentWeek, bandSizePercent, token);
         token.ThrowIfCancellationRequested();
         // A reader may preserve its old fallback contract and return partial
         // samples. Stop before any calibration writes, even when HasData is true.
-        var capacities = analysis.HasData && diagnostics.Warnings.Count == 0
-            ? source.BuildCapacities(range.Period, analysis, previousPeriod, token)
+        var calibrationAnalysis = analysis.CalibrationAnalysis ?? analysis;
+        var capacities = analysis.HasData && calibrationAnalysis.HasData && diagnostics.Warnings.Count == 0
+            ? source.BuildCapacities(range.Period, calibrationAnalysis, previousPeriod, token)
             : EmptyCapacities();
         token.ThrowIfCancellationRequested();
         return new(analysis, capacities, range.Reason);
@@ -67,13 +75,27 @@ internal sealed class QuotaCycleAnalysisQueryService(
 
     private static QuotaModelCapacityReport EmptyCapacities() => new("-", Array.Empty<QuotaModelCapacityEstimate>());
 
+    private sealed class CachedSource : IQuotaCycleAnalysisSource
+    {
+        public IReadOnlyList<CodexQuotaSnapshot> ReadSnapshots(DateTimeOffset start, DateTimeOffset end, CancellationToken token) =>
+            UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(start, end, token);
+
+        public QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek,
+            decimal bandSizePercent, CancellationToken token) =>
+            QuotaCycleAnalysisCalculator.BuildCached(period, currentWeek, bandSizePercent, token);
+
+        public QuotaModelCapacityReport BuildCapacities(CodexQuotaCycle period, QuotaCycleAnalysisResult analysis,
+            CodexQuotaCycle? previousPeriod, CancellationToken token) => EmptyCapacities();
+    }
+
     private sealed class DefaultSource : IQuotaCycleAnalysisSource
     {
         public IReadOnlyList<CodexQuotaSnapshot> ReadSnapshots(DateTimeOffset start, DateTimeOffset end, CancellationToken token) =>
             UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(start, end, token);
 
-        public QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek, CancellationToken token) =>
-            QuotaCycleAnalysisCalculator.Build(period, currentWeek, token);
+        public QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek,
+            decimal bandSizePercent, CancellationToken token) =>
+            QuotaCycleAnalysisCalculator.Build(period, currentWeek, bandSizePercent, token);
 
         public QuotaModelCapacityReport BuildCapacities(CodexQuotaCycle period, QuotaCycleAnalysisResult analysis,
             CodexQuotaCycle? previousPeriod, CancellationToken token) =>

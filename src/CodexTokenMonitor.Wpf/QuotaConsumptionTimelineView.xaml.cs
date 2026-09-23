@@ -97,14 +97,16 @@ public partial class QuotaConsumptionTimelineView : UserControl
             ? $"最后剩余 {100m - points[^1].UsedPercent:N1}% · {points[^1].TimestampLocal:MM-dd HH:mm:ss}"
             : "等待可对齐的额度记录";
 
+        var bandSize = analysis.BandSizePercent;
         var fastest = speedRows
-            .Where(item => item.Band.QuotaDropPercent >= 4.999m && item.Band.QuotaDropPercent <= 5.001m && item.RateValue is > 0m)
+            .Where(item => Math.Abs(item.Band.QuotaDropPercent - bandSize) <= 0.001m &&
+                           item.RateValue is > 0m)
             .MinBy(item => item.Elapsed);
         FastestSummaryText.Text = fastest is null
-            ? "最快完整 5%：样本不足"
-            : $"最快完整 5%：{fastest.Duration} · 包含空闲";
+            ? $"最快完整 {bandSize:N0}%：样本不足"
+            : $"最快完整 {bandSize:N0}%：{fastest.Duration} · 包含空闲";
         FastestSummaryText.ToolTip = fastest is null
-            ? "形成完整的 5 个百分点消耗分段后显示；分段边界按额度时间线插值。"
+            ? $"形成完整的 {bandSize:N0} 个百分点消耗分段后显示；分段边界按额度时间线插值。"
             : $"{fastest.QuotaRange} · {fastest.Model}\n{fastest.TimeRange}\n段平均 {fastest.Rate} 个百分点/小时，包含空闲。";
     }
 

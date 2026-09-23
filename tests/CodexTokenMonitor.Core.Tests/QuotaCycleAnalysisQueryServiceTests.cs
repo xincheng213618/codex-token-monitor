@@ -72,6 +72,18 @@ public sealed class QuotaCycleAnalysisQueryServiceTests
     }
 
     [Fact]
+    public void SelectedBandSizeReachesAnalysisWhileCalibrationUsesFivePercentBands()
+    {
+        var source = new FakeSource();
+        var result = new QuotaCycleAnalysisQueryService(source).Execute(
+            new QuotaCycleAnalysisRequest(Period(), BandSizePercent: 1m));
+
+        Assert.Equal(1m, source.AnalysedBandSizePercent);
+        Assert.Equal(1m, result.Analysis.BandSizePercent);
+        Assert.Equal(5m, source.CalibratedBandSizePercent);
+    }
+
+    [Fact]
     public void CurrentAnalysisWithoutTrustedSnapshotsDoesNotExtendOriginalRange()
     {
         var source = new FakeSource();
@@ -132,6 +144,8 @@ public sealed class QuotaCycleAnalysisQueryServiceTests
         public int AnalysisCalls { get; private set; }
         public int CalibrationCalls { get; private set; }
         public CodexQuotaCycle? AnalysedPeriod { get; private set; }
+        public decimal AnalysedBandSizePercent { get; private set; }
+        public decimal CalibratedBandSizePercent { get; private set; }
         public CodexQuotaCycle? PreviousPeriod { get; private set; }
         public DateTimeOffset SnapshotStart { get; private set; }
         public DateTimeOffset SnapshotEnd { get; private set; }
@@ -146,15 +160,22 @@ public sealed class QuotaCycleAnalysisQueryServiceTests
             return Array.Empty<CodexQuotaSnapshot>();
         }
 
-        public QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek, CancellationToken token)
+        public QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek,
+            decimal bandSizePercent, CancellationToken token)
         {
             AnalysisCalls++;
             AnalysedPeriod = period;
+            AnalysedBandSizePercent = bandSizePercent;
             DuringAnalysis?.Invoke();
-            return QuotaCycleAnalysisResult.Empty(period, "") with
+            var calibration = QuotaCycleAnalysisResult.Empty(period, "") with
             {
                 Bands = new[] { new QuotaCycleAnalysisBand(0, 0m, 5m, Start, Start.AddHours(1),
                     5m, 100, 1m, 20m, "test model", Array.Empty<QuotaCycleModelShare>()) }
+            };
+            return calibration with
+            {
+                BandSizePercent = bandSizePercent,
+                CalibrationAnalysis = bandSizePercent == 5m ? null : calibration
             };
         }
 
@@ -163,6 +184,7 @@ public sealed class QuotaCycleAnalysisQueryServiceTests
         {
             CalibrationCalls++;
             PreviousPeriod = previousPeriod;
+            CalibratedBandSizePercent = analysis.BandSizePercent;
             DuringCalibration?.Invoke();
             return Capacities;
         }

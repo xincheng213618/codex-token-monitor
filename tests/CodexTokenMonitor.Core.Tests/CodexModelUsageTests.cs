@@ -123,6 +123,8 @@ public sealed class CodexModelUsageTests
     [InlineData("gpt-5.5", "priority", 2.5)]
     [InlineData("gpt-5.6-luna", "fast", 2.5)]
     [InlineData("gpt-6-astra", "fast", 2.5)]
+    [InlineData("gpt-6-sol", "fast", 2.5)]
+    [InlineData("gpt-6-luna", "fast", 2.5)]
     [InlineData("gpt-5.4", "priority", 2)]
     public void FastQuotaWeightOnlyChangesFastSubsetAndLeavesComparisonTokensAlone(string model, string tier, double multiplier)
     {
@@ -271,6 +273,20 @@ public sealed class CodexModelUsageTests
         Assert.Equal(actual.KnownCost, CodexModelCost.Estimate(bucket, prices.Reverse()).KnownCost);
         Assert.Equal(2_100_000, bucket.TotalTokens);
         Assert.Equal(20_000, bucket.ReasoningOutputTokens); // Already included in output; never billed twice.
+    }
+
+    [Fact]
+    public void Gpt6SolAndLunaUsageUsesAllFourPublishedTokenRates()
+    {
+        var bucket = new TokenUsageBucket { StartLocal = Day };
+        bucket.Add(Event(Day, "sol", "gpt-6-sol"));
+        bucket.Add(Event(Day.AddMinutes(1), "luna", "gpt-6-luna"));
+
+        var result = CodexModelCost.Estimate(bucket, PricePreset.DefaultsForGroup(PricePresetGroups.Codex));
+
+        Assert.True(result.IsComplete);
+        Assert.Equal(1.5435m, result.KnownCost);
+        Assert.Equal(0, result.UnpricedEvents);
     }
 
     [Fact]

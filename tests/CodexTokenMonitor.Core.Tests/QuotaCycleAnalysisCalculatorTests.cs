@@ -6,6 +6,51 @@ public sealed class QuotaCycleAnalysisCalculatorTests
 {
     private static readonly DateTimeOffset Start = new(2026, 9, 1, 8, 0, 0, TimeSpan.FromHours(8));
 
+    [Theory]
+    [InlineData(1, 10)]
+    [InlineData(2, 5)]
+    [InlineData(5, 2)]
+    [InlineData(10, 1)]
+    public void SelectedBandSizePartitionsTheSameQuotaDrop(int bandSize, int expectedBands)
+    {
+        var samples = new[]
+        {
+            Sample(0, 0m, Bucket("model-a", 1)), Sample(1, 10m, Bucket("model-a", 100))
+        };
+        var result = QuotaCycleAnalysisCalculator.BuildFromSamples(
+            Period(),
+            samples,
+            bandSizePercent: bandSize,
+            priceCatalog: Catalog());
+        var fivePercent = QuotaCycleAnalysisCalculator.BuildFromSamples(
+            Period(), samples, bandSizePercent: 5m, priceCatalog: Catalog());
+
+        Assert.Equal(expectedBands, result.Bands.Count);
+        Assert.Equal(bandSize, result.BandSizePercent);
+        Assert.Equal(10m, result.ObservedQuotaDropPercent);
+        Assert.InRange(Math.Abs(result.EquivalentCost - fivePercent.EquivalentCost), 0m, 0.000001m);
+        Assert.Equal(0m, result.Bands[0].UsedFromPercent);
+        Assert.Equal(10m, result.Bands[^1].UsedToPercent);
+        Assert.All(result.Bands, band => Assert.Equal((decimal)bandSize, band.QuotaDropPercent));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(10)]
+    public void SmallerOrLargerBandsDoNotInventQuotaDrops(int bandSize)
+    {
+        var result = QuotaCycleAnalysisCalculator.BuildFromSamples(
+            Period(),
+            new[] { Sample(0, 0m, Bucket("model-a", 1)), Sample(1, 0m, Bucket("model-a", 100)) },
+            bandSizePercent: bandSize,
+            priceCatalog: Catalog());
+
+        Assert.False(result.HasData);
+        Assert.Equal(bandSize, result.BandSizePercent);
+        Assert.Contains("没有可归因的额度下降", result.EmptyReason);
+    }
+
     [Fact]
     public void BuildFromSamplesCreatesFivePercentModelBandsAndVolatility()
     {

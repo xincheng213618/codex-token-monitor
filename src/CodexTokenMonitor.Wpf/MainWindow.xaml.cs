@@ -66,23 +66,25 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var range = GetSelectedRange();
-            if (!ShouldIncludeLiveToday(range))
-            {
-                if (CurrentModule() is CodexUsageModule)
-                {
-                    await RefreshQuotaSummaryAsync();
-                }
-
-                return;
-            }
-
             var module = CurrentModule();
-            if (ShouldAdvanceToCurrentPeriod(module, range))
+            var range = GetSelectedRange();
+            var action = UsageRangePolicy.GetAutomaticRefreshAction(
+                module.Mode, range, module.LastRange, DateTimeOffset.UtcNow);
+            if (action == AutomaticRefreshAction.AdvanceCurrentPeriod)
             {
                 MoveToCurrentPeriod(module);
                 UpdateRangeControls();
                 await RefreshUsageAsync(isAutomaticRefresh: true);
+                return;
+            }
+
+            if (action == AutomaticRefreshAction.RefreshQuotaOnly)
+            {
+                if (module is CodexUsageModule)
+                {
+                    await RefreshQuotaSummaryAsync();
+                }
+
                 return;
             }
 
@@ -1059,7 +1061,7 @@ public partial class MainWindow : Window
             // source's own price group, in that group's currency.
             var provider = source == UsageSource.ZCode ? "智谱/Z.AI" : UsageSourceRegistry.For(source).Title;
             CostCardsPanel.Children.Add(CreateCostCard(
-                new PricePreset { Provider = provider, Model = "实际模型 · 标准 API 等价" }, summary,
+                new PricePreset { Provider = provider, Model = source == UsageSource.Kimi ? "实际模型 · 参考价估算" : "实际模型 · 标准 API 等价" }, summary,
                 actual: true, priceGroup: PricePresetGroups.ForSource(source)));
         }
         foreach (var preset in presets.Take(GetVisibleCostColumnCount(presets.Count)))
@@ -1140,7 +1142,7 @@ public partial class MainWindow : Window
             else if (summary.ModelUsage.Count > 0)
             {
                 var priceGroup = PricePresetGroups.ForSource(module.Source);
-                builder.AppendLine($"实际模型 API 等价费用：{CodexModelCost.Estimate(summary, priceGroup).Format()}");
+                builder.AppendLine($"实际模型 API 等价费用：{FormatActualBucketCost(module.Source, summary)}");
                 builder.AppendLine(BuildModelCostDetails(summary, priceGroup));
             }
             builder.AppendLine("相同 Token 换模型费用估算：");
@@ -1149,8 +1151,7 @@ public partial class MainWindow : Window
                 var label = string.IsNullOrWhiteSpace(preset.Provider)
                     ? preset.Model
                     : $"{preset.Provider} · {preset.Model}";
-                var profile = preset.ToProfile();
-                builder.AppendLine($"- {label}：{FormatCost(summary.EstimateCost(profile), profile)}");
+                builder.AppendLine($"- {label}：{FormatPresetCost(summary, preset)}");
             }
         }
 
@@ -1197,6 +1198,17 @@ public partial class MainWindow : Window
             lines.Add(estimate.SpeedDescription);
             lines.Add($"订阅基准折算（含 Fast）：{estimate.FormatQuotaCost()}");
         }
+        else if (priceGroup == PricePresetGroups.Kimi)
+        {
+            lines.Add("Kimi 费用仅按参考单价折算，不代表官方账单或会员额度。");
+            var presets = PriceSettingsStore.Current.KimiPresets;
+            foreach (var model in estimate.Models)
+            {
+                var preset = presets.FirstOrDefault(preset => CodexModelCost.NormalizeModelId(model.ModelId) ==
+                    CodexModelCost.NormalizeModelId(preset.ModelId));
+                if (preset is not null) lines.Add($"{model.ModelId} 价格来源：{preset.Source}");
+            }
+        }
         foreach (var model in estimate.Models)
         {
             var formattedCost = model.Cost is { } cost
@@ -1216,27 +1228,40 @@ public partial class MainWindow : Window
 
     private static bool SupportsModelCost(UsageSource source)
     {
-        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode;
+        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode or UsageSource.Kimi;
     }
 
     private static string FormatActualBucketCost(UsageSource source, TokenUsageBucket bucket)
     {
-        return source == UsageSource.Codex
-            ? CodexModelCost.Estimate(bucket).Format("N4")
-            : CodexModelCost.Estimate(bucket, PricePresetGroups.ForSource(source)).Format("N4");
+        var estimate = source == UsageSource.Codex
+            ? CodexModelCost.Estimate(bucket)
+            : CodexModelCost.Estimate(bucket, PricePresetGroups.ForSource(source));
+        return source == UsageSource.Kimi && !estimate.IsComplete && estimate.Models.All(item => item.Cost is null)
+            ? "待填价格"
+            : estimate.Format("N4");
+    }
+
+    private static string FormatPresetCost(TokenUsageBucket bucket, PricePreset preset)
+    {
+        if (CodexModelCost.IsPending(preset)) return "待填价格";
+        var profile = preset.ToProfile();
+        return FormatCost(bucket.EstimateCost(profile), profile);
     }
 
     private static UIElement CreateCostCard(PricePreset preset, TokenUsageSummary summary, bool actual = false, bool comparison = false, string? priceGroup = null)
     {
-        var profile = preset.ToProfile();
         var actualCost = priceGroup is null
             ? CodexModelCost.Estimate(summary).Format()
-            : CodexModelCost.Estimate(summary, priceGroup).Format();
+            : priceGroup == PricePresetGroups.Kimi
+                ? FormatActualBucketCost(UsageSource.Kimi, summary)
+                : CodexModelCost.Estimate(summary, priceGroup).Format();
         return new CostCardControl(
-            string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
+            preset.Source == PricePreset.KimiPreviewPriceSource ? "B.AI 第三方参考价" : string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
             comparison ? $"换用 {preset.Model}" : preset.Model,
-            actual ? actualCost : FormatCost(summary.EstimateCost(profile), profile),
-            actual ? BuildModelCostDetails(summary, priceGroup) : comparison ? "按相同输入、缓存和输出 Token 换算，实际换模型后的用量可能不同。" : null,
+            actual ? actualCost : FormatPresetCost(summary, preset),
+            actual ? BuildModelCostDetails(summary, priceGroup) : preset.Source == PricePreset.KimiPreviewPriceSource
+                ? $"{preset.Source}\n仅用于参考估算，不代表 Kimi 官方账单或会员额度。"
+                : comparison ? "按相同输入、缓存和输出 Token 换算，实际换模型后的用量可能不同。" : null,
             actual)
         {
             Width = CostCardWidth,
@@ -1251,7 +1276,6 @@ public partial class MainWindow : Window
         IReadOnlyList<PricePreset> displayPresets)
     {
         var tablePresets = displayPresets.Take(GetVisibleCostColumnCount(displayPresets.Count)).ToList();
-        var tableProfiles = tablePresets.Select(preset => preset.ToProfile()).ToArray();
         var quotaLookup = source == UsageSource.Codex
             ? new QuotaSnapshotLookup(quotaSnapshots)
             : null;
@@ -1272,7 +1296,7 @@ public partial class MainWindow : Window
                 CacheWrite = FormatBreakdownToken(bucket.CacheWriteInputTokens, rowIsEvent),
                 Uncached = FormatBreakdownToken(bucket.UncachedInputTokens, rowIsEvent),
                 Output = FormatTokenAdaptive(bucket.OutputTokens),
-                Prices = tableProfiles.Select(profile => FormatCost(bucket.EstimateCost(profile), profile)).ToArray(),
+                Prices = tablePresets.Select(preset => FormatPresetCost(bucket, preset)).ToArray(),
                 Quota = quotaLookup is not null ? FormatQuotaSnapshotForBucket(range, bucket, quotaLookup, rowIsEvent) : "-"
             });
         }
@@ -1469,13 +1493,6 @@ public partial class MainWindow : Window
             SelectedCycle(),
             DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset));
     }
-    private static bool ShouldAdvanceToCurrentPeriod(UsageSourceModule module, SelectedRange range)
-    {
-        return module.Mode is (RangeMode.Day or RangeMode.Week or RangeMode.Month) &&
-               !range.FollowsCurrent &&
-               module.LastRange?.FollowsCurrent == true;
-    }
-
     private static void MoveToCurrentPeriod(UsageSourceModule module)
     {
         module.PickerValue = module.Mode == RangeMode.Week ? BeijingClock.DateTimeNow : BeijingClock.Today;

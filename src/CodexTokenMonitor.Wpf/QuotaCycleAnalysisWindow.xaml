@@ -95,7 +95,7 @@
             </Border>
             <Border Grid.Column="3" Style="{StaticResource Card}" Margin="6,0">
                 <StackPanel>
-                    <TextBlock Style="{StaticResource MetricLabel}" Text="5% 分段波动" />
+                    <TextBlock x:Name="VolatilityCaptionText" Style="{StaticResource MetricLabel}" Text="5% 分段波动" />
                     <TextBlock x:Name="VolatilityValue" Style="{StaticResource MetricValue}" Text="-" />
                     <TextBlock x:Name="VolatilityNote" Style="{StaticResource MetricNote}" Text="局部折算离散程度" />
                 </StackPanel>
@@ -189,17 +189,38 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <StackPanel Grid.Row="0">
-                <TextBlock Style="{StaticResource SectionTitle}" Text="分段明细" />
-                <TextBlock x:Name="BandDescriptionText" Style="{StaticResource SectionDescription}" Margin="0,4,0,0"
-                           Text="每行按 5% 额度带聚合；小于 2% 的边缘区间标为小样本" />
-            </StackPanel>
+            <DockPanel Grid.Row="0">
+                <ComboBox x:Name="BandSizeSelector" DockPanel.Dock="Right" Width="94" Height="30"
+                          Margin="12,0,0,0" VerticalAlignment="Center" SelectedIndex="2"
+                          SelectionChanged="BandSizeSelector_SelectionChanged"
+                          ToolTip="切换额度分段宽度；细分不会增加额度快照，模型满额校准保持 5% 口径">
+                    <ComboBoxItem Content="1% 分段" />
+                    <ComboBoxItem Content="2% 分段" />
+                    <ComboBoxItem Content="5% 分段" />
+                    <ComboBoxItem Content="10% 分段" />
+                </ComboBox>
+                <StackPanel>
+                    <TextBlock Style="{StaticResource SectionTitle}" Text="分段明细" />
+                    <TextBlock x:Name="BandDescriptionText" Style="{StaticResource SectionDescription}" Margin="0,4,0,0"
+                               Text="每行按 5% 额度带聚合；小于 2% 的边缘区间标为小样本" />
+                </StackPanel>
+            </DockPanel>
             <Border x:Name="ModelCapacityBadge" Grid.Row="1" Margin="0,7,0,0" Background="#FFF7ED"
                     BorderBrush="#FED7AA" BorderThickness="1" CornerRadius="7" Padding="10,6"
                     ToolTipService.ShowDuration="12000">
                 <TextBlock x:Name="ModelCapacityValue" Foreground="#9A4D00" FontSize="11"
                            FontWeight="SemiBold" Text="样本不足" TextWrapping="Wrap" LineHeight="18" />
+            </Border>
+            <Border Grid.Row="2" Margin="0,7,0,0" Background="{StaticResource AccentSoftBrush}"
+                    CornerRadius="7" Padding="10,7" ToolTipService.ShowDuration="15000">
+                <StackPanel>
+                    <TextBlock Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="SemiBold"
+                               Text="同一份 Token 的额度消耗倍率估算 · 5.6 Sol = 1×" />
+                    <TextBlock x:Name="ModelMultiplierValue" Foreground="{StaticResource TextBrush}"
+                               FontSize="11" Text="等待模型校准" TextWrapping="Wrap" Margin="0,3,0,0" />
+                </StackPanel>
             </Border>
         </Grid>
 
@@ -212,9 +233,8 @@
                 <DataGridTextColumn x:Name="ConsumptionTimeColumn" Header="消耗时段（北京时间）" Binding="{Binding ConsumptionTimeRange}" SortMemberPath="ConsumptionStart" Width="260" Visibility="Collapsed" />
                 <DataGridTextColumn x:Name="ConsumptionDurationColumn" Header="经过时间" Binding="{Binding ConsumptionDuration}" SortMemberPath="ConsumptionElapsed" Width="140" Visibility="Collapsed" />
                 <DataGridTextColumn x:Name="ConsumptionRateColumn" Header="消耗速度（百分点/小时）" Binding="{Binding ConsumptionRate}" SortMemberPath="ConsumptionRateValue" Width="180" ElementStyle="{StaticResource NumericCellText}" Visibility="Collapsed" />
-                <DataGridTextColumn Header="主导模型" Binding="{Binding DominantModel}" Width="112" />
                 <DataGridTextColumn Header="模型混用" Binding="{Binding ModelMix}" Width="220" />
-                <DataGridTextColumn Header="掉了" Binding="{Binding QuotaDrop}" Width="78" ElementStyle="{StaticResource NumericCellText}" />
+                <DataGridTextColumn Header="各模型用量（M）" Binding="{Binding ModelTokens}" Width="340" />
                 <DataGridTextColumn Header="Tokens" Binding="{Binding Tokens}" Width="92" ElementStyle="{StaticResource NumericCellText}" />
                 <DataGridTextColumn Header="本段代价" Binding="{Binding EquivalentCost}" Width="96" ElementStyle="{StaticResource NumericCellText}" />
                 <DataGridTextColumn Header="换算 100%" Binding="{Binding FullEstimate}" Width="104" ElementStyle="{StaticResource NumericCellText}" />

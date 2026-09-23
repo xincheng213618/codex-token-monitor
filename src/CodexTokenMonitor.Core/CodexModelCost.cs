@@ -102,7 +102,7 @@ internal static class CodexModelCost
     // https://learn.chatgpt.com/docs/agent-configuration/speed
     public static decimal? FastQuotaMultiplier(string modelId) => ModelKey(modelId) switch
     {
-        "gpt-6-astra" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna" or "gpt-5.5" or ReserveModelId => 2.5m,
+        "gpt-6-astra" or "gpt-6-sol" or "gpt-6-luna" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna" or "gpt-5.5" or ReserveModelId => 2.5m,
         "gpt-5.4" => 2m,
         _ => null
     };
@@ -248,6 +248,8 @@ internal static class CodexModelCost
     public static string DefaultModelId(string provider, string model) =>
         string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase) ? model switch
         {
+            "GPT-6 Sol" => "gpt-6-sol",
+            "GPT-6 Luna" => "gpt-6-luna",
             "GPT-5.5 Standard Short" => "gpt-5.5",
             "GPT-5.4 Standard Short" => "gpt-5.4",
             "GPT-5.4 mini Short" => "gpt-5.4-mini",
@@ -255,6 +257,10 @@ internal static class CodexModelCost
             _ => ""
         } : model switch
         {
+            "Fable 5.1 API" => "claude-fable-5-1",
+            "Opus 5.5 API" => "claude-opus-5-5",
+            "Opus 5 API" => "claude-opus-5",
+            "Sonnet 5 API" => "claude-sonnet-5",
             "GLM-5.3 Flash" => "glm-5.3-flash",
             "GLM-5.2 1M" => "glm-5.2",
             "MiMo V2.5 Pro" => "mimo-v2.5-pro",
@@ -297,7 +303,7 @@ internal static class CodexModelCost
 
     private static string ModelKey(string? model) => Regex.Replace(NormalizeModelId(model), @"-\d{4}-\d{2}-\d{2}$", "");
 
-    private static bool IsPending(PricePreset? preset) => preset is null ||
+    internal static bool IsPending(PricePreset? preset) => preset is null ||
         (preset.Source == PlaceholderPriceSource || preset.Source == NoPublicPriceSource) &&
         preset.UncachedInput == 0 && preset.CachedInput == 0 && preset.Output == 0 && (preset.CacheWriteInput ?? 0) == 0;
 

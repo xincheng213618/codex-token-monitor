@@ -10,6 +10,48 @@ public sealed class QuotaCachedQueryTests
     private static readonly DateTimeOffset Now = Day.AddHours(12);
     private static readonly DateTimeOffset Reset = Day.AddDays(1);
 
+    [Fact]
+    public async Task CurrentCyclePreviewBypassesGateWithoutSealingDaysOrWritingCalibration()
+    {
+        using var isolated = new IsolatedCache();
+        var now = BeijingClock.Now;
+        var start = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, Beijing).AddDays(-1);
+        var period = new CodexQuotaCycle(start, now, start.AddDays(7), 2, 10m, true);
+        var events = new[]
+        {
+            new TokenUsageEvent(start.AddHours(1), 100, 40, 10, 0, 110, "codex:first", ModelId: "gpt-5.6-sol"),
+            new TokenUsageEvent(start.AddHours(2), 200, 80, 20, 0, 220, "codex:second", ModelId: "gpt-5.6-sol")
+        };
+        var usage = UsageCacheStore.Load();
+        var bucket = new TokenUsageBucket { StartLocal = start };
+        foreach (var item in events) bucket.Add(item);
+        usage.Put(bucket, isComplete: false, scannedThroughLocal: start.AddHours(2), detailEvents: events);
+        var quota = QuotaSnapshotCacheStore.Load("CodexTokenMonitor");
+        quota.Put(DateOnly.FromDateTime(start.DateTime), events.Select((item, i) => new CodexQuotaSnapshot(
+            item.Timestamp, "codex", "Codex", null, null, (i + 1) * 5m, period.ResetAt)).ToArray(), false, start.AddHours(2));
+        var cacheFolder = Path.GetDirectoryName(isolated.CachePath)!;
+        var settingsPath = Path.Combine(cacheFolder, "monitor-settings.sqlite3");
+        Assert.False(File.Exists(settingsPath));
+        using var runtime = new MonitorRuntime();
+        using var session = new AnalysisQuerySession(runtime);
+        await runtime.SharedIoGate.WaitAsync();
+        try
+        {
+            var loaded = await session.RunAsync("cached cycle", token =>
+                new QuotaCycleAnalysisQueryService().ExecuteCached(new(period), token)).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(loaded.CacheWarnings);
+            Assert.True(loaded.Value.Analysis.HasData);
+            Assert.Equal(330, loaded.Value.Analysis.Tokens);
+            Assert.Empty(loaded.Value.Capacities.Estimates);
+            Assert.Empty(quota.GetTimelineSnapshots(start, now));
+            Assert.True(usage.TryGetRecord(DateOnly.FromDateTime(start.DateTime), out var record));
+            Assert.False(record.IsComplete);
+            Assert.False(File.Exists(settingsPath));
+            Assert.False(File.Exists(Path.Combine(cacheFolder, CodexLogFileIndex.FileName)));
+        }
+        finally { runtime.SharedIoGate.Release(); }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

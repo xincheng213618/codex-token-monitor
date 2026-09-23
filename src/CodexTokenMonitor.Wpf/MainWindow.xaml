@@ -59,6 +59,7 @@
                 <Button x:Name="ResetSettingsButton" Style="{StaticResource ToolbarButton}" Content="重置设置" Click="ResetSettingsButton_Click" />
                 <Button x:Name="PlanSettingsButton" Style="{StaticResource ToolbarButton}" Content="套餐设置" Click="PlanSettingsButton_Click" />
                 <Button Style="{StaticResource ToolButton}" Content="价格设置" Click="PriceSettingsButton_Click" />
+                <Button x:Name="CheckForUpdatesButton" Style="{StaticResource ToolbarButton}" Content="检查更新" Click="CheckForUpdatesButton_Click" ToolTip="检查 GitHub Releases 上的最新正式版本" />
             </StackPanel>
         </Grid>
         <Grid Grid.Row="1" Margin="0,0,0,10">

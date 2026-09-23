@@ -1379,11 +1379,12 @@ internal sealed class CodexUsageReader
         // Retain only token events for requested days, never the JSONL text.
         var isComplete = true;
         fileProgress?.Invoke(0, files.Count);
+        using var fileIndex = new CodexLogFileIndex();
         for (var index = 0; index < files.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var fileEvents = new List<TokenUsageEvent>();
-            if (!ReadEventFile(files[index], startLocal, endLocal, fileEvents, cancellationToken))
+            if (!ReadEventFile(files[index], startLocal, endLocal, fileEvents, cancellationToken, fileIndex))
             {
                 isComplete = false;
             }
@@ -1767,6 +1768,7 @@ internal sealed class CodexUsageReader
         };
         var dailyBuckets = new Dictionary<DateOnly, TokenUsageBucket>();
         var isComplete = true;
+        using var fileIndex = new CodexLogFileIndex();
 
         foreach (var root in GetLogRoots())
         {
@@ -1774,7 +1776,7 @@ internal sealed class CodexUsageReader
             foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (!ReadFile(file, startLocal, endLocal, summary, dailyBuckets, cancellationToken))
+                if (!ReadFile(file, startLocal, endLocal, summary, dailyBuckets, cancellationToken, fileIndex))
                 {
                     isComplete = false;
                 }
@@ -1798,6 +1800,7 @@ internal sealed class CodexUsageReader
         var events = new List<TokenUsageEvent>();
         var isComplete = true;
         var incremental = useLiveCursor && IsLiveRange(startLocal, endLocal);
+        using var fileIndex = incremental ? null : new CodexLogFileIndex();
         if (incremental)
         {
             PruneLiveFileState(startLocal, endLocal);
@@ -1818,7 +1821,7 @@ internal sealed class CodexUsageReader
                 }
                 else
                 {
-                    if (!ReadEventFile(file, startLocal, endLocal, events, cancellationToken))
+                    if (!ReadEventFile(file, startLocal, endLocal, events, cancellationToken, fileIndex!))
                     {
                         isComplete = false;
                     }
@@ -1834,19 +1837,17 @@ internal sealed class CodexUsageReader
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         List<TokenUsageEvent> events,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CodexLogFileIndex fileIndex)
     {
         try
         {
-            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
             var replayFilter = new SubagentReplayFilter();
-            while (reader.ReadLine() is { } line)
+            return fileIndex.Read(file, startLocal, endLocal, line =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
                 if (!replayFilter.ShouldReadTokenCount(line))
                 {
-                    continue;
+                    return;
                 }
 
                 var usageEvent = TryReadUsageEvent(line, startLocal, endLocal, replayFilter.ModelId, replayFilter.ServiceTier);
@@ -1854,7 +1855,7 @@ internal sealed class CodexUsageReader
                 {
                     events.Add(usageEvent);
                 }
-            }
+            }, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1864,8 +1865,6 @@ internal sealed class CodexUsageReader
         {
             return false;
         }
-
-        return true;
     }
 
     private bool ReadEventFileIncremental(
@@ -2026,8 +2025,9 @@ internal sealed class CodexUsageReader
         DateTimeOffset endLocal)
     {
         // Session contents can extend beyond their preserved file mtime (including
-        // copied history). Historical batches inspect all files once; only live
-        // tail polling uses mtime to narrow the candidates.
+        // copied history). Historical batches enumerate all files, then the
+        // content-range index skips verified unchanged, unrelated files. Only
+        // live tail polling uses mtime to narrow the candidates.
         var incremental = IsLiveRange(startLocal, endLocal);
         var startUtc = startLocal.Subtract(TimeSpan.FromDays(1)).UtcDateTime;
         var options = new EnumerationOptions
@@ -2096,6 +2096,7 @@ internal sealed class CodexUsageReader
             .ToList();
         fileProgress?.Invoke(0, files.Count);
         var completed = 0;
+        using var fileIndex = incremental ? null : new CodexLogFileIndex();
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2113,25 +2114,22 @@ internal sealed class CodexUsageReader
 
                 try
                 {
-                    using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                    using var reader = new StreamReader(stream);
                     var replayFilter = new SubagentReplayFilter();
-                    while (reader.ReadLine() is { } line)
+                    if (!fileIndex!.Read(file, startLocal, endLocal, line =>
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
                         if (!replayFilter.ShouldReadTokenCount(line) ||
                             !line.Contains("\"rate_limits\"", StringComparison.Ordinal))
                         {
-                            continue;
+                            return;
                         }
 
                         if (TryReadRateLimitSnapshot(line, startLocal, endLocal) is not { } snapshot)
                         {
-                            continue;
+                            return;
                         }
 
                         snapshots.Add(snapshot);
-                    }
+                    }, cancellationToken)) isComplete = false;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -2475,23 +2473,21 @@ internal sealed class CodexUsageReader
         DateTimeOffset endLocal,
         TokenUsageSummary summary,
         Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CodexLogFileIndex fileIndex)
     {
         try
         {
-            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
             var replayFilter = new SubagentReplayFilter();
-            while (reader.ReadLine() is { } line)
+            return fileIndex.Read(file, startLocal, endLocal, line =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
                 if (!replayFilter.ShouldReadTokenCount(line))
                 {
-                    continue;
+                    return;
                 }
 
                 ReadLine(line, startLocal, endLocal, summary, dailyBuckets, replayFilter.ModelId, replayFilter.ServiceTier);
-            }
+            }, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -2501,8 +2497,6 @@ internal sealed class CodexUsageReader
         {
             return false;
         }
-
-        return true;
     }
 
     private static void ReadLine(

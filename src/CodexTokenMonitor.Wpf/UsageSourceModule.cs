@@ -175,6 +175,11 @@ internal sealed class DshUsageModule : UsageSourceModule
     }
 }
 
+internal sealed class KimiUsageModule : UsageSourceModule
+{
+    public KimiUsageModule() : base(UsageSource.Kimi) { }
+}
+
 internal static class UsageSourceModules
 {
     public static IReadOnlyDictionary<UsageSource, UsageSourceModule> Create()
@@ -191,6 +196,7 @@ internal static class UsageSourceModules
         UsageSource.ZCode => new ZCodeUsageModule(),
         UsageSource.WorkBuddy => new WorkBuddyUsageModule(),
         UsageSource.Dsh => new DshUsageModule(),
+        UsageSource.Kimi => new KimiUsageModule(),
         _ => throw new InvalidOperationException($"No desktop page registered for source {source}.")
     };
 }

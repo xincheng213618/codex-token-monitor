@@ -21,6 +21,10 @@ internal static class QuotaCycleModelPalette
     {
         var normalized = CodexModelCost.NormalizeModelId(modelId);
         if (normalized.Contains("astra", StringComparison.Ordinal)) return Color.FromRgb(109, 76, 219);
+        if (MatchesModel(normalized, "gpt-6-sol")) return Color.FromRgb(13, 148, 136);
+        if (MatchesModel(normalized, "gpt-5.6-sol")) return Color.FromRgb(3, 105, 161);
+        if (MatchesModel(normalized, "gpt-6-luna")) return Color.FromRgb(217, 119, 6);
+        if (MatchesModel(normalized, "gpt-5.6-luna")) return Color.FromRgb(180, 83, 9);
         if (normalized.Contains("sol", StringComparison.Ordinal)) return Color.FromRgb(13, 148, 136);
         if (normalized.Contains("terra", StringComparison.Ordinal)) return Color.FromRgb(37, 99, 235);
         if (normalized.Contains("luna", StringComparison.Ordinal)) return Color.FromRgb(217, 119, 6);
@@ -53,6 +57,10 @@ internal static class QuotaCycleModelPalette
         }
 
         var normalized = CodexModelCost.NormalizeModelId(modelId);
+        if (MatchesModel(normalized, "gpt-6-sol")) return "6 sol";
+        if (MatchesModel(normalized, "gpt-5.6-sol")) return "5.6 sol";
+        if (MatchesModel(normalized, "gpt-6-luna")) return "6 luna";
+        if (MatchesModel(normalized, "gpt-5.6-luna")) return "5.6 luna";
         foreach (var suffix in new[] { "astra", "sol", "terra", "luna", "spark" })
         {
             if (normalized.Contains(suffix, StringComparison.Ordinal))
@@ -63,4 +71,8 @@ internal static class QuotaCycleModelPalette
 
         return modelId;
     }
+
+    private static bool MatchesModel(string normalizedModelId, string modelId) =>
+        normalizedModelId == modelId ||
+        normalizedModelId.StartsWith(modelId + "-", StringComparison.Ordinal);
 }

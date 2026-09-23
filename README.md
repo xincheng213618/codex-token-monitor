@@ -1,13 +1,14 @@
 # Codex Token Monitor
 
-一个 Windows 桌面额度监控器，用来从本地日志统计 Codex、Claude Code、ZCode、WorkBuddy、DSH（DeepSeek Harness）的 token 用量、缓存命中、估算 API 等价费用，以及 Codex 5h / 7d 额度百分比变化。
+一个 Windows 桌面额度监控器，用来从本地日志统计 Codex、Claude Code、ZCode、WorkBuddy、DSH（DeepSeek Harness）、Kimi 的 token 用量、缓存命中、估算 API 等价费用，以及 Codex 5h / 7d 额度百分比变化。
 
 > 数据只读取本机日志和本机缓存，不会上传到远端。价格、套餐和额度分析都只是本地辅助分析，最终以官方账单和产品页面为准。
 
 ## 功能
 
-- 统计 Codex / Claude Code / ZCode / WorkBuddy / DSH 五种来源的 token 使用量。
+- 统计 Codex / Claude Code / ZCode / WorkBuddy / DSH / Kimi 六种来源的 token 使用量。
   - DSH（DeepSeek Harness）直接读取 `~/.dsh/sessions` 下 zstd 压缩的会话日志，统计每次模型调用的 input / 缓存读取 / 缓存创建 / output / reasoning。
+  - Kimi 读取桌面端及本地 Kimi Code 的 `wire.jsonl` 中 `usage.record`（已验证协议 1.4），分别统计普通输入、缓存读取、缓存创建、输出及真实模型名；失败任务已产生的用量仍计入。暂不提供账户剩余额度百分比，`k2d8-preview` 的 API 等价价格默认为待填写，不套用其他模型单价。详见 [Kimi 数据口径](docs/kimi-usage.md)。
 - 支持按天、近 7 天窗口、按月、按 Codex 额度周期（7d 周期）查看。
 - 当前周/月/周期范围若截止到现在，会叠加当天实时日志并随自动刷新更新；历史范围继续优先使用缓存。
 - 支持“从当前算”，方便比较同一任务在不同 AI 工具里的消耗。
@@ -20,10 +21,10 @@
 - 支持恢复上次关闭时的显示状态（来源、时间范围、查询结果）。
 - Codex 额度：
   - 优先通过 Codex 本地 app-server（`codex app-server --stdio`）实时读取 5h / 7d 剩余额度百分比，自动发现可运行的 Codex CLI（Desktop 插件副本、npm 安装、PATH 上的 `codex.exe/.cmd/.bat`），不可用时回退到本机会话日志捕获的额度记录。
-  - 根据当前 7d 周期的额度变化和本地 token 消耗，按 5% 额度分段分析模型构成、换算代价、消耗速度与用量预测。
+  - 根据当前 7d 周期的额度变化和本地 token 消耗，按可选的 1% / 2% / 5% / 10% 额度分段分析模型构成、换算代价、消耗速度与用量预测，并比较同一份 Token 在不同模型下的额度消耗倍率。
   - 主界面额度面板保留“额度估算”入口；窗口内继续提供当前 5h / 7d、手动区间和历史周期，并可按需新开额度曲线或分析所选周期。
 - 价格设置：
-  - 默认展示 GPT-5.6 Sol、DeepSeek V4.1 Flash、小米 MiMo V2.5 Pro 三档（Codex / ZCode / Claude Code / WorkBuddy 各自成组）。DeepSeek V4.1 Flash / V4 Pro 会按北京时间自动合并峰谷计价：周一至周五 `09:00–12:00`、`14:00–18:00` 使用高峰价，其余使用空闲价。
+  - Codex 默认展示 GPT-6 Sol、DeepSeek V4.1 Flash、小米 MiMo V2.5 Pro 三档（各来源价格独立成组）。DeepSeek V4.1 Flash / V4 Pro 会按北京时间自动合并峰谷计价：周一至周五 `09:00–12:00`、`14:00–18:00` 使用高峰价，其余使用空闲价。
   - 内置可编辑价格库，包含 OpenAI、DeepSeek、小米、Kimi、智谱/Z.AI、豆包、MiniMax、千问、混元、Claude、Grok 等参考档；支持新增/编辑价格预设（`$`、`¥`、Credits 三种单位）。
 - 套餐设置：
   - 可记录实际购买套餐和金额。
@@ -34,6 +35,7 @@
   - 可一键从 OpenAI 账户接口同步重置卡（使用本机 `~/.codex/auth.json` 的 access_token）；程序启动完成首轮刷新后也会静默同步，同步成功立即保存。
   - 当前默认示例包含 `2026-06-16`、`2026-06-24`、`2026-06-27` 三次机会，过期默认按获得时间 + 30 天。
 - 缓存详情窗口：查看后台缓存预热进度（按来源分类的完成天数、进度条、最近活动日志），可在暂停后手动恢复。
+- 主窗口“检查更新”会通过本项目 GitHub Releases 的最新发布页检查正式版本，避免 GitHub API 匿名请求限额；发现新版后可打开对应发布页下载。
 
 ## 运行环境
 
@@ -112,6 +114,7 @@ outputs/一键生成CodexTokenMonitor.cmd
 - `%USERPROFILE%\.codex\auth.json`：仅“同步重置卡”时读取 access_token
 - `%USERPROFILE%\.claude`（Claude Code 日志）、ZCode / WorkBuddy 的本地日志目录
 - `%USERPROFILE%\.dsh\sessions`：DeepSeek Harness 会话日志（`session.jsonl.zstd`，zstd 多帧拼接的 JSONL）
+- `%USERPROFILE%\.kimi-code\sessions`、`%APPDATA%\kimi-desktop\daimon-share\daimon\runtime\kimi-code\home\sessions`：Kimi 会话下 `agents\<agent>\wire.jsonl`；派生缓存独立存放在 `%LOCALAPPDATA%\KimiTokenMonitor`。
 
 不同版本客户端日志结构可能变化，所以统计器会尽量容错。
 

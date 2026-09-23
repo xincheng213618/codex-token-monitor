@@ -21,7 +21,37 @@ internal static class QuotaCycleAnalysisCalculator
         CodexQuotaCycle period,
         CodexQuotaWindowEstimate? currentWeek,
         CancellationToken cancellationToken = default)
+        => Build(period, currentWeek, DefaultBandSizePercent, cancellationToken);
+
+    internal static QuotaCycleAnalysisResult Build(
+        CodexQuotaCycle period,
+        CodexQuotaWindowEstimate? currentWeek,
+        decimal bandSizePercent,
+        CancellationToken cancellationToken = default)
+        => BuildCore(period, currentWeek, bandSizePercent, cacheOnly: false, cancellationToken);
+
+    internal static QuotaCycleAnalysisResult BuildCached(
+        CodexQuotaCycle period,
+        CodexQuotaWindowEstimate? currentWeek,
+        CancellationToken cancellationToken = default)
+        => BuildCached(period, currentWeek, DefaultBandSizePercent, cancellationToken);
+
+    internal static QuotaCycleAnalysisResult BuildCached(
+        CodexQuotaCycle period,
+        CodexQuotaWindowEstimate? currentWeek,
+        decimal bandSizePercent,
+        CancellationToken cancellationToken = default)
+        => BuildCore(period, currentWeek, bandSizePercent, cacheOnly: true, cancellationToken);
+
+    private static QuotaCycleAnalysisResult BuildCore(
+        CodexQuotaCycle period,
+        CodexQuotaWindowEstimate? currentWeek,
+        decimal bandSizePercent,
+        bool cacheOnly,
+        CancellationToken cancellationToken)
     {
+        if (bandSizePercent <= 0m || bandSizePercent > 100m)
+            throw new ArgumentOutOfRangeException(nameof(bandSizePercent));
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
         var useCurrentWindow = period.IsCurrent && currentWeek is not null &&
                                CodexQuotaCycleReader.IsSameQuotaReset(currentWeek.ResetAtLocal, period.ResetAt);
@@ -32,10 +62,13 @@ internal static class QuotaCycleAnalysisCalculator
             : period.PeriodEnd;
         if (end <= start)
         {
-            return QuotaCycleAnalysisResult.Empty(period, "周期时间范围无效");
+            return QuotaCycleAnalysisResult.Empty(period, "周期时间范围无效") with
+            {
+                BandSizePercent = bandSizePercent
+            };
         }
 
-        var usageRows = (period.IsCurrent
+        var usageRows = (period.IsCurrent && !cacheOnly
                 ? UsageBreakdownBuilder.ReadDetailRowsForRange(
                     start,
                     end,
@@ -53,12 +86,16 @@ internal static class QuotaCycleAnalysisCalculator
             .ToList();
         if (usageRows.Count == 0)
         {
-            return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可用的逐条 Token 记录");
+            return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可用的逐条 Token 记录") with
+            {
+                BandSizePercent = bandSizePercent
+            };
         }
 
-        var timeline = UsageSourceReaders.Codex.ReadMaterializedQuotaTimeline(
-                usageRows.Select(item => item.StartLocal),
-                cancellationToken: cancellationToken)
+        var anchors = usageRows.Select(item => item.StartLocal);
+        var timeline = (cacheOnly
+                ? UsageSourceReaders.Codex.ReadCachedQuotaTimeline(anchors, cancellationToken: cancellationToken)
+                : UsageSourceReaders.Codex.ReadMaterializedQuotaTimeline(anchors, cancellationToken: cancellationToken))
             .Where(item =>
                 item.WeekUsedPercent is not null &&
                 !item.IsAnomaly &&
@@ -67,8 +104,13 @@ internal static class QuotaCycleAnalysisCalculator
             .ToDictionary(group => group.Key, group => group.Last());
 
         var samples = BuildSamples(start, usageRows, timeline);
-        return BuildFromSamples(period, samples, DefaultBandSizePercent, cancellationToken) with
+        var analysis = BuildFromSamples(period, samples, bandSizePercent, cancellationToken);
+        var calibrationAnalysis = cacheOnly || bandSizePercent == DefaultBandSizePercent
+            ? null
+            : BuildFromSamples(period, samples, DefaultBandSizePercent, cancellationToken);
+        return analysis with
         {
+            CalibrationAnalysis = calibrationAnalysis,
             // Forecast throughput uses original event times, not the accumulated
             // usage assigned to a later quota anchor by the cost analysis.
             UsageSamples = usageRows.Select(QuotaCycleUsageSample.From).ToArray()
@@ -133,14 +175,20 @@ internal static class QuotaCycleAnalysisCalculator
         var usageSamples = samples.Select(item => QuotaCycleUsageSample.From(item.Usage, item.TimestampLocal)).ToArray();
         if (samples.Count < 2)
         {
-            return QuotaCycleAnalysisResult.Empty(period, "额度锚点不足，至少需要两个可对齐的时间点") with { Timeline = timeline, UsageSamples = usageSamples };
+            return QuotaCycleAnalysisResult.Empty(period, "额度锚点不足，至少需要两个可对齐的时间点") with
+            {
+                Timeline = timeline, UsageSamples = usageSamples, BandSizePercent = bandSizePercent
+            };
         }
 
         var catalog = priceCatalog?.ToList();
         var intervals = BuildIntervals(samples, cancellationToken, catalog);
         if (intervals.Count == 0)
         {
-            return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可归因的额度下降区间") with { Timeline = timeline, UsageSamples = usageSamples };
+            return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可归因的额度下降区间") with
+            {
+                Timeline = timeline, UsageSamples = usageSamples, BandSizePercent = bandSizePercent
+            };
         }
 
         var builders = new SortedDictionary<int, BandBuilder>();
@@ -157,7 +205,10 @@ internal static class QuotaCycleAnalysisCalculator
             .ToList();
         if (bands.Count == 0)
         {
-            return QuotaCycleAnalysisResult.Empty(period, "额度变化过小，暂时无法形成稳定分段") with { Timeline = timeline, UsageSamples = usageSamples };
+            return QuotaCycleAnalysisResult.Empty(period, "额度变化过小，暂时无法形成稳定分段") with
+            {
+                Timeline = timeline, UsageSamples = usageSamples, BandSizePercent = bandSizePercent
+            };
         }
 
         var totalDrop = bands.Sum(item => item.QuotaDropPercent);
@@ -211,7 +262,8 @@ internal static class QuotaCycleAnalysisCalculator
             "")
         {
             Timeline = timeline,
-            UsageSamples = usageSamples
+            UsageSamples = usageSamples,
+            BandSizePercent = bandSizePercent
         };
     }
 
@@ -585,6 +637,8 @@ internal sealed record QuotaCycleAnalysisResult(
 {
     public IReadOnlyList<QuotaCycleTimelinePoint> Timeline { get; init; } = Array.Empty<QuotaCycleTimelinePoint>();
     public IReadOnlyList<QuotaCycleUsageSample> UsageSamples { get; init; } = Array.Empty<QuotaCycleUsageSample>();
+    public decimal BandSizePercent { get; init; } = QuotaCycleAnalysisCalculator.DefaultBandSizePercent;
+    public QuotaCycleAnalysisResult? CalibrationAnalysis { get; init; }
 
     public bool HasData => Bands.Count > 0;
 

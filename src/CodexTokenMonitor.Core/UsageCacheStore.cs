@@ -51,7 +51,10 @@ internal sealed class UsageCacheStore
         var directory = Path.GetDirectoryName(cachePath) ?? "";
         foreach (var path in new[] { cachePath, cachePath + "-wal", cachePath + "-shm" }
                      .Concat(LegacyDerivedFileNames.Select(name => Path.Combine(directory, name)))
-                     .Append(Path.Combine(directory, CurrentQuotaHistoryFileName)))
+                     .Append(Path.Combine(directory, CurrentQuotaHistoryFileName))
+                     .Concat(folderName == "CodexTokenMonitor"
+                         ? new[] { Path.Combine(directory, CodexLogFileIndex.FileName) }
+                         : Array.Empty<string>()))
         {
             try
             {

@@ -15,6 +15,7 @@ public sealed class UsageSourceCapabilitiesTests
     [InlineData((int)UsageSource.ZCode, "ZCodeTokenMonitor")]
     [InlineData((int)UsageSource.WorkBuddy, "WorkBuddyTokenMonitor")]
     [InlineData((int)UsageSource.Dsh, "DshTokenMonitor")]
+    [InlineData((int)UsageSource.Kimi, "KimiTokenMonitor")]
     public void CachedQueries_DoNotReplaceIncompleteCacheWithSourceLogs(int sourceValue, string cacheFolder)
     {
         var source = (UsageSource)sourceValue;
@@ -134,6 +135,12 @@ public sealed class UsageSourceCapabilitiesTests
                 data = new { chunk = new { type = "usage", usage = new { inputTokens = 900,
                     cacheReadTokens = 40, cacheWriteTokens = 20, outputTokens = 10 } } }
             },
+            UsageSource.Kimi => new
+            {
+                type = "usage.record", time = timestamp.ToUnixTimeMilliseconds(), usageScope = "turn",
+                model = "k2d8-preview",
+                usage = new { inputOther = 900, inputCacheRead = 40, inputCacheCreation = 20, output = 10 }
+            },
             _ => throw new ArgumentOutOfRangeException(nameof(source))
         };
         var text = JsonSerializer.Serialize(entry) + "\n";
@@ -144,7 +151,8 @@ public sealed class UsageSourceCapabilitiesTests
         }
         else
         {
-            var name = source == UsageSource.Codex ? "rollout-capabilities.jsonl" : "model-io-capabilities.jsonl";
+            var name = source == UsageSource.Codex ? "rollout-capabilities.jsonl" :
+                source == UsageSource.Kimi ? "wire.jsonl" : "model-io-capabilities.jsonl";
             File.WriteAllText(Path.Combine(root, name), text);
         }
     }

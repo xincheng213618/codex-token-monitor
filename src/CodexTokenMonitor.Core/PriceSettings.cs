@@ -11,6 +11,7 @@ internal static class PricePresetGroups
     public const string ZCode = "ZCode";
     public const string WorkBuddy = "WorkBuddy";
     public const string Dsh = "DSH";
+    public const string Kimi = "Kimi";
 
     public static IReadOnlyList<string> All => UsageSourceRegistry.PriceGroups;
 
@@ -27,7 +28,7 @@ internal static class PricePresetGroups
 
 internal sealed class PriceSettings
 {
-    public int DisplayOrderVersion { get; set; } = 19;
+    public int DisplayOrderVersion { get; set; } = 20;
     public string GptName { get; set; } = "GPT-5.6 Sol";
     public decimal GptUncachedInputPerMillion { get; set; } = 4.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.40m;
@@ -47,6 +48,7 @@ internal sealed class PriceSettings
     public List<PricePreset> ZCodePresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.ZCode).ToList();
     public List<PricePreset> WorkBuddyPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.WorkBuddy).ToList();
     public List<PricePreset> DshPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Dsh).ToList();
+    public List<PricePreset> KimiPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Kimi).ToList();
 
     public PriceProfile ToGptProfile()
     {
@@ -104,7 +106,8 @@ internal sealed class PriceSettings
             ClaudeCodePresets = ClaudeCodePresets.Select(item => item.Clone()).ToList(),
             ZCodePresets = ZCodePresets.Select(item => item.Clone()).ToList(),
             WorkBuddyPresets = WorkBuddyPresets.Select(item => item.Clone()).ToList(),
-            DshPresets = DshPresets.Select(item => item.Clone()).ToList()
+            DshPresets = DshPresets.Select(item => item.Clone()).ToList(),
+            KimiPresets = KimiPresets.Select(item => item.Clone()).ToList()
         };
     }
 
@@ -116,6 +119,7 @@ internal sealed class PriceSettings
             PricePresetGroups.ZCode => ZCodePresets,
             PricePresetGroups.WorkBuddy => WorkBuddyPresets,
             PricePresetGroups.Dsh => DshPresets,
+            PricePresetGroups.Kimi => KimiPresets,
             _ => CodexPresets
         };
     }
@@ -136,6 +140,9 @@ internal sealed class PriceSettings
             case PricePresetGroups.Dsh:
                 DshPresets = presets;
                 break;
+            case PricePresetGroups.Kimi:
+                KimiPresets = presets;
+                break;
             default:
                 CodexPresets = presets;
                 break;
@@ -145,7 +152,10 @@ internal sealed class PriceSettings
 
 internal sealed class PricePreset
 {
+    public const string KimiPreviewPriceSource = "B.AI 第三方参考价（2026-09-22；非 Kimi 官方账单）：https://docs.b.ai/llmservice/models/kimi-k2.8-preview/";
     public const string OpenAiPriceSource = "OpenAI 标准价（2026-09-05）：https://developers.openai.com/api/docs/pricing";
+    public const string Gpt6PriceSource = "OpenAI 标准价（2026-09-23）：https://developers.openai.com/api/docs/pricing";
+    public const string ClaudePriceSource = "Anthropic 标准价（2026-09-23；5 分钟缓存写入）：https://platform.claude.com/docs/en/about-claude/pricing";
     public const string DeepSeekPriceSource = "DeepSeek API 官方定价（2026-09-10；空闲价；北京时间工作日高峰 ×2）：https://api-docs.deepseek.com/zh-cn/quick_start/pricing";
     public string Group { get; set; } = "";
     public string Provider { get; set; } = "";
@@ -207,6 +217,8 @@ internal sealed class PricePreset
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, DeepSeekPriceSource, schedule: PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
             Preset("OpenAI", "GPT-6 Astra", "$", "USD / 1M tokens", 1_000_000m, 10m, 1m, 50m, "https://developers.openai.com/api/docs/models/gpt-6-astra (Standard)", cacheWrite: 12.5m),
+            Preset("OpenAI", "GPT-6 Sol", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.20m, 10m, Gpt6PriceSource, cacheWrite: 2.50m),
+            Preset("OpenAI", "GPT-6 Luna", "$", "USD / 1M tokens", 1_000_000m, 0.10m, 0.01m, 0.50m, Gpt6PriceSource, cacheWrite: 0.125m),
             Preset("OpenAI", "codex-auto-review", "$", "USD / 1M tokens", 1_000_000m, 0.20m, 0.02m, 1.20m, "用户截图参考价（2026-09-05）；未核实为 OpenAI 官方报价，可编辑"),
             Preset("OpenAI", "GPT-5.6 Sol", "$", "USD / 1M tokens", 1_000_000m, 4.00m, 0.40m, 20.00m, OpenAiPriceSource, cacheWrite: 5.00m),
             Preset("OpenAI", "GPT-5.6 Terra", "$", "USD / 1M tokens", 1_000_000m, 2.00m, 0.20m, 12.00m, OpenAiPriceSource, cacheWrite: 2.50m),
@@ -252,6 +264,10 @@ internal sealed class PricePreset
             Preset("腾讯混元", "Hunyuan Turbo", "¥", "CNY / 1M tokens", 1_000_000m, 0.70m, 0.07m, 1.40m, "腾讯混元官方参考"),
             Preset("腾讯混元", "Hy3", "¥", "CNY / 1M tokens", 1_000_000m, 1.00m, 0.25m, 4.00m, "腾讯云 TokenHub 官方价格"),
             Preset("Claude", "Fable 5 API", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 50.00m, "Anthropic pricing/cache read/write", cacheWrite: 12.50m),
+            Preset("Claude", "Fable 5.1 API", "$", "USD / 1M tokens", 1_000_000m, 10m, 0.25m, 50m, ClaudePriceSource, cacheWrite: 12.50m),
+            Preset("Claude", "Opus 5.5 API", "$", "USD / 1M tokens", 1_000_000m, 4m, 0.20m, 20m, ClaudePriceSource, cacheWrite: 5m),
+            Preset("Claude", "Opus 5 API", "$", "USD / 1M tokens", 1_000_000m, 5m, 0.50m, 25m, ClaudePriceSource, cacheWrite: 6.25m),
+            Preset("Claude", "Sonnet 5 API", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.20m, 10m, ClaudePriceSource, cacheWrite: 2.50m),
             Preset("Claude", "Opus 4.8 API", "$", "USD / 1M tokens", 1_000_000m, 5.00m, 0.50m, 25.00m, "Anthropic pricing/cache read/write", cacheWrite: 6.25m),
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, DeepSeekPriceSource, "Claude Code", PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan", "Claude Code"),
@@ -271,6 +287,10 @@ internal sealed class PricePreset
     {
         var normalizedGroup = PricePresetGroups.Normalize(group);
         var result = new List<PricePreset>();
+        if (normalizedGroup == PricePresetGroups.Kimi)
+        {
+            result.Add(KimiPreviewReference());
+        }
         foreach (var preset in Defaults())
         {
             if (result.Any(item => SameCatalogPreset(item, preset)))
@@ -286,6 +306,16 @@ internal sealed class PricePreset
         return ApplyDefaultDisplayOrder(result, normalizedGroup);
     }
 
+    // Keep the observed runtime ID while identifying the third-party tariff.
+    public static PricePreset KimiPreviewReference() => new()
+    {
+        Group = PricePresetGroups.Kimi, Provider = "Kimi（月之暗面）",
+        Model = "K2.8 Preview", ModelId = "k2d8-preview",
+        CurrencySymbol = "$", UnitLabel = "USD / 1M tokens",
+        UncachedInput = 1m, CachedInput = 0.25m, CacheWriteInput = 1m, Output = 4m,
+        Source = KimiPreviewPriceSource
+    };
+
     private static bool ContainsIgnoreCase(string value, string pattern)
     {
         return value.Contains(pattern, StringComparison.OrdinalIgnoreCase);
@@ -295,11 +325,12 @@ internal sealed class PricePreset
     {
         var preferred = PricePresetGroups.Normalize(group) switch
         {
-            PricePresetGroups.ClaudeCode => ("Claude", "Fable 5 API"),
+            PricePresetGroups.ClaudeCode => ("Claude", "Fable 5.1 API"),
             PricePresetGroups.ZCode => ("智谱/Z.AI", "GLM-5.3 Flash"),
             PricePresetGroups.WorkBuddy => ("Kimi（月之暗面）", "K3"),
             PricePresetGroups.Dsh => ("DeepSeek", "V4.1 Flash"),
-            _ => ("OpenAI", "GPT-5.6 Sol")
+            PricePresetGroups.Kimi => ("Kimi（月之暗面）", "K2.8 Preview"),
+            _ => ("OpenAI", "GPT-6 Sol")
         };
         var ordered = new List<PricePreset>();
         var first = presets.FirstOrDefault(item =>
@@ -370,7 +401,7 @@ internal static class PriceSettingsStore
     {
         var settings = new PriceSettings
         {
-            DisplayOrderVersion = 19,
+            DisplayOrderVersion = 20,
             Presets = new(),
             CodexPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Codex), PricePresetGroups.Codex),
@@ -386,7 +417,10 @@ internal static class PriceSettingsStore
                 PricePresetGroups.WorkBuddy),
             DshPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Dsh), PricePresetGroups.Dsh),
-                PricePresetGroups.Dsh)
+                PricePresetGroups.Dsh),
+            KimiPresets = ApplyDefaultDisplayOrder(
+                NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Kimi), PricePresetGroups.Kimi),
+                PricePresetGroups.Kimi)
         };
         return settings;
     }
@@ -535,7 +569,7 @@ internal static class PriceSettingsStore
         var settings = JsonSerializer.Deserialize<PriceSettings>(json)
             ?? throw new JsonException("Price settings must contain a settings object.");
         List<PricePreset>?[] groups = [settings.Presets, settings.CodexPresets, settings.ClaudeCodePresets,
-            settings.ZCodePresets, settings.WorkBuddyPresets, settings.DshPresets];
+            settings.ZCodePresets, settings.WorkBuddyPresets, settings.DshPresets, settings.KimiPresets];
         if (groups.Any(group => group is null || group.Any(preset => preset is null)))
             throw new JsonException("Price preset collections and their entries must not be null.");
         return settings;
@@ -599,6 +633,7 @@ internal static class PriceSettingsStore
         var zCodePresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.ZCode), PricePresetGroups.ZCode);
         var workBuddyPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.WorkBuddy), PricePresetGroups.WorkBuddy);
         var dshPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Dsh), PricePresetGroups.Dsh);
+        var kimiPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Kimi), PricePresetGroups.Kimi);
         var shouldRefreshDefaults = settings.DisplayOrderVersion < defaults.DisplayOrderVersion;
         if (shouldRefreshDefaults)
         {
@@ -609,11 +644,13 @@ internal static class PriceSettingsStore
             MergeMissingDefaults(zCodePresets, PricePresetGroups.ZCode);
             MergeMissingDefaults(workBuddyPresets, PricePresetGroups.WorkBuddy);
             MergeMissingDefaults(dshPresets, PricePresetGroups.Dsh);
+            MergeMissingDefaults(kimiPresets, PricePresetGroups.Kimi);
             codexPresets = ApplyDefaultDisplayOrder(codexPresets, PricePresetGroups.Codex);
             claudePresets = ApplyDefaultDisplayOrder(claudePresets, PricePresetGroups.ClaudeCode);
             zCodePresets = ApplyDefaultDisplayOrder(zCodePresets, PricePresetGroups.ZCode);
             workBuddyPresets = ApplyDefaultDisplayOrder(workBuddyPresets, PricePresetGroups.WorkBuddy);
             dshPresets = ApplyDefaultDisplayOrder(dshPresets, PricePresetGroups.Dsh);
+            kimiPresets = ApplyDefaultDisplayOrder(kimiPresets, PricePresetGroups.Kimi);
         }
 
         var gptName = string.IsNullOrWhiteSpace(settings.GptName)
@@ -656,7 +693,8 @@ internal static class PriceSettingsStore
             ClaudeCodePresets = claudePresets,
             ZCodePresets = zCodePresets,
             WorkBuddyPresets = workBuddyPresets,
-            DshPresets = dshPresets
+            DshPresets = dshPresets,
+            KimiPresets = kimiPresets
         };
     }
 
@@ -718,10 +756,10 @@ internal static class PriceSettingsStore
     {
         var preferred = new (string Group, string Provider, string Model)[]
         {
-            ("Codex", "OpenAI", "GPT-5.6 Sol"),
+            ("Codex", "OpenAI", "GPT-6 Sol"),
             ("Codex", "DeepSeek", "V4.1 Flash"),
             ("Codex", "Xiaomi", "MiMo V2.5 Pro"),
-            ("Claude Code", "Claude", "Fable 5 API"),
+            ("Claude Code", "Claude", "Fable 5.1 API"),
             ("Claude Code", "DeepSeek", "V4.1 Flash"),
             ("Claude Code", "Xiaomi", "MiMo V2.5 Pro"),
             ("ZCode", "智谱/Z.AI", "GLM-5.3 Flash"),
@@ -734,7 +772,10 @@ internal static class PriceSettingsStore
             ("DSH", "DeepSeek", "V4.1 Flash"),
             ("DSH", "DeepSeek", "V4 Pro"),
             ("DSH", "Xiaomi", "MiMo V2.5 Pro"),
-            ("DSH", "OpenAI", "GPT-5.6 Sol")
+            ("DSH", "OpenAI", "GPT-5.6 Sol"),
+            ("Kimi", "Kimi（月之暗面）", "K2.8 Preview"),
+            ("Kimi", "DeepSeek", "V4.1 Flash"),
+            ("Kimi", "Xiaomi", "MiMo V2.5 Pro")
         };
 
         var ordered = new List<PricePreset>();
@@ -804,6 +845,16 @@ internal static class PriceSettingsStore
         };
 
         RefreshOldOpenAiDefault(normalized);
+        // Upgrade only the untouched placeholder; retain user prices and order.
+        if (normalized.Group == PricePresetGroups.Kimi &&
+            normalized.Provider == "Kimi（月之暗面）" && normalized.Model == "K2.8 Preview" &&
+            normalized.ModelId == "k2d8-preview" && normalized.CurrencySymbol == "¥" &&
+            normalized.UnitLabel == "CNY / 1M tokens" && normalized.Divisor == 1_000_000m &&
+            normalized.Schedule == PriceSchedule.Flat &&
+            normalized.Source == CodexModelCost.PlaceholderPriceSource &&
+            normalized.UncachedInput == 0 && normalized.CachedInput == 0 && normalized.Output == 0 &&
+            (normalized.CacheWriteInput ?? 0) == 0)
+            normalized = PricePreset.KimiPreviewReference();
         if (TryGetKnownCacheWritePrice(normalized, out var knownCacheWritePrice) &&
             normalized.CacheWriteInput is null)
         {
