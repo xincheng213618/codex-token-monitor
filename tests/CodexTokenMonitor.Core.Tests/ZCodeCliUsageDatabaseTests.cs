@@ -105,12 +105,40 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
         Assert.True(result.Available);
         Assert.True(result.IsComplete);
         var row = Assert.Single(result.Events);
-        Assert.Equal("zcode-db:db-1", row.Key);
+        Assert.Equal("zcode:db-1", row.Key);
         Assert.Equal("GLM-5.3-Flash", row.ModelId);
         Assert.Equal(49_800L, row.InputTokens);
         Assert.Equal(49_700L, row.CachedInputTokens);
         Assert.Equal(200L, row.OutputTokens);
         Assert.Equal(50_000L, row.TotalTokens);
+    }
+
+    [Fact]
+    public void ReadEvents_TimestampsFollowCompletedAtLikeTheWindowFilter()
+    {
+        // An anomalous row (started_at after completed_at) must keep the
+        // completed_at timestamp: that is the column the window filter and
+        // Earliest use, so the event can never leak outside its scan range.
+        var start = DateTimeOffset.Now.AddMinutes(-60);
+        SeedDatabase(("skew-1", start.AddMinutes(30), 50_000L));
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+               {
+                   DataSource = DbPath,
+                   Mode = SqliteOpenMode.ReadWrite,
+                   Pooling = false
+               }.ToString()))
+        {
+            connection.Open();
+            using var update = connection.CreateCommand();
+            update.CommandText = "UPDATE model_usage SET started_at = completed_at + 600000";
+            update.ExecuteNonQuery();
+        }
+
+        var result = ZCodeCliUsageDatabase.ReadEvents(start, start.AddHours(2));
+
+        // The column stores milliseconds, so compare at that precision.
+        var completed = DateTimeOffset.FromUnixTimeMilliseconds(start.AddMinutes(30).ToUnixTimeMilliseconds());
+        Assert.Equal(completed, Assert.Single(result.Events).Timestamp);
     }
 
     [Fact]
@@ -125,21 +153,64 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
     }
 
     [Fact]
-    public void Reader_LogEventsAfterDatabaseEarliest_AreExcludedToAvoidDoubleCounting()
+    public void Reader_MergesSameRequestAcrossSourcesAndKeepsLogOnlyRequests()
     {
-        // The db owns everything since its earliest row: a model-io record in
-        // that range describes the same call and must not be counted twice,
-        // while a log record older than the db's earliest row is genuine
-        // backfill for a period the database does not cover.
+        // Log events and database rows share the stable key zcode:<request id>,
+        // so one call read from both sides counts once. A log record with a
+        // different request id is a different call and survives even when the
+        // database covers the range, and pre-database log records backfill.
         var start = DateTimeOffset.Now.AddMinutes(-60);
-        SeedDatabase(("db-1", start.AddMinutes(30), 50_000L));
-        WriteLogRecord(start.AddMinutes(40), "log-1");
+        SeedDatabase(("req-1", start.AddMinutes(30), 50_000L));
+        WriteLogRecord(start.AddMinutes(30), "req-1");
+        WriteLogRecord(start.AddMinutes(40), "log-2");
         WriteLogRecord(start.AddMinutes(5), "log-old");
 
         var rows = ZCodeUsageReader.ReadTransientDetailRows(start, start.AddHours(2));
 
-        Assert.Equal(2, rows.Count);
-        Assert.All(rows, row => Assert.All(row.ModelUsage.Keys, key => Assert.Equal("GLM-5.3-Flash", key)));
+        Assert.Equal(3, rows.Count);
+        var merged = rows.Single(row => row.TotalTokens == 50_000L);
+        Assert.Equal("GLM-5.3-Flash", Assert.Single(merged.ModelUsage).Key);
+    }
+
+    [Fact]
+    public void Reader_RescanningCachedDayWithDatabaseNowAvailable_DoesNotDoubleCount()
+    {
+        // The production double-count chain: a historical day cached from logs
+        // while one file was unreadable (incomplete), then rescanned after the
+        // database became available. Shared stable keys make the cached log
+        // row and the rescanned database row replace each other instead of
+        // both persisting.
+        var day = DateTimeOffset.Now.AddDays(-2);
+        var dayStart = new DateTimeOffset(day.Year, day.Month, day.Day, 0, 0, 0, Beijing);
+        var dayEnd = dayStart.AddDays(1);
+        WriteLogRecord(dayStart.AddMinutes(30), "req-1");
+        var blocked = Path.Combine(root, UsageSource.ZCode.ToString(), "rollout", "model-io-locked.jsonl");
+        File.WriteAllText(blocked, "{\"type\":\"other\"}\n");
+        using (new LockedFile(blocked))
+        {
+            var incomplete = ZCodeUsageReader.ReadRange(dayStart, dayEnd);
+            Assert.Equal(8_100L, incomplete.TotalTokens);
+        }
+
+        SeedDatabase(("req-1", dayStart.AddMinutes(30), 50_000L));
+
+        var rescanned = ZCodeUsageReader.ReadRange(dayStart, dayEnd);
+
+        Assert.Equal(50_000L, rescanned.TotalTokens);
+        var cachedDetail = Assert.Single(ZCodeUsageReader.ReadCachedDetailRows(dayStart, dayEnd));
+        Assert.Equal(50_000L, cachedDetail.TotalTokens);
+    }
+
+    private sealed class LockedFile : IDisposable
+    {
+        private readonly FileStream stream;
+
+        public LockedFile(string path)
+        {
+            stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        }
+
+        public void Dispose() => stream.Dispose();
     }
 
     [Fact]

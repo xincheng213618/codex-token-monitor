@@ -6,8 +6,8 @@ namespace CodexTokenMonitor;
 /// <summary>
 /// Reads the ZCode CLI's own durable usage ledger (db.sqlite, model_usage
 /// table). Unlike the model-io rollout logs the CLI rotates, this database
-/// keeps every model call, so it is the primary ZCode source; the model-io
-/// logs only backfill ranges older than the database's earliest row.
+/// keeps every model call, so it is the primary ZCode source; model-io events
+/// carry the same stable key, so a call seen by both sources merges into one.
 /// </summary>
 internal static class ZCodeCliUsageDatabase
 {
@@ -83,7 +83,6 @@ internal static class ZCodeCliUsageDatabase
                 var requestId = reader.IsDBNull(0) ? null : reader.GetString(0);
                 var modelId = reader.IsDBNull(1) ? null : reader.GetString(1);
                 var completedMs = reader.IsDBNull(2) ? 0L : reader.GetInt64(2);
-                var startedMs = reader.IsDBNull(3) ? completedMs : reader.GetInt64(3);
                 var input = reader.IsDBNull(4) ? 0L : reader.GetInt64(4);
                 var output = reader.IsDBNull(5) ? 0L : reader.GetInt64(5);
                 var reasoning = reader.IsDBNull(6) ? 0L : reader.GetInt64(6);
@@ -92,13 +91,20 @@ internal static class ZCodeCliUsageDatabase
                 var computed = reader.IsDBNull(9) ? 0L : reader.GetInt64(9);
                 if (string.IsNullOrWhiteSpace(requestId) || (input == 0 && output == 0 && computed == 0))
                 {
+                    // Rows without a request id are skipped on purpose: the
+                    // log source's fallback keys cannot be matched across
+                    // sources, so keeping them here would double-count the
+                    // same call. The production database has no such rows.
                     continue;
                 }
 
                 // input_tokens counts the request's total input including cache
                 // reads (verified field-by-field against model-io records).
-                var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
-                    Math.Max(completedMs, startedMs)).ToOffset(CodexUsageReader.BeijingOffset);
+                // The timestamp must follow completed_at — the same column the
+                // window filter and Earliest use — or an anomalous row with
+                // started_at > completed_at would leak out of its scan range.
+                var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(completedMs)
+                    .ToOffset(CodexUsageReader.BeijingOffset);
                 var cached = Math.Min(input, cacheRead);
                 var total = computed > 0
                     ? computed
@@ -112,7 +118,10 @@ internal static class ZCodeCliUsageDatabase
                     OutputTokens: output,
                     ReasoningOutputTokens: reasoning,
                     TotalTokens: total,
-                    Key: $"zcode-db:{requestId}",
+                    // Same stable key the model-io log source emits for the
+                    // request, so a call read from both sides merges into one
+                    // event instead of double-counting in the cache.
+                    Key: $"zcode:{requestId}",
                     CacheWriteInputTokens: cacheCreation,
                     ModelId: modelId));
             }

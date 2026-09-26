@@ -395,14 +395,15 @@ internal static class ZCodeUsageReader
                 ModelId: item.ModelId))
             .ToList();
 
-        // The CLI's own database is durable across log rotation; when it is
-        // readable it becomes the source for everything since its earliest
-        // row, and the model-io logs only backfill older ranges.
+        // The CLI's own database is durable across log rotation. Both sources
+        // emit the same stable key (zcode:<request id>), so a call seen by
+        // both merges into one event downstream; log events the database does
+        // not know (older than its earliest row, or whose row has not landed
+        // yet) survive instead of being guessed away by a timestamp boundary.
         var dbRead = ZCodeCliUsageDatabase.ReadEvents(startLocal, endLocal, cancellationToken);
-        if (dbRead.Available && dbRead.Earliest is { } dbEarliest)
+        if (dbRead.Available)
         {
             events = events
-                .Where(item => item.Timestamp < dbEarliest)
                 .Concat(dbRead.Events)
                 .OrderBy(item => item.Timestamp)
                 .ToList();

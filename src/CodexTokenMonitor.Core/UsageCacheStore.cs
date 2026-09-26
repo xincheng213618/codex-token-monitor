@@ -9,6 +9,11 @@ internal sealed class UsageCacheStore
         "token-cache-v2.sqlite3",
         "token-cache-v2.sqlite3-wal",
         "token-cache-v2.sqlite3-shm",
+        // v5 was the previous ZCode cache; its key space predated the unified
+        // zcode:<request id> event keys and must not survive a v6 rebuild.
+        "token-cache-v5.sqlite3",
+        "token-cache-v5.sqlite3-wal",
+        "token-cache-v5.sqlite3-shm",
         "usage-cache-v1.json",
         "quota-snapshot-cache-v1.json",
         "quota-history.jsonl"
@@ -37,7 +42,7 @@ internal sealed class UsageCacheStore
     {
         return Path.Combine(MonitorCachePaths.LocalAppData, folderName,
             folderName == "CodexTokenMonitor" ? "token-cache-v4.sqlite3"
-                : folderName == "ZCodeTokenMonitor" ? "token-cache-v5.sqlite3"
+                : folderName == "ZCodeTokenMonitor" ? "token-cache-v6.sqlite3"
                 : CacheFileName);
     }
 
