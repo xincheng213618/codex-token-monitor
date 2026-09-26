@@ -361,7 +361,6 @@ internal sealed class ZCodeQuotaReader
     private static readonly TimeSpan SuccessCacheDuration = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan FailureCacheDuration = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StaleSnapshotReuseDuration = TimeSpan.FromMinutes(30);
-    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(15);
 
     private readonly object syncRoot = new();
     private readonly Func<string> locateCredentialsFile;
@@ -391,6 +390,16 @@ internal sealed class ZCodeQuotaReader
         }));
         this.requestTimeout = requestTimeout ?? DefaultRequestTimeout;
     }
+
+    /// <summary>
+    /// A property on purpose: the <see cref="Shared"/> singleton is initialized
+    /// before any other static field of this type, so a static readonly field
+    /// here would be captured as TimeSpan.Zero by that first construction.
+    /// </summary>
+    private static TimeSpan DefaultRequestTimeout => TimeSpan.FromSeconds(15);
+
+    /// <summary>Effective per-request timeout, surfaced for tests and diagnostics.</summary>
+    internal TimeSpan RequestTimeout => requestTimeout;
 
     public ZCodeQuotaSnapshot? ReadCurrent(CancellationToken cancellationToken = default)
     {

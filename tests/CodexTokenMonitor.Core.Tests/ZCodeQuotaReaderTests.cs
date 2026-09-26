@@ -210,6 +210,14 @@ public sealed class ZCodeQuotaReaderTests
     }
 
     [Fact]
+    public void Shared_CarriesTheDefaultRequestTimeout()
+    {
+        // Regression: the Shared singleton is constructed before the type's
+        // other static fields initialize, which used to capture a zero timeout.
+        Assert.Equal(TimeSpan.FromSeconds(15), ZCodeQuotaReader.Shared.RequestTimeout);
+    }
+
+    [Fact]
     public void ReadCurrentResult_ClassifiesRequestTimeoutAsNetworkError()
     {
         var credentialsPath = WriteTempCredentials();

@@ -56,7 +56,8 @@ internal static class ZCodeQuotaProbe
                     passed = first.Failure is not null &&
                              first.Failure.Kind != ZCodeQuotaFailureKind.Unknown,
                     kind = first.Failure?.Kind.ToString(),
-                    statusCode = first.Failure?.StatusCode
+                    statusCode = first.Failure?.StatusCode,
+                    message = first.Failure?.Message
                 });
             }
 
