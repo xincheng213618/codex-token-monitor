@@ -52,7 +52,8 @@ internal enum ZCodeQuotaFailureKind
 internal sealed record ZCodeQuotaFailure(
     ZCodeQuotaFailureKind Kind,
     int? StatusCode = null,
-    string? Message = null);
+    string? Message = null,
+    TimeSpan? RetryAfter = null);
 
 internal sealed record ZCodeQuotaReadResult(
     ZCodeQuotaSnapshot? Snapshot,
@@ -361,6 +362,7 @@ internal sealed class ZCodeQuotaReader
     private static readonly TimeSpan SuccessCacheDuration = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan FailureCacheDuration = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StaleSnapshotReuseDuration = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan MaxRateLimitCacheDuration = TimeSpan.FromMinutes(10);
 
     private readonly object syncRoot = new();
     private readonly Func<string> locateCredentialsFile;
@@ -470,9 +472,37 @@ internal sealed class ZCodeQuotaReader
         }
     }
 
-    private TimeSpan CacheDuration()
+    /// <summary>
+    /// How long the next attempt waits after the last one. A server-provided
+    /// Retry-After extends the failure window, capped so a bogus header cannot
+    /// freeze the panel for hours.
+    /// </summary>
+    internal TimeSpan CacheDuration()
     {
-        return cachedSnapshot is not null ? SuccessCacheDuration : FailureCacheDuration;
+        if (cachedSnapshot is not null)
+        {
+            return SuccessCacheDuration;
+        }
+
+        return cachedFailure?.RetryAfter is { } retryAfter && retryAfter > FailureCacheDuration
+            ? (retryAfter < MaxRateLimitCacheDuration ? retryAfter : MaxRateLimitCacheDuration)
+            : FailureCacheDuration;
+    }
+
+    private static TimeSpan? ReadRetryAfter(HttpResponseMessage response)
+    {
+        var header = response.Headers.RetryAfter;
+        if (header is null)
+        {
+            return null;
+        }
+
+        if (header.Delta is { } delta)
+        {
+            return delta > TimeSpan.Zero ? delta : null;
+        }
+
+        return header.Date is { } date && date > DateTimeOffset.UtcNow ? date - DateTimeOffset.UtcNow : null;
     }
 
     private ZCodeQuotaReadResult ReadCurrentUncached(CancellationToken cancellationToken)
@@ -534,8 +564,10 @@ internal sealed class ZCodeQuotaReader
                     return new ZCodeQuotaReadResult(lastGoodSnapshot, null);
                 }
 
-                return new ZCodeQuotaReadResult(
-                    null, new ZCodeQuotaFailure(ZCodeQuotaFailureKind.HttpError, (int)response.StatusCode));
+                return new ZCodeQuotaReadResult(null, new ZCodeQuotaFailure(
+                    ZCodeQuotaFailureKind.HttpError,
+                    (int)response.StatusCode,
+                    RetryAfter: ReadRetryAfter(response)));
             }
 
             string json;

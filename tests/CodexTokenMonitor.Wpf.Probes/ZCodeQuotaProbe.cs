@@ -57,6 +57,7 @@ internal static class ZCodeQuotaProbe
                              first.Failure.Kind != ZCodeQuotaFailureKind.Unknown,
                     kind = first.Failure?.Kind.ToString(),
                     statusCode = first.Failure?.StatusCode,
+                    retryAfterSeconds = first.Failure?.RetryAfter?.TotalSeconds,
                     message = first.Failure?.Message
                 });
             }

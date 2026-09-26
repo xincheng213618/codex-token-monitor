@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using Xunit;
@@ -296,6 +297,36 @@ public sealed class ZCodeQuotaReaderTests
             Assert.Same(first.Failure, second.Failure);
             Assert.Equal(1, handler.CallCount);
             Assert.Equal(1, senderCreations);
+        }
+        finally
+        {
+            File.Delete(credentialsPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(45, 45)]
+    [InlineData(5, 30)]
+    [InlineData(3600, 600)]
+    public void CacheDuration_RespectsServerRetryAfterWithFloorAndCap(int retryAfterSeconds, int expectedSeconds)
+    {
+        var credentialsPath = WriteTempCredentials();
+        try
+        {
+            using var handler = new StubHttpHandler(() =>
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+                response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(retryAfterSeconds));
+                return response;
+            });
+            var reader = CreateReaderWithCredentials(handler, credentialsPath);
+
+            var result = reader.ReadCurrentResult();
+
+            Assert.Equal(ZCodeQuotaFailureKind.HttpError, result.Failure!.Kind);
+            Assert.Equal(429, result.Failure.StatusCode);
+            Assert.Equal(TimeSpan.FromSeconds(retryAfterSeconds), result.Failure.RetryAfter);
+            Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), reader.CacheDuration());
         }
         finally
         {
