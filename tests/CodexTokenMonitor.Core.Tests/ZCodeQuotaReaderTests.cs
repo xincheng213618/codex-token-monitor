@@ -210,6 +210,32 @@ public sealed class ZCodeQuotaReaderTests
     }
 
     [Fact]
+    public void ReadCurrentResult_ClassifiesRequestTimeoutAsNetworkError()
+    {
+        var credentialsPath = WriteTempCredentials();
+        try
+        {
+            using var handler = new DelayingHttpHandler(TimeSpan.FromMilliseconds(500));
+            var reader = new ZCodeQuotaReader(
+                locateCredentialsFile: () => credentialsPath,
+                locateDeviceMidFile: () => "device-mid",
+                locateAppVersion: () => "3.12.3",
+                createHttpSender: () => new HttpClient(handler),
+                requestTimeout: TimeSpan.FromMilliseconds(20));
+
+            var result = reader.ReadCurrentResult();
+
+            Assert.Null(result.Snapshot);
+            Assert.Equal(ZCodeQuotaFailureKind.NetworkError, result.Failure!.Kind);
+            Assert.Contains("超时", result.Failure.Message);
+        }
+        finally
+        {
+            File.Delete(credentialsPath);
+        }
+    }
+
+    [Fact]
     public void ReadCurrentResult_ReusesStaleSnapshotWhenRateLimited()
     {
         var credentialsPath = WriteTempCredentials();
@@ -309,6 +335,19 @@ public sealed class ZCodeQuotaReaderTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             return Task.FromException<HttpResponseMessage>(exception);
+        }
+    }
+
+    private sealed class DelayingHttpHandler : HttpMessageHandler
+    {
+        private readonly TimeSpan delay;
+
+        public DelayingHttpHandler(TimeSpan delay) => this.delay = delay;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(delay, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
         }
     }
 

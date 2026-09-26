@@ -1406,7 +1406,9 @@ public partial class MainWindow : Window
             ZCodeQuotaExpiryValue.Text = expiryLocal.ToString("MM-dd HH:mm");
             var remainingTime = expiryLocal - BeijingClock.Now;
             ZCodeQuotaExpiryDetail.Text = remainingTime > TimeSpan.Zero
-                ? $"还有 {remainingTime.TotalHours:N1} 小时"
+                ? remainingTime >= TimeSpan.FromHours(48)
+                    ? $"还有 {remainingTime.TotalDays:N1} 天"
+                    : $"还有 {remainingTime.TotalHours:N1} 小时"
                 : "已过期";
         }
         else

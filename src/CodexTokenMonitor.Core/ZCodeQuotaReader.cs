@@ -361,12 +361,14 @@ internal sealed class ZCodeQuotaReader
     private static readonly TimeSpan SuccessCacheDuration = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan FailureCacheDuration = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan StaleSnapshotReuseDuration = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(15);
 
     private readonly object syncRoot = new();
     private readonly Func<string> locateCredentialsFile;
     private readonly Func<string?> locateDeviceMidFile;
     private readonly Func<string?> locateAppVersion;
     private readonly Func<HttpMessageInvoker> createHttpSender;
+    private readonly TimeSpan requestTimeout;
     private HttpMessageInvoker? cachedHttpSender;
     private DateTimeOffset lastAttemptUtc = DateTimeOffset.MinValue;
     private ZCodeQuotaSnapshot? cachedSnapshot;
@@ -377,7 +379,8 @@ internal sealed class ZCodeQuotaReader
         Func<string>? locateCredentialsFile = null,
         Func<string?>? locateDeviceMidFile = null,
         Func<string?>? locateAppVersion = null,
-        Func<HttpMessageInvoker>? createHttpSender = null)
+        Func<HttpMessageInvoker>? createHttpSender = null,
+        TimeSpan? requestTimeout = null)
     {
         this.locateCredentialsFile = locateCredentialsFile ?? LocateCredentialsFile;
         this.locateDeviceMidFile = locateDeviceMidFile ?? LocateDeviceMidFile;
@@ -386,6 +389,7 @@ internal sealed class ZCodeQuotaReader
         {
             PooledConnectionLifetime = TimeSpan.FromMinutes(10)
         }));
+        this.requestTimeout = requestTimeout ?? DefaultRequestTimeout;
     }
 
     public ZCodeQuotaSnapshot? ReadCurrent(CancellationToken cancellationToken = default)
@@ -482,14 +486,25 @@ internal sealed class ZCodeQuotaReader
         }
 
         HttpResponseMessage response;
+        // A hung connection must not occupy the panel's refresh slot for the
+        // HttpClient default of 100 seconds; bound it well below the cache cycle.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(requestTimeout);
         try
         {
-            response = GetHttpSender().SendAsync(request, cancellationToken).GetAwaiter().GetResult();
+            response = GetHttpSender().SendAsync(request, timeoutCts.Token).GetAwaiter().GetResult();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             request.Dispose();
             throw;
+        }
+        catch (OperationCanceledException)
+        {
+            request.Dispose();
+            return new ZCodeQuotaReadResult(null, new ZCodeQuotaFailure(
+                ZCodeQuotaFailureKind.NetworkError,
+                Message: $"请求超时（{requestTimeout.TotalSeconds:N0} 秒）"));
         }
         catch (Exception ex)
         {
@@ -518,7 +533,7 @@ internal sealed class ZCodeQuotaReader
             try
             {
                 json = response.Content
-                    .ReadAsStringAsync(cancellationToken)
+                    .ReadAsStringAsync(timeoutCts.Token)
                     .GetAwaiter()
                     .GetResult();
             }
