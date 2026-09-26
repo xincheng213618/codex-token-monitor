@@ -639,6 +639,7 @@ internal sealed record QuotaCycleAnalysisResult(
     public IReadOnlyList<QuotaCycleUsageSample> UsageSamples { get; init; } = Array.Empty<QuotaCycleUsageSample>();
     public decimal BandSizePercent { get; init; } = QuotaCycleAnalysisCalculator.DefaultBandSizePercent;
     public QuotaCycleAnalysisResult? CalibrationAnalysis { get; init; }
+    public string CostDominantModel => Models.MaxBy(item => item.EquivalentCost)?.ModelId ?? DominantModel;
 
     public bool HasData => Bands.Count > 0;
 
@@ -673,6 +674,7 @@ internal sealed record QuotaCycleAnalysisBand(
 {
     public decimal RemainingFromPercent => 100m - UsedFromPercent;
     public decimal RemainingToPercent => 100m - UsedToPercent;
+    public string CostDominantModel => Models.MaxBy(item => item.EquivalentCost)?.ModelId ?? DominantModel;
 }
 
 internal sealed record QuotaCycleModelShare(

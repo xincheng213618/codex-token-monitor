@@ -111,7 +111,7 @@ internal static class QuotaModelCapacityCalibrationStore
             using var command = connection.CreateCommand();
             command.CommandText = """
                 SELECT model_id, period_start, average_full_quota_cost,
-                       minimum_full_quota_cost, maximum_full_quota_cost, sample_count
+                       minimum_full_quota_cost, maximum_full_quota_cost, sample_count, period_end
                 FROM quota_model_calibrations
                 WHERE plan_name = $plan_name COLLATE NOCASE
                 ORDER BY model_id, period_start DESC
@@ -124,6 +124,7 @@ internal static class QuotaModelCapacityCalibrationStore
                 var modelId = CodexModelCost.NormalizeModelId(reader.GetString(0));
                 var calibrationStart = ParseDateTimeOffset(reader.GetString(1));
                 if (!requestedModels.Contains(modelId) || calibrationStart >= periodStart ||
+                    ParseDateTimeOffset(reader.GetString(6)) > periodStart ||
                     latest.TryGetValue(modelId, out var existing) && existing.CalibrationPeriodStart >= calibrationStart)
                 {
                     continue;
@@ -163,7 +164,7 @@ internal static class QuotaModelCapacityCalibrationStore
             using var command = connection.CreateCommand();
             command.CommandText = """
                 SELECT model_id, period_start, average_full_quota_cost,
-                       minimum_full_quota_cost, maximum_full_quota_cost, sample_count
+                       minimum_full_quota_cost, maximum_full_quota_cost, sample_count, period_end
                 FROM quota_model_calibrations
                 WHERE plan_name = $plan_name COLLATE NOCASE
                 ORDER BY period_start, model_id
@@ -175,7 +176,9 @@ internal static class QuotaModelCapacityCalibrationStore
             {
                 var modelId = CodexModelCost.NormalizeModelId(reader.GetString(0));
                 var calibrationStart = ParseDateTimeOffset(reader.GetString(1));
-                if (!requestedModels.Contains(modelId) || calibrationStart >= periodStart)
+                var calibrationEnd = ParseDateTimeOffset(reader.GetString(6));
+                if (!requestedModels.Contains(modelId) || calibrationStart >= periodStart ||
+                    calibrationEnd > periodStart)
                 {
                     continue;
                 }
@@ -187,9 +190,23 @@ internal static class QuotaModelCapacityCalibrationStore
                     ParseDecimal(reader.GetString(3)),
                     ParseDecimal(reader.GetString(4)),
                     source,
-                    calibrationStart));
+                    calibrationStart) { CalibrationPeriodEnd = calibrationEnd });
             }
-            return result;
+            // A cycle's detected start can drift by seconds as snapshots arrive.
+            // Keep one version of overlapping historical windows, preferring the
+            // version that covers the most recent data. Never count them twice.
+            var independent = new List<QuotaModelCapacityEstimate>();
+            foreach (var candidate in result.OrderByDescending(item => item.CalibrationPeriodEnd)
+                         .ThenByDescending(item => item.CalibrationPeriodStart))
+            {
+                if (independent.Any(item => item.ModelId == candidate.ModelId &&
+                    candidate.CalibrationPeriodStart < item.CalibrationPeriodEnd &&
+                    item.CalibrationPeriodStart < candidate.CalibrationPeriodEnd))
+                    continue;
+                independent.Add(candidate);
+            }
+            return independent.OrderBy(item => item.CalibrationPeriodStart)
+                .ThenBy(item => item.ModelId, StringComparer.OrdinalIgnoreCase).ToList();
         });
     }
 

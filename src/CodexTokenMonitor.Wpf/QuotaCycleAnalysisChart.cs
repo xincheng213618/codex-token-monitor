@@ -144,7 +144,7 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
             var x1 = MapUsed(band.UsedFromPercent, plotRect);
             var x2 = MapUsed(band.UsedToPercent, plotRect);
             var center = new Point((x1 + x2) / 2d, MapCost(estimate, maximum, plotRect));
-            var color = QuotaCycleModelPalette.GetColor(band.DominantModel);
+            var color = QuotaCycleModelPalette.GetColor(band.CostDominantModel);
             var lineBrush = new SolidColorBrush(color);
             var selected = band.BandIndex == selectedBandIndex;
 
@@ -187,7 +187,7 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
         {
             var x1 = MapUsed(band.UsedFromPercent, plotRect);
             var x2 = MapUsed(band.UsedToPercent, plotRect);
-            var color = QuotaCycleModelPalette.GetColor(band.DominantModel);
+            var color = QuotaCycleModelPalette.GetColor(band.CostDominantModel);
             drawingContext.DrawRectangle(
                 new SolidColorBrush(color),
                 null,
@@ -222,12 +222,13 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
 
     private static string BuildToolTip(QuotaCycleAnalysisBand band)
     {
-        var mix = string.Join(" / ", band.Models.Take(3).Select(item =>
-            $"{QuotaCycleModelPalette.ShortName(item.ModelId)} {item.QuotaSharePercent:N0}%"));
+        var mix = string.Join(" / ", band.Models.OrderByDescending(item => item.EquivalentCost).Select(item =>
+            $"{QuotaCycleModelPalette.ShortName(item.ModelId)} " +
+            (item.IsPriced ? $"{item.CostSharePercent:N0}%" : "未计价")));
         return
             $"剩余 {band.RemainingFromPercent:N1}% → {band.RemainingToPercent:N1}%\n" +
             $"{band.StartLocal:MM-dd HH:mm} – {band.EndLocal:MM-dd HH:mm}\n" +
-            $"主导 {QuotaCycleModelPalette.ShortName(band.DominantModel)} · {mix}\n" +
+            $"主导 {QuotaCycleModelPalette.ShortName(band.CostDominantModel)} · 代价占比 {mix}\n" +
             $"掉 {band.QuotaDropPercent:N2}% · {band.Tokens / 1_000_000d:N3}M tokens\n" +
             $"本段 {FormatMoney(band.EquivalentCost)} · 100%≈{FormatMoney(band.EstimatedFullQuotaCost ?? 0m)}";
     }

@@ -145,7 +145,7 @@
                     </Grid.RowDefinitions>
                     <StackPanel Margin="0,0,0,10">
                         <TextBlock Style="{StaticResource SectionTitle}" Text="模型构成" />
-                        <TextBlock Style="{StaticResource SectionDescription}" Margin="0,4,0,0" Text="额度归因占比" />
+                        <TextBlock Style="{StaticResource SectionDescription}" Margin="0,4,0,0" Text="各模型折算代价 ÷ 总折算代价" />
                     </StackPanel>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl x:Name="ModelShareList">
@@ -216,9 +216,10 @@
             <Border Grid.Row="2" Margin="0,7,0,0" Background="{StaticResource AccentSoftBrush}"
                     CornerRadius="7" Padding="10,7" ToolTipService.ShowDuration="15000">
                 <StackPanel>
-                    <TextBlock Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="SemiBold"
-                               Text="同一份 Token 的额度消耗倍率估算 · 5.6 Sol = 1×" />
-                    <TextBlock x:Name="ModelMultiplierValue" Foreground="{StaticResource TextBrush}"
+                    <TextBlock Foreground="{StaticResource AccentBrush}"
+                               FontSize="11" FontWeight="SemiBold"
+                               Text="100% 额度预计可用 Token · 统一按本周期 Token 构成，普通短上下文" />
+                    <TextBlock x:Name="ModelTokenCapacityValue" Foreground="{StaticResource TextBrush}"
                                FontSize="11" Text="等待模型校准" TextWrapping="Wrap" Margin="0,3,0,0" />
                 </StackPanel>
             </Border>
@@ -233,7 +234,7 @@
                 <DataGridTextColumn x:Name="ConsumptionTimeColumn" Header="消耗时段（北京时间）" Binding="{Binding ConsumptionTimeRange}" SortMemberPath="ConsumptionStart" Width="260" Visibility="Collapsed" />
                 <DataGridTextColumn x:Name="ConsumptionDurationColumn" Header="经过时间" Binding="{Binding ConsumptionDuration}" SortMemberPath="ConsumptionElapsed" Width="140" Visibility="Collapsed" />
                 <DataGridTextColumn x:Name="ConsumptionRateColumn" Header="消耗速度（百分点/小时）" Binding="{Binding ConsumptionRate}" SortMemberPath="ConsumptionRateValue" Width="180" ElementStyle="{StaticResource NumericCellText}" Visibility="Collapsed" />
-                <DataGridTextColumn Header="模型混用" Binding="{Binding ModelMix}" Width="220" />
+                <DataGridTextColumn Header="模型代价占比" Binding="{Binding ModelMix}" Width="220" />
                 <DataGridTextColumn Header="各模型用量（M）" Binding="{Binding ModelTokens}" Width="340" />
                 <DataGridTextColumn Header="Tokens" Binding="{Binding Tokens}" Width="92" ElementStyle="{StaticResource NumericCellText}" />
                 <DataGridTextColumn Header="本段代价" Binding="{Binding EquivalentCost}" Width="96" ElementStyle="{StaticResource NumericCellText}" />

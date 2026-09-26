@@ -172,7 +172,7 @@ internal sealed class QuotaConsumptionTimelineChart : FrameworkElement
             var left = Math.Max(plotArea.Left, MapTime(selected.StartLocal));
             var right = Math.Min(plotArea.Right, MapTime(selected.EndLocal));
             selectionArea = new Rect(left, plotArea.Top, Math.Max(2, right - left), plotArea.Height);
-            var color = QuotaCycleModelPalette.GetColor(selected.DominantModel);
+            var color = QuotaCycleModelPalette.GetColor(selected.CostDominantModel);
             selectionBrush = new SolidColorBrush(color);
             var fill = new SolidColorBrush(Color.FromArgb(22, color.R, color.G, color.B));
             drawingContext.DrawRectangle(fill, null, selectionArea.Value);
@@ -532,7 +532,7 @@ internal sealed class QuotaConsumptionTimelineChart : FrameworkElement
                 : "暂无速率";
             text += $"\n\n消耗分段 {band.StartLocal.ToOffset(CodexUsageReader.BeijingOffset):MM-dd HH:mm:ss} → {band.EndLocal.ToOffset(CodexUsageReader.BeijingOffset):MM-dd HH:mm:ss}" +
                     $"\n耗时 {FormatDuration(duration)} · 消耗 {band.QuotaDropPercent:N2} 个百分点" +
-                    $"\n平均消耗 {rate}\n主导模型 {QuotaCycleModelPalette.ShortName(band.DominantModel)}";
+                    $"\n平均消耗 {rate}\n主导模型 {QuotaCycleModelPalette.ShortName(band.CostDominantModel)}";
         }
         return text;
     }

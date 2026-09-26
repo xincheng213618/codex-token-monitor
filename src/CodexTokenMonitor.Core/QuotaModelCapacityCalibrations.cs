@@ -18,7 +18,10 @@ internal sealed record QuotaModelCapacityEstimate(
     DateTimeOffset CalibrationPeriodStart,
     int MixedBandCount = 0,
     int HistoricalPeriodCount = 0,
-    int CurrentBandCount = 0);
+    int CurrentBandCount = 0)
+{
+    public DateTimeOffset? CalibrationPeriodEnd { get; init; }
+}
 
 internal sealed record QuotaModelCapacityReport(
     string PlanName,
@@ -28,7 +31,9 @@ internal static class QuotaModelCapacityEstimator
 {
     internal const decimal PureModelSharePercent = 99m;
     private const decimal MinimumBandDropPercent = 2m;
-    private const decimal MinimumResidualDropPercent = 0.05m;
+    // A residual smaller than half a displayed percentage point is below the
+    // resolution of the quota readout and cannot establish a new model baseline.
+    internal const decimal MinimumResidualDropPercent = 0.5m;
 
     public static IReadOnlyList<QuotaModelCapacityEstimate> EstimatePureModels(
         QuotaCycleAnalysisResult result)
@@ -85,11 +90,12 @@ internal static class QuotaModelCapacityEstimator
                            item.AverageFullQuotaCost > 0m)
             .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
-        var samples = new Dictionary<string, List<decimal>>(StringComparer.OrdinalIgnoreCase);
+        var samples = new Dictionary<string, List<InferredCapacitySample>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var band in result.Bands)
         {
-            if (band.QuotaDropPercent < MinimumBandDropPercent)
+            if (band.QuotaDropPercent < MinimumBandDropPercent ||
+                band.Models.Any(item => !item.IsPriced && item.QuotaSharePercent > 0m))
             {
                 continue;
             }
@@ -120,17 +126,33 @@ internal static class QuotaModelCapacityEstimator
                 continue;
             }
 
+            var knownCosts = modelCosts.Where(item => approved.ContainsKey(item.Key)).ToList();
+            var maximumKnownDrop = knownCosts.Sum(item => item.Value /
+                Math.Max(0.000001m, approved[item.Key].MinimumFullQuotaCost) * 100m);
+            var minimumKnownDrop = knownCosts.Sum(item => item.Value /
+                Math.Max(0.000001m, approved[item.Key].MaximumFullQuotaCost) * 100m);
+            var minimumResidual = band.QuotaDropPercent - MinimumResidualDropPercent - maximumKnownDrop;
+            var maximumResidual = band.QuotaDropPercent + MinimumResidualDropPercent - minimumKnownDrop;
+            // Propagate the known models' ranges and quota rounding. A single
+            // mixed band must not be displayed as an exact, measured capacity.
+            if (minimumResidual <= 0m || maximumResidual <= 0m) continue;
+
             if (!samples.TryGetValue(unknownModel, out var values))
             {
-                samples[unknownModel] = values = new List<decimal>();
+                samples[unknownModel] = values = new List<InferredCapacitySample>();
             }
-            values.Add(estimate);
+            values.Add(new InferredCapacitySample(estimate,
+                modelCosts[unknownModel] / maximumResidual * 100m,
+                modelCosts[unknownModel] / minimumResidual * 100m));
         }
 
         return samples
-            .Select(item => BuildEstimate(
+            .Select(item => new QuotaModelCapacityEstimate(
                 item.Key,
-                item.Value,
+                item.Value.Count,
+                item.Value.Average(value => value.Capacity),
+                item.Value.Min(value => value.Minimum),
+                item.Value.Max(value => value.Maximum),
                 QuotaModelCapacitySource.CurrentPeriodInferred,
                 result.Period.PeriodStart))
             .OrderByDescending(item => item.BandCount)
@@ -280,6 +302,7 @@ internal static class QuotaModelCapacityEstimator
         periodStart);
 
     private sealed record MixedContribution(decimal Capacity, decimal Weight);
+    private sealed record InferredCapacitySample(decimal Capacity, decimal Minimum, decimal Maximum);
 }
 
 internal static class QuotaModelCapacityCalibrationService
@@ -309,11 +332,10 @@ internal static class QuotaModelCapacityCalibrationService
             .Where(item => currentModels.Contains(item.ModelId, StringComparer.OrdinalIgnoreCase))
             .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
 
-        var historicalRows = QuotaModelCapacityCalibrationStore.LoadHistoryBefore(
+        var historicalRows = LoadHistoricalEvidence(
             planName,
             period.PeriodStart,
-            currentModels,
-            QuotaModelCapacitySource.PreviousPeriodApproved);
+            currentModels, cancellationToken);
         var historicalPriors = RobustQuotaModelCapacityEstimator.BuildHistoricalPriors(
                 historicalRows,
                 period.PeriodStart)
@@ -339,11 +361,10 @@ internal static class QuotaModelCapacityCalibrationService
             // rules. This promotes a previously inferred model (for example Sol)
             // into a saved baseline that the new period can continue adjusting.
             _ = Build(previousPeriod, previousResult, previousPeriod: null, cancellationToken);
-            historicalRows = QuotaModelCapacityCalibrationStore.LoadHistoryBefore(
+            historicalRows = LoadHistoricalEvidence(
                 planName,
                 period.PeriodStart,
-                currentModels,
-                QuotaModelCapacitySource.PreviousPeriodApproved);
+                currentModels, cancellationToken);
             historicalPriors = RobustQuotaModelCapacityEstimator.BuildHistoricalPriors(
                     historicalRows,
                     period.PeriodStart)
@@ -392,6 +413,43 @@ internal static class QuotaModelCapacityCalibrationService
             .Cast<QuotaModelCapacityEstimate>()
             .ToList();
         return new QuotaModelCapacityReport(planName, estimates);
+    }
+
+    private static IReadOnlyList<QuotaModelCapacityEstimate> LoadHistoricalEvidence(
+        string planName, DateTimeOffset periodStart, IReadOnlyCollection<string> models,
+        CancellationToken cancellationToken)
+    {
+        var history = QuotaModelCapacityCalibrationStore.LoadHistoryBefore(
+            planName, periodStart, models, QuotaModelCapacitySource.PreviousPeriodApproved);
+        return FilterSparseHistoricalEvidence(history, estimate =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var historicalPeriod = new CodexQuotaCycle(
+                estimate.CalibrationPeriodStart, estimate.CalibrationPeriodEnd!.Value,
+                estimate.CalibrationPeriodStart.AddDays(7), 0, null, false);
+            return QuotaCycleAnalysisCalculator.BuildCached(historicalPeriod, currentWeek: null, cancellationToken);
+        });
+    }
+
+    internal static IReadOnlyList<QuotaModelCapacityEstimate> FilterSparseHistoricalEvidence(
+        IReadOnlyList<QuotaModelCapacityEstimate> history,
+        Func<QuotaModelCapacityEstimate, QuotaCycleAnalysisResult> readPeriod)
+    {
+        var periods = new Dictionary<(DateTimeOffset, DateTimeOffset?), QuotaCycleAnalysisResult>();
+        return history.Where(estimate =>
+        {
+            if (estimate.BandCount > 1) return true;
+            if (estimate.CalibrationPeriodEnd is null) return false;
+            var key = (estimate.CalibrationPeriodStart, estimate.CalibrationPeriodEnd);
+            if (!periods.TryGetValue(key, out var analysis))
+                periods[key] = analysis = readPeriod(estimate);
+            // Old versions promoted tiny contributions in one mixed band into
+            // precise historical priors. Validate their observed exposure before
+            // reuse; an exhausted-quota tail provides no new quota evidence.
+            return analysis.Models.Any(model =>
+                CodexModelCost.NormalizeModelId(model.ModelId) == estimate.ModelId &&
+                model.QuotaDropPercent > QuotaModelCapacityEstimator.MinimumResidualDropPercent);
+        }).ToList();
     }
 
     private static string ResolvePlanName(CodexQuotaCycle period)

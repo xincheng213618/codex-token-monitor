@@ -21,7 +21,7 @@ internal sealed record QuotaConsumptionSpeedRow(
             $"{band.StartLocal:MM-dd HH:mm:ss} → {band.EndLocal:MM-dd HH:mm:ss}",
             duration.Ticks > 0 ? FormatDuration(duration) : "时刻重合",
             $"{band.QuotaDropPercent:N2}", rate is { } value ? $"{value:N2}" : "—", rate,
-            QuotaCycleModelPalette.ShortName(band.DominantModel));
+            QuotaCycleModelPalette.ShortName(band.CostDominantModel));
     }
 
     internal static string FormatDuration(TimeSpan duration)

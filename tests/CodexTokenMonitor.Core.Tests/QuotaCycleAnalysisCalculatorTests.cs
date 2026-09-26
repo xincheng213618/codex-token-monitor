@@ -123,6 +123,24 @@ public sealed class QuotaCycleAnalysisCalculatorTests
     }
 
     [Fact]
+    public void CostCompositionAndDisplayDominantModelUseSummedCostRatherThanQuotaMovement()
+    {
+        var result = QuotaCycleAnalysisCalculator.BuildFromSamples(
+            Period(), new[]
+            {
+                Sample(0, 0m, Bucket("model-a", 0)),
+                Sample(1, 4m, Bucket("model-a", 10)),
+                Sample(2, 5m, Bucket("model-b", 30))
+            }, priceCatalog: Catalog());
+
+        Assert.Equal(25m, result.Models.Single(item => item.ModelId == "model-a").CostSharePercent);
+        Assert.Equal(75m, result.Models.Single(item => item.ModelId == "model-b").CostSharePercent);
+        Assert.Equal("model-b", result.CostDominantModel);
+        Assert.Equal("model-b", Assert.Single(result.Bands).CostDominantModel);
+        Assert.Equal(40m, result.EquivalentCost);
+    }
+
+    [Fact]
     public void BuildFromSamplesIncludesOpenTailInLatestQuotaBand()
     {
         var result = QuotaCycleAnalysisCalculator.BuildFromSamples(
@@ -439,8 +457,8 @@ public sealed class QuotaCycleAnalysisCalculatorTests
         } });
         QuotaModelCapacityCalibrationStore.Upsert("Pro 20x", older, new[]
         {
-            CapacityEstimate("gpt-5.6-sol", 1_000m, older.PeriodStart),
-            CapacityEstimate("gpt-5.6-luna", 500m, older.PeriodStart)
+            CapacityEstimate("gpt-5.6-sol", 1_000m, older.PeriodStart) with { BandCount = 2 },
+            CapacityEstimate("gpt-5.6-luna", 500m, older.PeriodStart) with { BandCount = 2 }
         });
         var mixed = MixedCapacityBand(
             1_600m,
@@ -481,7 +499,7 @@ public sealed class QuotaCycleAnalysisCalculatorTests
                 ResetAt = current.PeriodStart.AddDays(days + 7)
             };
             QuotaModelCapacityCalibrationStore.Upsert("Pro 20x", historical,
-                new[] { CapacityEstimate("model-a", capacity, historical.PeriodStart) });
+                new[] { CapacityEstimate("model-a", capacity, historical.PeriodStart) with { BandCount = 2 } });
         }
 
         var currentBand = CapacityBand(0, "model-a", 100m, 1_000m);
@@ -541,6 +559,89 @@ public sealed class QuotaCycleAnalysisCalculatorTests
             QuotaModelCapacitySource.PreviousPeriodApproved);
         Assert.Equal(2, history.Count);
         Assert.Equal(new[] { 1_000m, 2_400m }, history.Select(item => item.AverageFullQuotaCost));
+    }
+
+    [Fact]
+    public void CalibrationHistoryExcludesCurrentOverlapAndDeduplicatesShiftedHistoricalWindows()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "QuotaModelOverlap-" + Guid.NewGuid().ToString("N"));
+        using var scope = MonitorCachePaths.PushLocalAppDataRoot(root);
+        var historical = Period() with { PeriodStart = Start.AddDays(-7), PeriodEnd = Start };
+        var shiftedHistorical = historical with { PeriodStart = historical.PeriodStart.AddSeconds(-1) };
+        var currentEarlierSnapshot = Period() with { PeriodStart = Start.AddSeconds(-1) };
+        QuotaModelCapacityCalibrationStore.Upsert("Pro 20x", historical,
+            new[] { CapacityEstimate("gpt-6-sol", 1_200m, historical.PeriodStart) });
+        QuotaModelCapacityCalibrationStore.Upsert("Pro 20x", shiftedHistorical,
+            new[] { CapacityEstimate("gpt-6-sol", 1_250m, shiftedHistorical.PeriodStart) });
+        QuotaModelCapacityCalibrationStore.Upsert("Pro 20x", currentEarlierSnapshot,
+            new[] { CapacityEstimate("gpt-6-sol", 1_759m, currentEarlierSnapshot.PeriodStart) });
+
+        var history = QuotaModelCapacityCalibrationStore.LoadHistoryBefore("Pro 20x", Start,
+            new[] { "gpt-6-sol" }, QuotaModelCapacitySource.PreviousPeriodApproved);
+        Assert.Equal(1_200m, Assert.Single(history).AverageFullQuotaCost);
+        var latest = QuotaModelCapacityCalibrationStore.LoadLatestBefore("Pro 20x", Start,
+            new[] { "gpt-6-sol" }, QuotaModelCapacitySource.PreviousPeriodApproved);
+        Assert.Equal(historical.PeriodStart, Assert.Single(latest).CalibrationPeriodStart);
+        // The obsolete derived row remains inspectable; reads do not delete history.
+        Assert.Single(QuotaModelCapacityCalibrationStore.LoadExact("Pro 20x",
+            currentEarlierSnapshot.PeriodStart, QuotaModelCapacitySource.CurrentPeriodBlended));
+    }
+
+    [Fact]
+    public void SingleBandHistoryNeedsObservableModelQuotaExposure()
+    {
+        var weak = CapacityEstimate("gpt-6-sol", 2_255m, Start.AddDays(-7)) with
+        {
+            CalibrationPeriodEnd = Start
+        };
+        var strong = weak with { ModelId = "gpt-5.6-sol", AverageFullQuotaCost = 2_400m };
+        var missing = weak with { ModelId = "missing" };
+        var band = RegressionBand(0, 5m, ("gpt-6-sol", 1m), ("gpt-5.6-sol", 99m));
+        var reads = 0;
+        var filtered = QuotaModelCapacityCalibrationService.FilterSparseHistoricalEvidence(
+            new[] { weak, strong, missing }, _ =>
+            {
+                reads++;
+                return ResultWithBandsAndModels(new[] { band }, band.Models.ToArray());
+            });
+        Assert.Equal("gpt-5.6-sol", Assert.Single(filtered).ModelId);
+        Assert.Equal(1, reads);
+    }
+
+    [Fact]
+    public void MixedInferenceRejectsResidualBelowQuotaReadoutResolution()
+    {
+        var band = RegressionBand(0, 5m, ("known", 96m), ("new-model", 4.7m));
+        var inferred = QuotaModelCapacityEstimator.InferMixedModels(ResultWithBands(band),
+            new[] { CapacityEstimate("known", 2_000m, Start) });
+        // 5% - $96 / $2000 = 0.2 percentage points: too little evidence.
+        Assert.Empty(inferred);
+    }
+
+    [Fact]
+    public void NewModelIsInferredFromCurrentMixedBandWithoutTheWeakHistoricalPrior()
+    {
+        var band = RegressionBand(0, 4m,
+            ("gpt-6-sol", 26.8456768m), ("gpt-6-astra", 20.441806m), ("gpt-5.6-sol", 0.715061m));
+        var result = ResultWithBands(band);
+        var baselines = new[]
+        {
+            HistoricalEstimate("gpt-6-astra", 1_367.5566m, Start.AddDays(-7)),
+            HistoricalEstimate("gpt-5.6-sol", 2_423.2931m, Start.AddDays(-7))
+        };
+        var inferred = Assert.Single(QuotaModelCapacityEstimator.InferMixedModels(result, baselines));
+        Assert.Equal("gpt-6-sol", inferred.ModelId);
+        Assert.InRange(inferred.AverageFullQuotaCost, 1_080m, 1_090m);
+        Assert.True(inferred.MinimumFullQuotaCost < inferred.AverageFullQuotaCost);
+        Assert.True(inferred.MaximumFullQuotaCost > inferred.AverageFullQuotaCost);
+        var regressed = RobustQuotaModelCapacityEstimator.RegressCurrentPeriod(
+            result, baselines.Append(inferred).ToArray());
+        var sol = regressed.Single(item => item.ModelId == "gpt-6-sol");
+        Assert.Equal(QuotaModelCapacitySource.CurrentPeriodInferred, sol.Source);
+        Assert.Equal(0, sol.HistoricalPeriodCount);
+        Assert.Equal(1, sol.CurrentBandCount);
+        Assert.Equal(band.EstimatedFullQuotaCost!.Value,
+            QuotaModelCapacityEstimator.FitFullQuotaCost(band, regressed)!.Value, 4);
     }
 
     [Fact]

@@ -322,7 +322,46 @@ internal static class AnalysisProbe
         await RenderAsync(window, "cycle-analysis-recovered.png");
         Results.Add(new { check = "cycle-corruption-recovery", faultStatus, preservedBandCount = countBefore,
             recoveredTokens = recovered.Tokens, tooltipCleared = true, sameTableAndChartPreservedDuringFailure = true });
+        await CheckTokenCapacityPresentationAsync(window, period);
         await CloseAsync(window);
+    }
+
+    private static async Task CheckTokenCapacityPresentationAsync(Window window, CodexQuotaCycle period)
+    {
+        var models = new[]
+        {
+            new QuotaCycleModelShare("gpt-6-sol", 4m, 80m, 10_000_000, 10m, 25m, true),
+            new QuotaCycleModelShare("gpt-6-astra", 1m, 20m, 30_000_000, 30m, 75m, true)
+        };
+        var band = new QuotaCycleAnalysisBand(0, 0m, 5m, period.PeriodStart,
+            period.PeriodStart.AddHours(1), 5m, 40_000_000, 40m, 800m, "gpt-6-sol", models);
+        var analysis = new QuotaCycleAnalysisResult(period, new[] { band }, models, 3, 5m,
+            40_000_000, 40m, 800m, 800m, 800m, 0m, "gpt-6-sol", "")
+        {
+            UsageSamples = new[] { new QuotaCycleUsageSample(period.PeriodStart, 40_000_000,
+                0, 0, 0, 40_000_000, 2) }
+        };
+        var capacities = new QuotaModelCapacityReport("Pro 20X", new[]
+        {
+            new QuotaModelCapacityEstimate("gpt-6-sol", 3, 1200m, 1000m, 1400m,
+                QuotaModelCapacitySource.CurrentPeriodApproved, period.PeriodStart),
+            new QuotaModelCapacityEstimate("gpt-6-astra", 3, 1400m, 1200m, 1600m,
+                QuotaModelCapacitySource.CurrentPeriodApproved, period.PeriodStart)
+        });
+        Invoke(window, "ApplyResult", analysis, capacities);
+        var capacityText = Get<TextBlock>(window, "ModelTokenCapacityValue").Text;
+        Require(capacityText.Contains("600.0M Token") && capacityText.Contains("140.0M Token") &&
+                !capacityText.Contains('×'), "full quota tokens render without a reference model or multiplier");
+        var row = (QuotaCycleBandRow)Get<DataGrid>(window, "BandGrid").Items[0];
+        Require(row.ModelMix.Contains("astra 75%") && row.ModelMix.Contains("6 sol 25%"),
+            "model composition renders cost shares rather than quota shares");
+        Require(Get<TextBlock>(window, "DominantModelValue").Text == "astra",
+            "dominant model follows the same cost composition");
+        var shares = Get<ItemsControl>(window, "ModelShareList").Items.Cast<QuotaCycleModelRow>().ToArray();
+        Require(shares[0].Model == "astra" && shares[0].ShareValue == 75d,
+            "model composition sidebar uses the same cost shares");
+        await RenderAsync(window, "cycle-token-capacity.png");
+        Results.Add(new { check = "full-quota-token-capacity", capacityText, modelMix = row.ModelMix });
     }
 
     private static async Task CheckParentShutdownAsync(CodexQuotaCycle period)

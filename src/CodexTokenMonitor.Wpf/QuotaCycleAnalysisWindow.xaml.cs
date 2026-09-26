@@ -175,8 +175,8 @@ public partial class QuotaCycleAnalysisWindow : Window
             QuotaDropValue.Text = EquivalentCostValue.Text = FullEstimateValue.Text = VolatilityValue.Text = DominantModelValue.Text = "—";
             EquivalentCostNote.Text = FullEstimateNote.Text = VolatilityNote.Text = DominantModelNote.Text = "";
             ModelCapacityValue.Text = "样本不足";
-            ModelMultiplierValue.Text = "样本不足，无法比较同一份 Token 的额度消耗";
-            ModelMultiplierValue.ToolTip = null;
+            ModelTokenCapacityValue.Text = "样本不足，暂时无法估算满额 Token 用量";
+            ModelTokenCapacityValue.ToolTip = null;
             InsightText.Text = "暂无可归因的分段";
             StatusText.Text = result.EmptyReason;
             QuotaDropNote.Text = result.EmptyReason;
@@ -193,24 +193,24 @@ public partial class QuotaCycleAnalysisWindow : Window
             : "全部分段按额度跌幅加权";
         VolatilityValue.Text = $"{result.VolatilityPercent:N0}%";
         VolatilityNote.Text = $"{VolatilityLabel(result.VolatilityPercent)} · {FormatMoney(result.MinimumBandEstimate)}–{FormatMoney(result.MaximumBandEstimate)}";
-        DominantModelValue.Text = QuotaCycleModelPalette.ShortName(result.DominantModel);
-        DominantModelValue.Foreground = QuotaCycleModelPalette.GetBrush(result.DominantModel);
-        DominantModelValue.ToolTip = result.DominantModel;
+        DominantModelValue.Text = QuotaCycleModelPalette.ShortName(result.CostDominantModel);
+        DominantModelValue.Foreground = QuotaCycleModelPalette.GetBrush(result.CostDominantModel);
+        DominantModelValue.ToolTip = result.CostDominantModel;
 
-        var dominant = result.Models.FirstOrDefault();
+        var dominant = result.Models.OrderByDescending(item => item.EquivalentCost).FirstOrDefault();
         DominantModelNote.Text = dominant is null
             ? "没有已识别模型"
-            : $"归因额度 {dominant.QuotaSharePercent:N0}% · {dominant.Tokens / 1_000_000d:N2}M tokens";
+            : $"折算代价占比 {dominant.CostSharePercent:N0}% · {dominant.Tokens / 1_000_000d:N2}M tokens";
 
         ApplyModelCapacityEstimate(result, capacities);
-        ApplyModelRelativeCost(result, capacities);
+        ApplyModelTokenCapacity(result, capacities);
 
-        ModelShareList.ItemsSource = result.Models.Select(item => new QuotaCycleModelRow(
+        ModelShareList.ItemsSource = result.Models.OrderByDescending(item => item.EquivalentCost).Select(item => new QuotaCycleModelRow(
             QuotaCycleModelPalette.ShortName(item.ModelId),
-            $"{item.QuotaSharePercent:N1}%",
-            (double)item.QuotaSharePercent,
+            item.IsPriced ? $"{item.CostSharePercent:N1}%" : "未计价",
+            (double)item.CostSharePercent,
             QuotaCycleModelPalette.GetBrush(item.ModelId),
-            $"{item.ModelId}\n归因额度 {item.QuotaDropPercent:N2}% · {item.Tokens / 1_000_000d:N3}M tokens\n" +
+            $"{item.ModelId}\n折算代价占比 {item.CostSharePercent:N2}% · {item.Tokens / 1_000_000d:N3}M tokens\n" +
             $"折算代价 {FormatMoney(item.EquivalentCost)}" + (item.IsPriced ? "" : " · 含未计价记录"))).ToList();
 
         var average = result.EstimatedFullQuotaCost ?? 0m;
@@ -244,7 +244,7 @@ public partial class QuotaCycleAnalysisWindow : Window
                     ? "历史回归+本期"
                     : "本期稳健回归",
                 QuotaModelCapacitySource.PreviousPeriodApproved => "历史稳健值",
-                _ => "本期推算"
+                _ => "本期混用推算"
             };
             var pureBandCount = Math.Max(0, item.BandCount - item.MixedBandCount);
             var sampleText = item.HistoricalPeriodCount > 0
@@ -266,7 +266,7 @@ public partial class QuotaCycleAnalysisWindow : Window
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var insufficient = result.Models
             .Where(item => item.EquivalentCost > 0m &&
-                           Math.Round(item.QuotaSharePercent, 1, MidpointRounding.AwayFromZero) > 0m)
+                           Math.Round(item.CostSharePercent, 1, MidpointRounding.AwayFromZero) > 0m)
             .Select(item => CodexModelCost.NormalizeModelId(item.ModelId))
             .Where(item => !estimatedModels.Contains(item))
             .Take(2)
@@ -276,47 +276,42 @@ public partial class QuotaCycleAnalysisWindow : Window
             ? $"模型 100% 动态估算（{report.PlanName}）：{string.Join("   ·   ", display)}"
             : "没有满足条件的单模型分段";
         ModelCapacityBadge.ToolTip =
-            "同套餐往期校准会按时间与样本量形成稳健先验，并降低离群周期的影响；" +
-            "本期所有可计价分段再按模型成本联合回归更新。占比很小的模型更多沿用历史，避免被少量样本拉偏。";
+            "同套餐、不重叠的往期校准按时间与样本量形成历史基准；单段历史需有超过 0.5 个百分点的模型额度归因。" +
+            "本期可计价分段按模型成本联合回归更新。缺少可靠历史的模型按其余模型的历史估算推算，标记为“本期混用推算”，" +
+            "区间包含其他模型估算范围及额度读数取整的影响，不代表独立实测或统计置信区间。";
     }
 
-    private void ApplyModelRelativeCost(
+    private void ApplyModelTokenCapacity(
         QuotaCycleAnalysisResult result,
         QuotaModelCapacityReport capacities)
     {
-        var comparison = QuotaModelRelativeCostCalculator.Calculate(
+        var report = QuotaModelTokenCapacityCalculator.Calculate(
             result, capacities, PriceSettingsStore.Current.CodexPresets);
-        if (comparison.Rows.Count == 0)
+        if (report.Rows.Count == 0)
         {
-            ModelMultiplierValue.Text = comparison.UnavailableReason;
-            ModelMultiplierValue.ToolTip = null;
+            ModelTokenCapacityValue.Text = report.UnavailableReason;
+            ModelTokenCapacityValue.ToolTip = null;
             return;
         }
-
-        var alternatives = comparison.Rows
-            .Where(item => !string.Equals(item.ModelId, comparison.ReferenceModelId,
-                StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        ModelMultiplierValue.Text = alternatives.Count == 0
-            ? "暂无其他同时具备价格和同套餐满额估算的模型"
-            : "同周期 Token 构成、普通短上下文：" + string.Join("   ·   ", alternatives.Select(item =>
-                $"{QuotaCycleModelPalette.ShortName(item.ModelId)} ≈{item.QuotaRatio:N2}×" +
-                $"（折算价 {item.PriceRatio:N2}× × 满额反比 {item.CapacityRatio:N2}×）"));
-
+        var values = report.Rows.Select(item =>
+            $"{QuotaCycleModelPalette.ShortName(item.ModelId)}：100% ≈ {item.FullQuotaMillionTokens:N1}M Token");
+        var missing = report.UnestimatedModels.Select(model =>
+            $"{QuotaCycleModelPalette.ShortName(model)}：样本不足或未计价");
+        ModelTokenCapacityValue.Text = string.Join("   ·   ", values.Concat(missing));
         var uncached = TokenCountMath.SubtractNonNegative(
-            TokenCountMath.SubtractNonNegative(comparison.InputTokens, comparison.CachedInputTokens),
-            comparison.CacheWriteInputTokens);
-        ModelMultiplierValue.ToolTip =
-            $"统一使用本周期的 Token 构成：普通输入 {uncached / 1_000_000d:N3}M，" +
-            $"缓存输入 {comparison.CachedInputTokens / 1_000_000d:N3}M，" +
-            $"缓存写入 {comparison.CacheWriteInputTokens / 1_000_000d:N3}M，" +
-            $"输出 {comparison.OutputTokens / 1_000_000d:N3}M。\n" +
-            "额度倍率 = 同一份 Token 的折算价格比 × 5.6 Sol 满额估算 ÷ 目标模型满额估算。\n" +
-            string.Join("\n", alternatives.Select(item =>
-                $"{QuotaCycleModelPalette.ShortName(item.ModelId)}：输入 {item.InputQuotaRatio:N2}×，" +
-                $"缓存输入 {item.CachedInputQuotaRatio:N2}×，输出 {item.OutputQuotaRatio:N2}×；" +
-                $"目标模型满额约 {FormatMoney(item.FullQuotaCost)}。")) +
-            "\n这是额度快照与日志的实测估算，不是官方逐请求额度计费。";
+            TokenCountMath.SubtractNonNegative(report.InputTokens, report.CachedInputTokens),
+            report.CacheWriteInputTokens);
+        ModelTokenCapacityValue.ToolTip =
+            $"统一使用本周期的 Token 构成（普通短上下文）：普通输入 {uncached / 1_000_000d:N3}M，" +
+            $"缓存输入 {report.CachedInputTokens / 1_000_000d:N3}M，" +
+            $"缓存写入 {report.CacheWriteInputTokens / 1_000_000d:N3}M，" +
+            $"输出 {report.OutputTokens / 1_000_000d:N3}M。\n" +
+            "100% 额度 Token 用量（M）= 该模型满额折算金额 ÷ 同构成每百万 Token 折算代价。\n" +
+            string.Join("\n", report.Rows.Select(item =>
+                $"{QuotaCycleModelPalette.ShortName(item.ModelId)}：{FormatMoney(item.FullQuotaCost)} ÷ " +
+                $"${item.CostPerMillionTokens:N4}/M ≈ {item.FullQuotaMillionTokens:N1}M；" +
+                $"样本估算范围 {item.MinimumMillionTokens:N1}–{item.MaximumMillionTokens:N1}M。")) +
+            "\n缓存比例、输出比例或速度模式变化时，可用 Token 量也会变化；此处为同套餐样本估算。";
     }
 
     private void Chart_BandSelected(object? sender, QuotaCycleAnalysisBand band)
@@ -365,8 +360,8 @@ public partial class QuotaCycleAnalysisWindow : Window
     {
         var high = result.Bands.MaxBy(item => item.EstimatedFullQuotaCost ?? decimal.MinValue)!;
         var low = result.Bands.MinBy(item => item.EstimatedFullQuotaCost ?? decimal.MaxValue)!;
-        var highModel = QuotaCycleModelPalette.ShortName(high.DominantModel);
-        var lowModel = QuotaCycleModelPalette.ShortName(low.DominantModel);
+        var highModel = QuotaCycleModelPalette.ShortName(high.CostDominantModel);
+        var lowModel = QuotaCycleModelPalette.ShortName(low.CostDominantModel);
         return
             $"最高：剩余 {high.RemainingFromPercent:N0}→{high.RemainingToPercent:N0}% 主要用 {highModel}，100%≈{FormatMoney(high.EstimatedFullQuotaCost)}。\n" +
             $"最低：剩余 {low.RemainingFromPercent:N0}→{low.RemainingToPercent:N0}% 主要用 {lowModel}，100%≈{FormatMoney(low.EstimatedFullQuotaCost)}。";
@@ -434,9 +429,10 @@ internal sealed record QuotaCycleBandRow(
             ? (decimal?)null
             : (estimate / fitted.Value - 1m) * 100m;
         var difference = average <= 0m ? 0m : (estimate / average - 1m) * 100m;
-        var mix = string.Join(" / ", band.Models.Take(3).Select(item =>
-            $"{QuotaCycleModelPalette.ShortName(item.ModelId)} {item.QuotaSharePercent:N0}%"));
-        var modelTokens = string.Join(" / ", band.Models.Select(item =>
+        var mix = string.Join(" / ", band.Models.OrderByDescending(item => item.EquivalentCost).Select(item =>
+            $"{QuotaCycleModelPalette.ShortName(item.ModelId)} " +
+            (item.IsPriced ? $"{item.CostSharePercent:N0}%" : "未计价")));
+        var modelTokens = string.Join(" / ", band.Models.OrderByDescending(item => item.EquivalentCost).Select(item =>
             $"{QuotaCycleModelPalette.ShortName(item.ModelId)} {item.Tokens / 1_000_000d:N3}M"));
         return new QuotaCycleBandRow(
             band,

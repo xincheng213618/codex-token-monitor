@@ -109,7 +109,9 @@ internal static class RobustQuotaModelCapacityEstimator
                 capacity,
                 Math.Min(baseline.MinimumFullQuotaCost, capacity),
                 Math.Max(baseline.MaximumFullQuotaCost, capacity),
-                QuotaModelCapacitySource.CurrentPeriodBlended,
+                baseline.Source == QuotaModelCapacitySource.CurrentPeriodInferred
+                    ? QuotaModelCapacitySource.CurrentPeriodInferred
+                    : QuotaModelCapacitySource.CurrentPeriodBlended,
                 result.Period.PeriodStart,
                 mixed,
                 baseline.HistoricalPeriodCount,
