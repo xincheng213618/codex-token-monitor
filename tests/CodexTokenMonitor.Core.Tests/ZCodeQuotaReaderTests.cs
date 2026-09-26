@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using Xunit;
@@ -127,6 +129,187 @@ public sealed class ZCodeQuotaReaderTests
         cancellation.Cancel();
 
         Assert.Throws<OperationCanceledException>(() => ZCodeQuotaReader.Shared.ReadCurrent(cancellation.Token));
+    }
+
+    [Fact]
+    public void ReadCurrentResult_ClassifiesMissingCredentialsAsNotSignedIn()
+    {
+        var reader = new ZCodeQuotaReader(
+            locateCredentialsFile: () => Path.Combine(Path.GetTempPath(), "missing-zcode-credentials.json"),
+            locateDeviceMidFile: () => null,
+            locateAppVersion: () => "3.12.3",
+            createHttpSender: () => throw new InvalidOperationException("network must not be reached"));
+
+        var result = reader.ReadCurrentResult();
+
+        Assert.Null(result.Snapshot);
+        Assert.Equal(ZCodeQuotaFailureKind.NotSignedIn, result.Failure!.Kind);
+        Assert.Null(reader.ReadCurrent());
+    }
+
+    [Fact]
+    public void ReadCurrentResult_ClassifiesHttpErrorWithStatusCode()
+    {
+        var credentialsPath = WriteTempCredentials();
+        try
+        {
+            using var handler = new StubHttpHandler(() => new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            var reader = CreateReaderWithCredentials(handler, credentialsPath);
+
+            var result = reader.ReadCurrentResult();
+
+            Assert.Null(result.Snapshot);
+            Assert.Equal(ZCodeQuotaFailureKind.HttpError, result.Failure!.Kind);
+            Assert.Equal(500, result.Failure.StatusCode);
+        }
+        finally
+        {
+            File.Delete(credentialsPath);
+        }
+    }
+
+    [Fact]
+    public void ReadCurrentResult_ClassifiesBadEnvelopeAsParseError()
+    {
+        var credentialsPath = WriteTempCredentials();
+        try
+        {
+            using var handler = new StubHttpHandler(
+                () => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
+            var reader = CreateReaderWithCredentials(handler, credentialsPath);
+
+            var result = reader.ReadCurrentResult();
+
+            Assert.Null(result.Snapshot);
+            Assert.Equal(ZCodeQuotaFailureKind.ParseError, result.Failure!.Kind);
+        }
+        finally
+        {
+            File.Delete(credentialsPath);
+        }
+    }
+
+    [Fact]
+    public void ReadCurrentResult_ClassifiesTransportExceptionAsNetworkError()
+    {
+        var credentialsPath = WriteTempCredentials();
+        try
+        {
+            using var handler = new ThrowingHttpHandler(new HttpRequestException("connection refused"));
+            var reader = CreateReaderWithCredentials(handler, credentialsPath);
+
+            var result = reader.ReadCurrentResult();
+
+            Assert.Null(result.Snapshot);
+            Assert.Equal(ZCodeQuotaFailureKind.NetworkError, result.Failure!.Kind);
+        }
+        finally
+        {
+            File.Delete(credentialsPath);
+        }
+    }
+
+    [Fact]
+    public void ReadCurrentResult_ReusesStaleSnapshotWhenRateLimited()
+    {
+        var credentialsPath = WriteTempCredentials();
+        try
+        {
+            var statuses = new Queue<HttpStatusCode>(new[] { HttpStatusCode.OK, HttpStatusCode.TooManyRequests });
+            using var handler = new StubHttpHandler(() => new HttpResponseMessage(statuses.Dequeue())
+            {
+                Content = new StringContent(BalanceEnvelope)
+            });
+            var reader = CreateReaderWithCredentials(handler, credentialsPath);
+
+            var first = reader.ReadCurrentResult();
+            reader.ResetCacheForTests();
+            var second = reader.ReadCurrentResult();
+
+            Assert.NotNull(first.Snapshot);
+            Assert.Same(first.Snapshot, second.Snapshot);
+            Assert.Null(second.Failure);
+            Assert.Equal(2, handler.CallCount);
+        }
+        finally
+        {
+            File.Delete(credentialsPath);
+        }
+    }
+
+    [Fact]
+    public void ReadCurrentResult_CachesFailureAndReusesSender()
+    {
+        var credentialsPath = WriteTempCredentials();
+        try
+        {
+            using var handler = new StubHttpHandler(() => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+            var senderCreations = 0;
+            var reader = new ZCodeQuotaReader(
+                locateCredentialsFile: () => credentialsPath,
+                locateDeviceMidFile: () => "device-mid",
+                locateAppVersion: () => "3.12.3",
+                createHttpSender: () =>
+                {
+                    senderCreations++;
+                    return new HttpClient(handler);
+                });
+
+            var first = reader.ReadCurrentResult();
+            var second = reader.ReadCurrentResult();
+
+            Assert.Equal(ZCodeQuotaFailureKind.HttpError, first.Failure!.Kind);
+            Assert.Same(first.Failure, second.Failure);
+            Assert.Equal(1, handler.CallCount);
+            Assert.Equal(1, senderCreations);
+        }
+        finally
+        {
+            File.Delete(credentialsPath);
+        }
+    }
+
+    private static ZCodeQuotaReader CreateReaderWithCredentials(HttpMessageHandler handler, string credentialsPath)
+    {
+        return new ZCodeQuotaReader(
+            locateCredentialsFile: () => credentialsPath,
+            locateDeviceMidFile: () => "device-mid",
+            locateAppVersion: () => "3.12.3",
+            createHttpSender: () => new HttpClient(handler));
+    }
+
+    private static string WriteTempCredentials()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"zcode-credentials-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "{\"zcodejwttoken\":\"test-token\"}");
+        return path;
+    }
+
+    private sealed class StubHttpHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpResponseMessage> respond;
+
+        public StubHttpHandler(Func<HttpResponseMessage> respond) => this.respond = respond;
+
+        public int CallCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult(respond());
+        }
+    }
+
+    private sealed class ThrowingHttpHandler : HttpMessageHandler
+    {
+        private readonly Exception exception;
+
+        public ThrowingHttpHandler(Exception exception) => this.exception = exception;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return Task.FromException<HttpResponseMessage>(exception);
+        }
     }
 
     private static string ToBase64Url(byte[] value)

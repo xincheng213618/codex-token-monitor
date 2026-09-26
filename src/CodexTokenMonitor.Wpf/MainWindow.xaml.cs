@@ -80,7 +80,7 @@ public partial class MainWindow : Window
 
             if (action == AutomaticRefreshAction.RefreshQuotaOnly)
             {
-                if (module is CodexUsageModule)
+                if (module is CodexUsageModule or ZCodeUsageModule)
                 {
                     await RefreshQuotaSummaryAsync();
                 }
@@ -788,12 +788,13 @@ public partial class MainWindow : Window
         isQuotaRefreshing = true;
         try
         {
-            var snapshot = await Task.Run(
-                () => ZCodeQuotaReader.Shared.ReadCurrent(runtime.LifetimeToken),
+            var result = await Task.Run(
+                () => ZCodeQuotaReader.Shared.ReadCurrentResult(runtime.LifetimeToken),
                 runtime.LifetimeToken);
             if (!isClosed && CurrentModule() is ZCodeUsageModule current && ReferenceEquals(current, zcodeModule))
             {
-                zcodeModule.CurrentQuotaSnapshot = snapshot;
+                zcodeModule.CurrentQuotaSnapshot = result.Snapshot;
+                zcodeModule.CurrentQuotaFailure = result.Failure;
                 ApplyZCodeQuotaSummary(zcodeModule);
             }
         }
@@ -1362,7 +1363,7 @@ public partial class MainWindow : Window
             ZCodeQuotaRemainingValue.Text = "--";
             ZCodeQuotaRemainingDetail.Text = "等待 ZCode 额度";
             ZCodeQuotaUsedValue.Text = "--";
-            ZCodeQuotaUsedDetail.Text = "需要已登录的 ZCode 桌面端";
+            ZCodeQuotaUsedDetail.Text = DescribeZCodeQuotaFailure(module.CurrentQuotaFailure);
             ZCodeQuotaPlanValue.Text = "-";
             ZCodeQuotaPlanDetail.Text = null;
             ZCodeQuotaExpiryValue.Text = "-";
@@ -1375,8 +1376,21 @@ public partial class MainWindow : Window
             ? (decimal?)null
             : Math.Max(0m, 100m - usedPercent.Value);
         ZCodeQuotaRemainingValue.Text = remainingPercent is null ? "--" : $"{remainingPercent:N1}%";
-        ZCodeQuotaRemainingDetail.Text =
+        var remainingDetail =
             $"剩余 {FormatTokenMillions(balance.RemainingUnits)} / {FormatTokenMillions(balance.TotalUnits)}";
+        // A plan can meter several token buckets at once; keep the headline on
+        // the primary balance but surface the other live buckets inline.
+        var otherBalances = snapshot.Balances
+            .Where(item => !ReferenceEquals(item, balance) && item.RemainingUnits > 0)
+            .ToList();
+        if (otherBalances.Count > 0)
+        {
+            remainingDetail += " · " + string.Join(
+                " · ",
+                otherBalances.Select(item => $"{item.ModelName} 剩 {FormatTokenMillions(item.RemainingUnits)}"));
+        }
+
+        ZCodeQuotaRemainingDetail.Text = remainingDetail;
         ZCodeQuotaUsedValue.Text = usedPercent is null ? "--" : $"{usedPercent:N1}%";
         ZCodeQuotaUsedDetail.Text =
             $"已用 {FormatTokenMillions(balance.UsedUnits)} · {balance.ModelName} · 数据 {snapshot.SnapshotLocal:HH:mm}";
@@ -1400,6 +1414,20 @@ public partial class MainWindow : Window
             ZCodeQuotaExpiryValue.Text = "-";
             ZCodeQuotaExpiryDetail.Text = null;
         }
+    }
+
+    private static string DescribeZCodeQuotaFailure(ZCodeQuotaFailure? failure)
+    {
+        return failure?.Kind switch
+        {
+            ZCodeQuotaFailureKind.NotSignedIn => "需要已登录的 ZCode 桌面端",
+            ZCodeQuotaFailureKind.HttpError when failure.StatusCode == 429 => "ZCode 服务限流，稍后自动重试",
+            ZCodeQuotaFailureKind.HttpError => $"ZCode 服务返回 HTTP {failure.StatusCode}",
+            ZCodeQuotaFailureKind.NetworkError => "网络异常，稍后自动重试",
+            ZCodeQuotaFailureKind.ParseError => "ZCode 响应解析失败",
+            ZCodeQuotaFailureKind.Unknown => $"刷新失败：{failure.Message}",
+            _ => "等待 ZCode 额度"
+        };
     }
 
     private void ApplyReserveUsage(CodexQuotaEstimate? quota)

@@ -40,6 +40,24 @@ internal sealed record ZCodeQuotaSnapshot(
         Balances.FirstOrDefault();
 }
 
+internal enum ZCodeQuotaFailureKind
+{
+    NotSignedIn,
+    HttpError,
+    NetworkError,
+    ParseError,
+    Unknown
+}
+
+internal sealed record ZCodeQuotaFailure(
+    ZCodeQuotaFailureKind Kind,
+    int? StatusCode = null,
+    string? Message = null);
+
+internal sealed record ZCodeQuotaReadResult(
+    ZCodeQuotaSnapshot? Snapshot,
+    ZCodeQuotaFailure? Failure);
+
 /// <summary>
 /// Parses the <c>zcode-plan/billing/balance</c> envelope. Kept pure so tests can
 /// pin the server contract without network access.
@@ -349,8 +367,10 @@ internal sealed class ZCodeQuotaReader
     private readonly Func<string?> locateDeviceMidFile;
     private readonly Func<string?> locateAppVersion;
     private readonly Func<HttpMessageInvoker> createHttpSender;
+    private HttpMessageInvoker? cachedHttpSender;
     private DateTimeOffset lastAttemptUtc = DateTimeOffset.MinValue;
     private ZCodeQuotaSnapshot? cachedSnapshot;
+    private ZCodeQuotaFailure? cachedFailure;
     private ZCodeQuotaSnapshot? lastGoodSnapshot;
 
     public ZCodeQuotaReader(
@@ -370,6 +390,15 @@ internal sealed class ZCodeQuotaReader
 
     public ZCodeQuotaSnapshot? ReadCurrent(CancellationToken cancellationToken = default)
     {
+        return ReadCurrentResult(cancellationToken).Snapshot;
+    }
+
+    /// <summary>
+    /// Read with the cache window applied; the failure explains a null snapshot
+    /// so callers can distinguish "not signed in" from a transient outage.
+    /// </summary>
+    public ZCodeQuotaReadResult ReadCurrentResult(CancellationToken cancellationToken = default)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         var lockTaken = false;
         try
@@ -382,29 +411,31 @@ internal sealed class ZCodeQuotaReader
             var nowUtc = DateTimeOffset.UtcNow;
             if (nowUtc - lastAttemptUtc < CacheDuration())
             {
-                return cachedSnapshot;
+                return new ZCodeQuotaReadResult(cachedSnapshot, cachedFailure);
             }
 
             lastAttemptUtc = nowUtc;
             try
             {
                 var fresh = ReadCurrentUncached(cancellationToken);
-                cachedSnapshot = fresh;
-                if (fresh is not null)
+                cachedSnapshot = fresh.Snapshot;
+                cachedFailure = fresh.Failure;
+                if (fresh.Snapshot is not null)
                 {
-                    lastGoodSnapshot = fresh;
+                    lastGoodSnapshot = fresh.Snapshot;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
-            catch
+            catch (Exception ex)
             {
                 cachedSnapshot = null;
+                cachedFailure = new ZCodeQuotaFailure(ZCodeQuotaFailureKind.Unknown, Message: ex.Message);
             }
 
-            return cachedSnapshot;
+            return new ZCodeQuotaReadResult(cachedSnapshot, cachedFailure);
         }
         finally
         {
@@ -415,17 +446,28 @@ internal sealed class ZCodeQuotaReader
         }
     }
 
+    /// <summary>Forgets the cached attempt so the next read hits the network again; keeps the last good snapshot for 429 reuse.</summary>
+    internal void ResetCacheForTests()
+    {
+        lock (syncRoot)
+        {
+            lastAttemptUtc = DateTimeOffset.MinValue;
+            cachedSnapshot = null;
+            cachedFailure = null;
+        }
+    }
+
     private TimeSpan CacheDuration()
     {
         return cachedSnapshot is not null ? SuccessCacheDuration : FailureCacheDuration;
     }
 
-    private ZCodeQuotaSnapshot? ReadCurrentUncached(CancellationToken cancellationToken)
+    private ZCodeQuotaReadResult ReadCurrentUncached(CancellationToken cancellationToken)
     {
         var token = ReadBearerToken();
         if (string.IsNullOrWhiteSpace(token))
         {
-            return null;
+            return new ZCodeQuotaReadResult(null, new ZCodeQuotaFailure(ZCodeQuotaFailureKind.NotSignedIn));
         }
 
         var deviceMid = locateDeviceMidFile();
@@ -439,26 +481,73 @@ internal sealed class ZCodeQuotaReader
             request.Headers.TryAddWithoutValidation("X-Device-Mid", deviceMid);
         }
 
-        using var sender = createHttpSender();
-        using var response = sender.SendAsync(request, cancellationToken).GetAwaiter().GetResult();
-        if (!response.IsSuccessStatusCode)
+        HttpResponseMessage response;
+        try
         {
-            // A rate-limited call should not blank out a recently observed
-            // balance; the snapshot carries its own timestamp for staleness.
-            if ((int)response.StatusCode == 429 && lastGoodSnapshot is not null &&
-                BeijingClock.Now - lastGoodSnapshot.SnapshotLocal <= StaleSnapshotReuseDuration)
-            {
-                return lastGoodSnapshot;
-            }
-
-            return null;
+            response = GetHttpSender().SendAsync(request, cancellationToken).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            request.Dispose();
+            throw;
+        }
+        catch (Exception ex)
+        {
+            request.Dispose();
+            return new ZCodeQuotaReadResult(null, new ZCodeQuotaFailure(ZCodeQuotaFailureKind.NetworkError, Message: ex.Message));
         }
 
-        var json = response.Content
-            .ReadAsStringAsync(cancellationToken)
-            .GetAwaiter()
-            .GetResult();
-        return ZCodeQuotaParser.Parse(json, BeijingClock.Now);
+        using (request)
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                // A rate-limited call should not blank out a recently observed
+                // balance; the snapshot carries its own timestamp for staleness.
+                if ((int)response.StatusCode == 429 && lastGoodSnapshot is not null &&
+                    BeijingClock.Now - lastGoodSnapshot.SnapshotLocal <= StaleSnapshotReuseDuration)
+                {
+                    return new ZCodeQuotaReadResult(lastGoodSnapshot, null);
+                }
+
+                return new ZCodeQuotaReadResult(
+                    null, new ZCodeQuotaFailure(ZCodeQuotaFailureKind.HttpError, (int)response.StatusCode));
+            }
+
+            string json;
+            try
+            {
+                json = response.Content
+                    .ReadAsStringAsync(cancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return new ZCodeQuotaReadResult(null, new ZCodeQuotaFailure(ZCodeQuotaFailureKind.NetworkError, Message: ex.Message));
+            }
+
+            var snapshot = ZCodeQuotaParser.Parse(json, BeijingClock.Now);
+            return snapshot is not null
+                ? new ZCodeQuotaReadResult(snapshot, null)
+                : new ZCodeQuotaReadResult(null, new ZCodeQuotaFailure(ZCodeQuotaFailureKind.ParseError));
+        }
+    }
+
+    private HttpMessageInvoker GetHttpSender()
+    {
+        if (cachedHttpSender is not null)
+        {
+            return cachedHttpSender;
+        }
+
+        var sender = createHttpSender();
+        cachedHttpSender = sender;
+        return sender;
     }
 
     internal static string BuildBalanceUrl(string appVersion)
