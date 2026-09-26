@@ -38,6 +38,9 @@ public partial class QuotaForecastPanel : UserControl
     internal event Action<QuotaTimelineForecastOverlay?>? ForecastChanged;
     internal event EventHandler? RefreshRequested;
 
+    /// <summary>Non-null for non-Codex sources: price scenarios through the named settings group instead of the OpenAI catalog.</summary>
+    internal string? PriceGroup { get; set; }
+
     internal void SetData(QuotaCycleAnalysisResult result, QuotaModelCapacityReport report)
     {
         var firstLoad = analysis is null;
@@ -97,7 +100,10 @@ public partial class QuotaForecastPanel : UserControl
         var requestedLookback = Lookbacks[requestedLookbackIndex];
         var activity = ActivityBox.SelectedIndex switch { 1 => 75m, 2 => 50m, 3 => 25m, _ => 100m };
         var selection = QuotaForecastCalculator.BuildAdaptive(analysis, capacities, requestedLookback, Lookbacks,
-            target, activity, priceCatalog: PriceSettingsStore.Current.CodexPresets);
+            target, activity,
+            priceCatalog: PriceGroup is null
+                ? PriceSettingsStore.Current.CodexPresets
+                : PriceSettingsStore.Current.PresetsForGroup(PricePresetGroups.Normalize(PriceGroup)));
         forecast = selection.Result;
         if (selection.WasExpanded)
         {

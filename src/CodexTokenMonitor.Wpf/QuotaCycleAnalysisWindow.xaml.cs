@@ -13,7 +13,7 @@ public partial class QuotaCycleAnalysisWindow : Window
     private readonly CodexQuotaCycle? previousPeriod;
     private readonly QuotaCycleAnalysisChart chart = new();
     private readonly AnalysisQuerySession querySession;
-    private readonly QuotaCycleAnalysisQueryService queryService = new();
+    private readonly QuotaCycleAnalysisQueryService queryService;
     private IReadOnlyList<QuotaCycleBandRow> bandRows = Array.Empty<QuotaCycleBandRow>();
     private bool analysisLoading;
     private bool hasSuccessfulResult;
@@ -25,13 +25,20 @@ public partial class QuotaCycleAnalysisWindow : Window
         CodexQuotaCycle period,
         CodexQuotaWindowEstimate? currentWeek = null,
         CodexQuotaCycle? previousPeriod = null,
-        MonitorRuntime? runtime = null)
+        MonitorRuntime? runtime = null,
+        IQuotaCycleAnalysisSource? analysisSource = null,
+        string? cycleTitle = null,
+        string? priceGroup = null)
     {
         this.period = period;
         this.currentWeek = currentWeek;
         this.previousPeriod = previousPeriod;
         querySession = new AnalysisQuerySession(runtime);
+        queryService = analysisSource is null
+            ? new QuotaCycleAnalysisQueryService()
+            : new QuotaCycleAnalysisQueryService(analysisSource);
         InitializeComponent();
+        ForecastPanel.PriceGroup = priceGroup;
         ChartHost.Content = chart;
         chart.BandSelected += Chart_BandSelected;
         ConsumptionTimelineView.BandSelected += Chart_BandSelected;
@@ -39,7 +46,7 @@ public partial class QuotaCycleAnalysisWindow : Window
         ForecastPanel.RefreshRequested += async (_, _) => await LoadAnalysisAsync();
         ApplyChartView();
 
-        CycleTitleText.Text = $"7d 周期 · {period.PeriodStart:MM-dd HH:mm} → {period.PeriodEnd:MM-dd HH:mm}";
+        CycleTitleText.Text = $"{cycleTitle ?? "7d 周期"} · {period.PeriodStart:MM-dd HH:mm} → {period.PeriodEnd:MM-dd HH:mm}";
         CycleMetaText.Text = $"重置 {period.ResetAt:yyyy-MM-dd HH:mm} · {period.SnapshotCount:N0} 个额度快照";
 
         Loaded += async (_, _) => await LoadAnalysisAsync();

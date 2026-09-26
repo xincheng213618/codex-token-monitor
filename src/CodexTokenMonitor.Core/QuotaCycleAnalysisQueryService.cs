@@ -18,6 +18,13 @@ internal interface IQuotaCycleAnalysisSource
         decimal bandSizePercent, CancellationToken token);
     QuotaModelCapacityReport BuildCapacities(CodexQuotaCycle period, QuotaCycleAnalysisResult analysis,
         CodexQuotaCycle? previousPeriod, CancellationToken token);
+
+    /// <summary>
+    /// Whether the source needs the Codex reset-boundary inference. Sources with
+    /// an explicit plan period (ZCode) build their period themselves and must
+    /// bypass <see cref="QuotaAnalysisRefreshRange.ResolveCurrentAnalysisPeriod"/>.
+    /// </summary>
+    bool ResolvesCurrentPeriod => true;
 }
 
 /// <summary>
@@ -34,8 +41,10 @@ internal sealed class QuotaCycleAnalysisQueryService(
 
     // A provisional view must neither scan source logs nor train/persist model
     // calibrations using potentially incomplete days. It can bypass the I/O gate.
+    // A custom source keeps its own implementation for the preview; only the
+    // default Codex source swaps in its cache-only variant.
     public QuotaCycleAnalysisLoadResult ExecuteCached(QuotaCycleAnalysisRequest request, CancellationToken token = default) =>
-        new QuotaCycleAnalysisQueryService(new CachedSource(), clock).Execute(request, token);
+        new QuotaCycleAnalysisQueryService(source is DefaultSource ? new CachedSource() : source, clock).Execute(request, token);
 
     public QuotaCycleAnalysisLoadResult Execute(QuotaCycleAnalysisRequest request, CancellationToken token = default)
     {
@@ -44,7 +53,7 @@ internal sealed class QuotaCycleAnalysisQueryService(
         using var diagnostics = CacheOperationDiagnostics.Begin(propagateToParent: true);
         var (period, currentWeek, previousPeriod, bandSizePercent) = request;
         var range = new QuotaAnalysisRefreshRange(period, currentWeek, false, "");
-        if (period.IsCurrent)
+        if (period.IsCurrent && source.ResolvesCurrentPeriod)
         {
             var now = clock.GetUtcNow().ToOffset(CodexUsageReader.BeijingOffset);
             var snapshotStart = currentWeek is { ResetAtLocal: not null } &&

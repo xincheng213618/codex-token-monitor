@@ -155,12 +155,16 @@ internal static class QuotaCycleAnalysisCalculator
         return samples;
     }
 
+    // priceCatalog keeps the historical OpenAI-only test/preview channel;
+    // priceGroup prices through the named settings group (non-OpenAI-only
+    // presets), which is what non-Codex sources such as ZCode need.
     internal static QuotaCycleAnalysisResult BuildFromSamples(
         CodexQuotaCycle period,
         IReadOnlyList<QuotaCycleAnalysisSample> source,
         decimal bandSizePercent = DefaultBandSizePercent,
         CancellationToken cancellationToken = default,
-        IEnumerable<PricePreset>? priceCatalog = null)
+        IEnumerable<PricePreset>? priceCatalog = null,
+        string? priceGroup = null)
     {
         if (bandSizePercent <= 0m || bandSizePercent > 100m)
         {
@@ -182,7 +186,7 @@ internal static class QuotaCycleAnalysisCalculator
         }
 
         var catalog = priceCatalog?.ToList();
-        var intervals = BuildIntervals(samples, cancellationToken, catalog);
+        var intervals = BuildIntervals(samples, cancellationToken, catalog, priceGroup);
         if (intervals.Count == 0)
         {
             return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可归因的额度下降区间") with
@@ -315,10 +319,19 @@ internal static class QuotaCycleAnalysisCalculator
         return timeline.ToArray();
     }
 
+    private static ModelCostEstimate EstimateCost(
+        TokenUsageBucket usage,
+        IReadOnlyList<PricePreset>? priceCatalog,
+        string? priceGroup) =>
+        priceGroup is null
+            ? CodexModelCost.Estimate(usage, priceCatalog)
+            : CodexModelCost.Estimate(usage, priceGroup);
+
     private static List<RawInterval> BuildIntervals(
         IReadOnlyList<QuotaCycleAnalysisSample> samples,
         CancellationToken cancellationToken,
-        IReadOnlyList<PricePreset>? priceCatalog)
+        IReadOnlyList<PricePreset>? priceCatalog,
+        string? priceGroup = null)
     {
         var result = new List<RawInterval>();
         var previousTime = samples[0].TimestampLocal;
@@ -339,8 +352,8 @@ internal static class QuotaCycleAnalysisCalculator
                 continue;
             }
 
-            var estimate = CodexModelCost.Estimate(pending, priceCatalog);
-            var modelSlices = BuildModelSlices(pending, priceCatalog);
+            var estimate = EstimateCost(pending, priceCatalog, priceGroup);
+            var modelSlices = BuildModelSlices(pending, priceCatalog, priceGroup);
             result.Add(new RawInterval(
                 previousTime,
                 sample.TimestampLocal,
@@ -360,14 +373,14 @@ internal static class QuotaCycleAnalysisCalculator
         // cycle total uses the same cutoff as the outer 7d estimate.
         if (result.Count > 0 && (pending.Events > 0 || pending.TotalTokens > 0))
         {
-            var trailingEstimate = CodexModelCost.Estimate(pending, priceCatalog);
+            var trailingEstimate = EstimateCost(pending, priceCatalog, priceGroup);
             var last = result[^1];
             result[^1] = last with
             {
                 EndLocal = samples[^1].TimestampLocal,
                 Tokens = TokenCountMath.AddNonNegative(last.Tokens, pending.TotalTokens),
                 EquivalentCost = last.EquivalentCost + trailingEstimate.QuotaEquivalentCost,
-                Models = last.Models.Concat(BuildModelSlices(pending, priceCatalog)).ToList()
+                Models = last.Models.Concat(BuildModelSlices(pending, priceCatalog, priceGroup)).ToList()
             };
         }
 
@@ -376,7 +389,8 @@ internal static class QuotaCycleAnalysisCalculator
 
     private static IReadOnlyList<ModelSlice> BuildModelSlices(
         TokenUsageBucket usage,
-        IReadOnlyList<PricePreset>? priceCatalog)
+        IReadOnlyList<PricePreset>? priceCatalog,
+        string? priceGroup = null)
     {
         var result = new List<ModelSlice>();
         long identifiedTokens = 0;
@@ -386,7 +400,7 @@ internal static class QuotaCycleAnalysisCalculator
             var wrapper = new TokenUsageBucket { StartLocal = usage.StartLocal };
             wrapper.MergeFrom(modelUsage);
             wrapper.ModelUsage[modelId] = modelUsage;
-            var estimate = CodexModelCost.Estimate(wrapper, priceCatalog);
+            var estimate = EstimateCost(wrapper, priceCatalog, priceGroup);
             result.Add(new ModelSlice(
                 modelId,
                 modelUsage.TotalTokens,

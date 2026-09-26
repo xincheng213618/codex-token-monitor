@@ -304,6 +304,30 @@ public partial class MainWindow : Window
         window.Show();
     }
 
+    private void ZCodeQuotaAnalysisButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CurrentModule() is not ZCodeUsageModule zcodeModule ||
+            zcodeModule.CurrentQuotaSnapshot is not { } snapshot ||
+            ZCodeQuotaAnalysisSource.DescribeCurrent(snapshot) is not { } description)
+        {
+            SetStatus("暂无 ZCode 额度快照；先刷新额度，再打开消费分析。");
+            return;
+        }
+
+        var window = new QuotaCycleAnalysisWindow(
+            description.Period,
+            description.Estimate,
+            previousPeriod: null,
+            runtime,
+            analysisSource: new ZCodeQuotaAnalysisSource(),
+            cycleTitle: "ZCode 套餐",
+            priceGroup: PricePresetGroups.ZCode)
+        {
+            Owner = this
+        };
+        window.Show();
+    }
+
     private async void SourceTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (suppressUiEvents.IsSuppressing || !ReferenceEquals(e.Source, SourceTabs))
@@ -789,7 +813,18 @@ public partial class MainWindow : Window
         try
         {
             var result = await Task.Run(
-                () => ZCodeQuotaReader.Shared.ReadCurrentResult(runtime.LifetimeToken),
+                () =>
+                {
+                    var read = ZCodeQuotaReader.Shared.ReadCurrentResult(runtime.LifetimeToken);
+                    // Persist the balance as the time series behind 消费分析;
+                    // failures never produce a snapshot to record.
+                    if (read.Snapshot is not null)
+                    {
+                        ZCodeQuotaAnalysisSource.RecordSnapshot(read.Snapshot, runtime.LifetimeToken);
+                    }
+
+                    return read;
+                },
                 runtime.LifetimeToken);
             if (!isClosed && CurrentModule() is ZCodeUsageModule current && ReferenceEquals(current, zcodeModule))
             {

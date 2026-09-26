@@ -4,6 +4,9 @@
 
 ## 2026-09-27（未发布）
 
+- ZCode 页接入周期分析（消费时间线 + 预测）：每次额度刷新成功后把各余额桶（已用百分比、到期时间）落盘为快照时间序列（ZCode 专属快照缓存，同秒去重、多桶并存），ZCode 额度面板新增"消费分析"入口，复用 Codex 的周期分析窗口展示套餐期内消费时间线、分段消费与按当前节奏的用尽预测。分析以快照为锚点、逐条用量事件按时间归段（复用 `QuotaCycleAnalysisCalculator`，价格经 ZCode 价格组人民币计价）；套餐周期直接取服务端的 period_start/expires_at，不做 Codex 式重置边界推断；模型动态估算依赖"每周重复的配额节奏"，不适用于套餐制余额，故不启用。
+- `QuotaCycleAnalysisCalculator.BuildFromSamples` 新增 `priceGroup` 通道：非 Codex 来源按命名价格组计价（OpenAI 专属预设不参与），原有 `priceCatalog` 路径保持不变；`IQuotaCycleAnalysisSource` 新增 `ResolvesCurrentPeriod`（默认 true），显式声明套餐周期的来源跳过 Codex 重置边界推断；`ExecuteCached` 的缓存预览不再忽略注入的自定义分析源（原先会误用 Codex 缓存）。新增 7 项 `ZCodeQuotaAnalysisTests`（快照落盘往返/同秒去重/无计量桶忽略、周期与窗口映射、锚点分段与尾部用量、价格组计价、端到端分段归并）。
+
 - ZCode 用量读取线根治跨源双计：用量库（db.sqlite）源与 model-io 日志源统一事件稳定键为 `zcode:<logical_request_id>`，同一次调用在两侧都被读到时按完整度合并为一条事件；删除按"db 最早行时间戳"丢弃日志事件的边界逻辑——该边界依赖两侧时间戳逐毫秒相等的假设，既可能双计（混源合并进缓存后永久翻倍）也可能丢数据（db 行落盘滞后时日志副本已被丢弃且 watermark 不再回扫）。统计缓存升为 `token-cache-v6.sqlite3`（键空间变更，首次启动自动干净重建，v5 文件按遗留文件清理）。
 - ZCode 用量库行时间戳统一按 `completed_at`（与窗口过滤、Earliest 同一列），异常行（`started_at > completed_at`）不再漏出扫描窗口；真机库核实 `logical_request_id` 无 NULL、无重复、无时间戳倒挂。新增 4 项测试：混源双计回归（缓存日先记日志、db 可用后重扫不双计）、同请求跨源合并且日志独有请求保留、异常时间戳跟随 completed_at、稳定键断言更新。
 - ZCode 额度读取失败分类：`ZCodeQuotaReader` 新增 `ReadCurrentResult`（快照 + 失败原因成对返回），把"未登录 / HTTP 状态码（含 429 限流）/ 网络异常 / 响应解析失败"分开上报；ZCode 页额度面板按具体原因提示（"需要已登录的 ZCode 桌面端"、"ZCode 服务限流，稍后自动重试"、"网络异常，稍后自动重试"、"ZCode 服务返回 HTTP xxx"），不再把所有失败一律显示为"需要已登录的 ZCode 桌面端"。

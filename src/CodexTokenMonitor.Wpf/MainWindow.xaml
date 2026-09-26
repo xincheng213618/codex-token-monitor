@@ -116,7 +116,7 @@
         <Border x:Name="ZCodeQuotaPanel" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,10" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="1.35*" /><ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="1.35*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,16,0">
                     <TextBlock Text="剩余余额" Style="{StaticResource QuotaCaption}" />
@@ -133,10 +133,13 @@
                     <TextBlock x:Name="ZCodeQuotaPlanValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" />
                     <TextBlock x:Name="ZCodeQuotaPlanDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <StackPanel Grid.Column="3" Margin="0,0,0,0">
+                <StackPanel Grid.Column="3" Margin="0,0,16,0">
                     <TextBlock Text="到期时间" Style="{StaticResource QuotaCaption}" />
                     <TextBlock x:Name="ZCodeQuotaExpiryValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                     <TextBlock x:Name="ZCodeQuotaExpiryDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="4" VerticalAlignment="Center">
+                    <Button x:Name="ZCodeQuotaAnalysisButton" Style="{StaticResource ToolbarButton}" Content="消费分析" Click="ZCodeQuotaAnalysisButton_Click" ToolTip="查看套餐期内消费时间线、分段速度与用尽预测" />
                 </StackPanel>
             </Grid>
         </Border>
