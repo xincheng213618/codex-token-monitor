@@ -409,6 +409,15 @@ internal static class ZCodeUsageReader
                 .ToList();
             isComplete = isComplete && dbRead.IsComplete;
         }
+        else if (dbRead.Unreadable)
+        {
+            // The ledger exists but could not be read this time (locked or
+            // corrupt). The range must not cache as complete from logs alone:
+            // the CLI rotates those, so a log-only "complete" day would make
+            // the missing database rows permanently invisible. Leaving the day
+            // incomplete makes the next scan redo it with the database back.
+            isComplete = false;
+        }
 
         return new UsageEventScanResult(events, isComplete);
     }

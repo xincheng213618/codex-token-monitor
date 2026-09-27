@@ -4,6 +4,9 @@
 
 ## 2026-09-27（未发布）
 
+- ZCode 用量库读取失败接入诊断与自愈：CLI 用量库（db.sqlite）存在但读取失败（被占用/损坏/无权限）时，此前静默降级为仅日志扫描——当天可能按"完整"入缓存且不再重扫，而 CLI 会轮转日志，缺失的数据库行将永久不可见。现在失败会上报 `CacheOperationDiagnostics`（缓存详情与状态提示可见"读取失败"与具体原因），且该扫描范围不再标完整，下次扫描自动带库重做；库文件不存在（机器上没有 ZCode CLI）仍是合法状态，保持静默不告警。新增 4 项测试（损坏上报 Corrupt、锁定上报、缺库不告警、锁库扫描的日不标完整且库恢复后重扫自愈）。
+- 审计收尾两项结论（核实后不改动）：db-first 扫描顺序不采纳——库覆盖范围内跳过日志会丢失回退键（无 requestId）日志行与尚未落库的行，破坏"混源合并"的正确性，而缓存已把日志解析成本降为一次性；跨天 requestId 塌缩经真机数据核实不存在——445/445 条含 usage 的 model-io 日志行均带 completedAt，日志与数据库时间戳同源（completed_at），`startedAt` 回退仅作防御性保留。
+
 - ZCode 页接入周期分析（消费时间线 + 预测）：每次额度刷新成功后把各余额桶（已用百分比、到期时间）落盘为快照时间序列（ZCode 专属快照缓存，同秒去重、多桶并存），ZCode 额度面板新增"消费分析"入口，复用 Codex 的周期分析窗口展示套餐期内消费时间线、分段消费与按当前节奏的用尽预测。分析以快照为锚点、逐条用量事件按时间归段（复用 `QuotaCycleAnalysisCalculator`，价格经 ZCode 价格组人民币计价）；套餐周期直接取服务端的 period_start/expires_at，不做 Codex 式重置边界推断；模型动态估算依赖"每周重复的配额节奏"，不适用于套餐制余额，故不启用。
 - `QuotaCycleAnalysisCalculator.BuildFromSamples` 新增 `priceGroup` 通道：非 Codex 来源按命名价格组计价（OpenAI 专属预设不参与），原有 `priceCatalog` 路径保持不变；`IQuotaCycleAnalysisSource` 新增 `ResolvesCurrentPeriod`（默认 true），显式声明套餐周期的来源跳过 Codex 重置边界推断；`ExecuteCached` 的缓存预览不再忽略注入的自定义分析源（原先会误用 Codex 缓存）。新增 7 项 `ZCodeQuotaAnalysisTests`（快照落盘往返/同秒去重/无计量桶忽略、周期与窗口映射、锚点分段与尾部用量、价格组计价、端到端分段归并）。
 

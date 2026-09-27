@@ -214,6 +214,55 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
     }
 
     [Fact]
+    public void ReadEvents_MissingDatabase_IsUnavailableWithoutWarning()
+    {
+        var start = DateTimeOffset.Now.AddMinutes(-60);
+
+        using (var operation = CacheOperationDiagnostics.Begin())
+        {
+            var result = ZCodeCliUsageDatabase.ReadEvents(start, start.AddHours(2), CancellationToken.None);
+            Assert.False(result.Available);
+            Assert.False(result.Unreadable);
+            Assert.Empty(operation.Warnings);
+        }
+    }
+
+    [Fact]
+    public void ReadEvents_CorruptDatabase_ReportsCorruptWarningAndStaysUnavailable()
+    {
+        var start = DateTimeOffset.Now.AddMinutes(-60);
+        Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
+        File.WriteAllText(DbPath, "This is deliberately not a SQLite database.");
+
+        using (var operation = CacheOperationDiagnostics.Begin())
+        {
+            var result = ZCodeCliUsageDatabase.ReadEvents(start, start.AddHours(2));
+            Assert.False(result.Available);
+            Assert.True(result.Unreadable);
+            var warning = Assert.Single(operation.Warnings);
+            Assert.Equal(DbPath, warning.Path);
+            Assert.Equal(CacheWarningKind.Corrupt, warning.Kind);
+        }
+    }
+
+    [Fact]
+    public void ReadEvents_LockedDatabase_ReportsWarningAndStaysUnavailable()
+    {
+        var start = DateTimeOffset.Now.AddMinutes(-60);
+        SeedDatabase(("db-1", start.AddMinutes(30), 50_000L));
+
+        using (var operation = CacheOperationDiagnostics.Begin())
+        using (new LockedFile(DbPath))
+        {
+            var result = ZCodeCliUsageDatabase.ReadEvents(start, start.AddHours(2));
+            Assert.False(result.Available);
+            Assert.True(result.Unreadable);
+            var warning = Assert.Single(operation.Warnings);
+            Assert.Equal(DbPath, warning.Path);
+        }
+    }
+
+    [Fact]
     public void Reader_WithoutDatabase_StillReadsLogs()
     {
         WriteLogRecord(DateTimeOffset.Now.AddMinutes(-30), "log-only");
@@ -223,5 +272,29 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
 
         var row = Assert.Single(rows);
         Assert.Equal("GLM-5.3-Flash", Assert.Single(row.ModelUsage).Key);
+    }
+
+    [Fact]
+    public void Reader_WithUnreadableDatabase_DoesNotCacheDayAsCompleteAndHealsLater()
+    {
+        // A day scanned while the CLI ledger is unreadable must stay
+        // incomplete: the CLI rotates logs, so caching it as complete from
+        // logs alone would make the missing database rows permanently
+        // invisible. Once the database is back the rescan restores completion.
+        var day = DateTimeOffset.Now.AddDays(-2);
+        var dayStart = new DateTimeOffset(day.Year, day.Month, day.Day, 0, 0, 0, Beijing);
+        var dayEnd = dayStart.AddDays(1);
+        WriteLogRecord(dayStart.AddMinutes(30), "req-1");
+        Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
+        File.WriteAllText(DbPath, "This is deliberately not a SQLite database.");
+
+        var blocked = ZCodeUsageReader.ReadRange(dayStart, dayEnd);
+        Assert.Equal(8_100L, blocked.TotalTokens);
+        Assert.Contains(dayStart, ZCodeUsageReader.GetIncompleteHistoricalDays(dayStart, dayStart));
+
+        File.Delete(DbPath);
+        var healed = ZCodeUsageReader.ReadRange(dayStart, dayEnd);
+        Assert.Equal(8_100L, healed.TotalTokens);
+        Assert.DoesNotContain(dayStart, ZCodeUsageReader.GetIncompleteHistoricalDays(dayStart, dayStart));
     }
 }

@@ -30,12 +30,16 @@ internal static class ZCodeCliUsageDatabase
         bool Available,
         DateTimeOffset? Earliest,
         IReadOnlyList<TokenUsageEvent> Events,
-        bool IsComplete);
+        bool IsComplete,
+        bool Unreadable = false);
 
     /// <summary>
     /// Reads completed model calls whose completion time falls in
     /// [startLocal, endLocal). Available=false means the database is absent or
     /// unreadable and the caller should fall back to log-only scanning.
+    /// Unreadable=true distinguishes "file exists but could not be read" from
+    /// "no CLI database at all": only the former is a warning-worthy failure,
+    /// and only the former means the scanned range is incomplete without it.
     /// </summary>
     public static ReadResult ReadEvents(
         DateTimeOffset startLocal,
@@ -130,8 +134,12 @@ internal static class ZCodeCliUsageDatabase
         catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
         {
             // The CLI holds the database and may lock or purge it; degrade to
-            // log-only scanning instead of failing the whole source.
-            return new ReadResult(false, null, Array.Empty<TokenUsageEvent>(), IsComplete: false);
+            // log-only scanning instead of failing the whole source. Report the
+            // failure so the operation surface can tell "no data" from
+            // "unreadable ledger" — a missing file is a legitimate state (no
+            // ZCode CLI) and stays silent.
+            CacheOperationDiagnostics.Report(path, "Read ZCode usage ledger", ex);
+            return new ReadResult(false, null, Array.Empty<TokenUsageEvent>(), IsComplete: false, Unreadable: true);
         }
 
         return new ReadResult(true, earliest, events, IsComplete: true);
