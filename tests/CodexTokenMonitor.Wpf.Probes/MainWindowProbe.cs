@@ -180,6 +180,7 @@ internal static class MainWindowProbe
             Select(window, codex, RangeMode.Day);
             await RefreshAndDrainAsync(window);
             await RenderContentAsync(window, Path.Combine(outputRoot, "wpf-architecture-probe.png"));
+            await CheckRealPriceCardsAsync(window, modules);
             Require(!mainWasLoaded, "main Loaded lifecycle never entered");
 
             // Closing must keep the dispatcher alive while registered work
@@ -851,7 +852,56 @@ internal static class MainWindowProbe
             await shutdownTask.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
-    private static async Task RenderContentAsync(MainWindow window, string path)
+    private static async Task CheckRealPriceCardsAsync(MainWindow window, IReadOnlyDictionary<UsageSource, UsageSourceModule> modules)
+    {
+        var previousPlans = GetObject(window, "currentPlanSnapshot");
+        Set(window, "currentPlanSnapshot", new[] { SubscriptionPlanStore.CreateMonthly(BeijingClock.Now.AddDays(-1), "Pro 20x") });
+        try
+        {
+            foreach (var source in new[] { UsageSource.Codex, UsageSource.ZCode })
+            {
+                var module = modules[source];
+                Select(window, module, RangeMode.Day);
+                var summary = new TokenUsageSummary { StartLocal = SeedDay, EndLocal = SeedDay.AddHours(12) };
+                summary.Add(new TokenUsageEvent(SeedDay.AddHours(11), 3_299_000, 3_001_000, 34_000,
+                    6_520, 3_333_000, "real-price-fixture", ModelId: source == UsageSource.Codex ? "gpt-6-sol" : "GLM-5.3-Flash"));
+                var range = new SelectedRange(SeedDay, SeedDay.AddDays(1), "参考价界面样本", "样本明细", RangeMode.Day);
+                var result = new UsageQueryResult(summary, new[] { summary }, TimeSpan.FromMinutes(8), null, Array.Empty<CodexQuotaSnapshot>());
+                Invoke(window, "ApplySummary", range, result, module);
+                var presets = PriceSettingsStore.DisplayPresetsForSource(source, count: 0).ToList();
+                foreach (var width in new[] { 1380, 1060 })
+                {
+                    await RenderContentAsync(window, Path.Combine(outputRoot, $"real-price-{source}-{width}.png"), width, () =>
+                    {
+                        Invoke(window, "ApplyCostCards", presets, summary);
+                        window.UpdateLayout();
+                        var panel = Get<Panel>(window, "CostCardsPanel");
+                        Require(panel.Children.Count >= 2 && panel.Children[1] is CostCardControl { Tag: "real-price" }, "real price follows API equivalent card");
+                        if (width == 1380)
+                            Require(panel.Children.Count >= Math.Min(5, presets.Count + 2), "wide layout retains three comparison cards alongside both estimates");
+                        var card = (CostCardControl)panel.Children[1];
+                        var detail = ((TextBlock)card.ToolTip).Text;
+                        Require(detail.Contains("2026-09-27") && detail.Contains("real-api-pricing"), "real price provenance");
+                        Require(source == UsageSource.Codex ? detail.Contains("跨套餐参考") : detail.Contains("最高真实单价"), "source-specific pricing basis");
+                        Require(panel.Children.Cast<FrameworkElement>().Sum(child => child.Width + child.Margin.Left + child.Margin.Right)
+                            <= Get<FrameworkElement>(window, "CostCardsViewport").ActualWidth + 1, "all cost cards fit viewport");
+                        Results.Add(new { check = "real-price-card", source = source.ToString(), width,
+                            cards = panel.Children.Count, amount = Get<TextBlock>(card, "AmountText").Text });
+                    });
+                }
+                var copied = (string)Invoke(window, "BuildClipboardSummary", module, range, result)!;
+                Require(copied.Contains("真实价格参考估算") && copied.Contains("数据快照"), "copied summary preserves reference meaning");
+            }
+        }
+        finally
+        {
+            Set(window, "currentPlanSnapshot", previousPlans);
+            Select(window, modules[UsageSource.Codex], RangeMode.Day);
+            await RefreshAndDrainAsync(window);
+        }
+    }
+
+    private static async Task RenderContentAsync(MainWindow window, string path, int width = 1380, Action? afterLayout = null)
     {
         await DrainBindingsAsync(window);
         var expectedStatus = Get<TextBlock>(window, "StatusText").Text;
@@ -860,7 +910,7 @@ internal static class MainWindowProbe
         window.Content = null;
         var host = new Window
         {
-            Content = content, Width = 1380, Height = 940, Left = -20000, Top = -20000,
+            Content = content, Width = width, Height = 940, Left = -20000, Top = -20000,
             ShowActivated = false, ShowInTaskbar = false, WindowStyle = WindowStyle.None,
             Background = window.Background, Foreground = window.Foreground,
             FontFamily = window.FontFamily, FontSize = window.FontSize,
@@ -875,7 +925,9 @@ internal static class MainWindowProbe
                     Get<FrameworkElement>(window, "UsageSummaryPanel").Visibility == expectedContentVisibility,
                 "render host preserves bound display values");
             host.UpdateLayout();
-            var bitmap = new RenderTargetBitmap(1380, 940, 96, 96, PixelFormats.Pbgra32);
+            afterLayout?.Invoke();
+            host.UpdateLayout();
+            var bitmap = new RenderTargetBitmap(width, 940, 96, 96, PixelFormats.Pbgra32);
             bitmap.Render(host);
             var encoder = new PngBitmapEncoder();
             encoder.Frames.Add(BitmapFrame.Create(bitmap));
@@ -890,7 +942,7 @@ internal static class MainWindowProbe
         }
         await DrainBindingsAsync(window);
         CheckDisplayBindings(window);
-        Results.Add(new { check = "render", path, width = 1380, height = 940 });
+        Results.Add(new { check = "render", path, width, height = 940 });
     }
 
     private static Task Refresh(MainWindow window) => (Task)Invoke(window, "RefreshUsageAsync", true, false)!;

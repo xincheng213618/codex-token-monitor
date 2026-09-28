@@ -33,3 +33,7 @@ jobs:
           if (-not (Test-Path .\artifacts\publish\CodexTokenMonitor.exe)) { throw 'Self-contained executable was not generated.' }
           $files = Get-ChildItem .\artifacts\publish -File
           if ($files.Count -ne 1) { throw "Expected one published file, found $($files.Count)." }
+          $notices = '.\artifacts\publish\Notices\real-api-pricing'
+          foreach ($name in @('LICENSE.txt', 'README.md', 'SOURCES.md')) {
+            if (-not (Test-Path (Join-Path $notices $name))) { throw "Missing Real API Pricing notice: $name" }
+          }

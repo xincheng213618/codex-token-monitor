@@ -65,15 +65,16 @@ if (Test-Path -LiteralPath $publishDir) {
 dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Release -r win-x64 --self-contained true -o .\outputs\CodexTokenMonitor
 ```
 
-生成文件：
+生成文件和第三方数据许可声明：
 
 ```text
 outputs/CodexTokenMonitor/CodexTokenMonitor.exe
+outputs/CodexTokenMonitor/Notices/real-api-pricing/
 ```
 
 日常只使用这一个输出目录。一键生成和后续更新均覆盖此位置，不再按功能名称另建发布目录。
 
-Release 发布目录只保留这个 exe，不需要旁边的 Core PDB 或 .NET runtime 文件；发布前应清理旧目录，避免旧版文件残留。
+Release 发布目录的根目录只保留这个 exe，不需要旁边的 Core PDB 或 .NET runtime 文件；`Notices` 目录保留内置参考价格数据的许可与来源声明。发布前应清理旧目录，避免旧版文件残留。
 
 轻量版（`Lite` 配置，框架依赖）只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime 和 ASP.NET Core 8 Runtime（局域网共享服务使用），exe 体积会小很多：
 

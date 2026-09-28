@@ -34,6 +34,8 @@ public partial class MainWindow : Window
     private long quotaRefreshVersion;
     private Task cycleRefreshTask = Task.CompletedTask;
     private int lastVisibleCostColumnCount = -1;
+    private int fixedCostCardCount;
+    private double MinimumCostCardWidth => RealPriceCalculator.Supports(CurrentModule().Source) ? 180 : CostCardWidth;
 
     public MainWindow()
     {
@@ -1100,6 +1102,9 @@ public partial class MainWindow : Window
                 new PricePreset { Provider = provider, Model = source == UsageSource.Kimi ? "实际模型 · 参考价估算" : "实际模型 · 标准 API 等价" }, summary,
                 actual: true, priceGroup: PricePresetGroups.ForSource(source)));
         }
+        if (RealPriceCalculator.Supports(source))
+            CostCardsPanel.Children.Add(CreateRealPriceCard(source, summary));
+        fixedCostCardCount = CostCardsPanel.Children.Count;
         foreach (var preset in presets.Take(GetVisibleCostColumnCount(presets.Count)))
         {
             CostCardsPanel.Children.Add(CreateCostCard(preset, summary, comparison: CurrentModule().Source == UsageSource.Codex));
@@ -1113,7 +1118,7 @@ public partial class MainWindow : Window
     {
         var count = CostCardsPanel.Children.Count;
         if (count == 0) return;
-        var width = Math.Max(CostCardWidth,
+        var width = Math.Max(MinimumCostCardWidth,
             (CostCardsViewport.ActualWidth - CostCardRightMargin * (count - 1)) / count);
         foreach (FrameworkElement card in CostCardsPanel.Children)
             card.Width = width;
@@ -1145,7 +1150,7 @@ public partial class MainWindow : Window
 
     private static bool HasUsage(UsageQueryResult result) => UsageDisplayViewModel.ContainsUsage(result);
 
-    private static string BuildClipboardSummary(
+    private string BuildClipboardSummary(
         UsageSourceModule module,
         SelectedRange range,
         UsageQueryResult result)
@@ -1165,6 +1170,12 @@ public partial class MainWindow : Window
         builder.AppendLine($"Reasoning：{FormatTokenAdaptive(summary.ReasoningOutputTokens)}");
         builder.AppendLine($"Events：{summary.Events:N0}");
         builder.AppendLine($"Coding Time：{FormatDuration(result.CodingTime)}");
+        if (RealPriceCalculator.Supports(module.Source))
+        {
+            var referenceCost = EstimateRealPrice(module.Source, summary);
+            builder.AppendLine($"真实价格参考估算：{referenceCost.Format()}");
+            builder.AppendLine(referenceCost.Describe());
+        }
 
         var presets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 3);
         if (presets.Count > 0)
@@ -2233,14 +2244,13 @@ public partial class MainWindow : Window
         }
 
         var availableWidth = CostCardsViewport.ActualWidth;
-        var actualModelColumns = CurrentModule().Source == UsageSource.Codex ? 1 : 0;
         if (double.IsNaN(availableWidth) || availableWidth <= 0)
         {
-            return Math.Min(3 - actualModelColumns, presetCount);
+            return Math.Min(Math.Max(0, 3 - fixedCostCardCount), presetCount);
         }
 
-        var visible = (int)Math.Floor((availableWidth + CostCardRightMargin) / (CostCardWidth + CostCardRightMargin));
-        return Math.Clamp(visible - actualModelColumns, 0, presetCount);
+        var visible = (int)Math.Floor((availableWidth + CostCardRightMargin) / (MinimumCostCardWidth + CostCardRightMargin));
+        return Math.Clamp(visible - fixedCostCardCount, 0, presetCount);
     }
 
     private static string FormatTokenMillions(long value)

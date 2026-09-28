@@ -49,6 +49,11 @@ public partial class MainWindow
                 if (plans.Warnings.Count == 0) currentPlanSnapshot = plans.Snapshot;
                 if (resets.Warnings.Count == 0) currentResetSnapshot = resets.Snapshot;
                 ApplyCurrentPlanSummary();
+                if (CurrentModule() is CodexUsageModule codex &&
+                    codex.TryGetDisplay(out _, out var displayed) && HasUsage(displayed))
+                {
+                    ApplyCostCards(PriceSettingsStore.DisplayPresetsForSource(UsageSource.Codex, count: 0).ToList(), displayed.Summary);
+                }
                 ApplyResetOpportunitySummary();
                 ApplyResetPaceSummary(CurrentCodexModule().CurrentQuotaEstimate?.Week);
             }

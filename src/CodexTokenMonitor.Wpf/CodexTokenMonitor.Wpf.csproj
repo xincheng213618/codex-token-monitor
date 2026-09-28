@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CodexTokenMonitor</AssemblyName>
     <RootNamespace>CodexTokenMonitor</RootNamespace>
-    <Version>2026.9.23</Version>
+    <Version>2026.9.28</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -38,6 +38,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CodexTokenMonitor.Core\CodexTokenMonitor.Core.csproj" />
+    <None Include="..\..\docs\third-party\real-api-pricing\**\*"
+          Link="Notices\real-api-pricing\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

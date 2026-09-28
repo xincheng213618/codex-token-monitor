@@ -14,6 +14,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Data\real-api-pricing.json" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
     <PackageReference Include="ZstdSharp.Port" Version="0.8.2" />
