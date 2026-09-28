@@ -9,11 +9,16 @@ internal sealed class UsageCacheStore
         "token-cache-v2.sqlite3",
         "token-cache-v2.sqlite3-wal",
         "token-cache-v2.sqlite3-shm",
-        // v5 was the previous ZCode cache; its key space predated the unified
-        // zcode:<request id> event keys and must not survive a v6 rebuild.
+        // v5 predates the ZCode usage ledger source; v6 assumed the ledger
+        // and the model-io logs share event keys, which they never did, so
+        // its per-day caches hold both copies of every doubled call and must
+        // not survive a v7 rebuild.
         "token-cache-v5.sqlite3",
         "token-cache-v5.sqlite3-wal",
         "token-cache-v5.sqlite3-shm",
+        "token-cache-v6.sqlite3",
+        "token-cache-v6.sqlite3-wal",
+        "token-cache-v6.sqlite3-shm",
         "usage-cache-v1.json",
         "quota-snapshot-cache-v1.json",
         "quota-history.jsonl"
@@ -42,7 +47,7 @@ internal sealed class UsageCacheStore
     {
         return Path.Combine(MonitorCachePaths.LocalAppData, folderName,
             folderName == "CodexTokenMonitor" ? "token-cache-v4.sqlite3"
-                : folderName == "ZCodeTokenMonitor" ? "token-cache-v6.sqlite3"
+                : folderName == "ZCodeTokenMonitor" ? "token-cache-v7.sqlite3"
                 : CacheFileName);
     }
 
@@ -504,6 +509,37 @@ internal sealed class UsageCacheStore
         {
             using var connection = OpenConnection();
             return ReadDetailEvents(connection, date, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            database.ReportFailure(ex);
+            return Array.Empty<TokenUsageEvent>();
+        }
+    }
+
+    /// <summary>
+    /// The day's imported events only. An authoritative day rebuild replaces
+    /// all scanned detail rows, so imported contributions — which deletion
+    /// spares — must be added back into the rebuilt totals explicitly.
+    /// </summary>
+    public IReadOnlyList<TokenUsageEvent> GetImportedDetailEvents(
+        DateOnly date,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!EnsureAvailable())
+        {
+            return Array.Empty<TokenUsageEvent>();
+        }
+
+        try
+        {
+            using var connection = OpenConnection();
+            return ReadDetailEvents(connection, date, cancellationToken, importedOnly: true);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1303,7 +1339,8 @@ internal sealed class UsageCacheStore
     private static IReadOnlyList<TokenUsageEvent> ReadDetailEvents(
         SqliteConnection connection,
         DateOnly date,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool importedOnly = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var command = connection.CreateCommand();
@@ -1312,9 +1349,11 @@ internal sealed class UsageCacheStore
                    output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier
             FROM usage_events
             WHERE date = $date
+              AND ($importedOnly = 0 OR event_key IN (SELECT event_key FROM imported_usage_event_keys))
             ORDER BY timestamp_local
             """;
         command.Parameters.AddWithValue("$date", DateKey(date));
+        command.Parameters.AddWithValue("$importedOnly", importedOnly ? 1 : 0);
 
         var result = new List<TokenUsageEvent>();
         using var reader = command.ExecuteReader();

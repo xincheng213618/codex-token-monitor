@@ -138,9 +138,18 @@ internal static class ZCodeUsageReader
                     continue;
                 }
 
-                var scanStart = cache.TryGetRecord(date, out var record) && record.ScannedThroughLocal is not null
-                    ? record.ScannedThroughLocal.Value.AddTicks(1)
-                    : clippedStart;
+                // With the ledger on disk a full-day rescan is one indexed
+                // database query, and it re-reads rows the CLI committed just
+                // after the previous scan's watermark had passed — those calls
+                // would otherwise be lost for good, since the log copy is
+                // deliberately dropped in the ledger era. Only the log-only
+                // fallback (no ledger file) keeps the incremental watermark,
+                // where a rescan means reparsing the day's rollout files.
+                var scanStart = ZCodeCliUsageDatabase.LedgerFileExists()
+                    ? clippedStart
+                    : cache.TryGetRecord(date, out var record) && record.ScannedThroughLocal is not null
+                        ? record.ScannedThroughLocal.Value.AddTicks(1)
+                        : clippedStart;
                 AddScanRange(scanRanges, Max(scanStart, clippedStart), clippedEnd, cacheHistoricalDays: false);
             }
             else
@@ -179,23 +188,43 @@ internal static class ZCodeUsageReader
                 var mergedEvents = UsageEventMerger.Merge(existingEvents
                     .Concat(newEvents)
                     .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1)));
-                var mergedBucket = CreateBucketFromEvents(dayStart, mergedEvents);
                 var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart && scannedResult.IsComplete;
                 var scannedThrough = detailEnd.AddTicks(-1);
 
-                if (mergedEvents.Count == 0 && cache.TryGet(date, out var existingBucket))
+                // A scan whose events came solely from the authoritative
+                // ledger and that covers a whole day (a past day end-to-end,
+                // or today so far) replaces the cached day instead of merging
+                // into it: merging cannot retire log-sourced copies earlier
+                // fallback scans cached, because the two sources' identifiers
+                // never match. Imported events keep their rows (replacement
+                // only deletes non-imported keys), so they rejoin the totals.
+                var authoritative = scannedResult.FromLedger &&
+                                    detailStart == dayStart && (isToday || detailEnd >= dayStart.AddDays(1));
+                IReadOnlyList<TokenUsageEvent> putEvents;
+                var putBucket = CreateBucketFromEvents(dayStart, mergedEvents);
+                if (authoritative)
                 {
-                    mergedBucket = existingBucket;
+                    putEvents = UsageEventMerger.Merge(newEvents.Concat(
+                        cache.GetImportedDetailEvents(date, cancellationToken))).ToList();
+                    putBucket = CreateBucketFromEvents(dayStart, putEvents);
+                }
+                else
+                {
+                    putEvents = newEvents;
+                    if (mergedEvents.Count == 0 && cache.TryGet(date, out var existingBucket))
+                    {
+                        putBucket = existingBucket;
+                    }
                 }
 
                 cache.Put(
-                    mergedBucket,
+                    putBucket,
                     isComplete,
                     scannedThrough,
-                    newEvents,
-                    replaceDetailEvents: existingEvents.Count == 0,
+                    putEvents,
+                    replaceDetailEvents: authoritative || existingEvents.Count == 0,
                     cancellationToken: cancellationToken);
-                dailyBuckets[date] = mergedBucket;
+                dailyBuckets[date] = putBucket;
                 cacheChanged = true;
             }
         }
@@ -258,18 +287,44 @@ internal static class ZCodeUsageReader
 
             if (dayStart < todayStart || includeLiveToday)
             {
-                var replaceDetails = !hasCompleteDetails || dayStart < todayStart && !record.IsComplete;
-                var scanStart = replaceDetails || record.ScannedThroughLocal is null
-                    ? replaceDetails ? dayStart : startLocal
-                    : Max(startLocal, record.ScannedThroughLocal.Value.AddTicks(1));
+                // With the ledger on disk a full-day rescan is one indexed
+                // database query, and a ledger-only result can replace the
+                // cached day outright. The log-only fallback keeps the
+                // incremental watermark: there a rescan re-parses the day's
+                // rollout files.
+                var ledgerOnDisk = ZCodeCliUsageDatabase.LedgerFileExists();
+                var replaceDetails = !hasCompleteDetails || dayStart < todayStart && !record.IsComplete || ledgerOnDisk;
+                var scanStart = replaceDetails
+                    ? dayStart
+                    : record.ScannedThroughLocal is null
+                        ? startLocal
+                        : Max(startLocal, record.ScannedThroughLocal.Value.AddTicks(1));
                 var scanEnd = dayStart < todayStart ? dayEnd : endLocal;
                 if (scanStart < scanEnd)
                 {
                     var newEventsResult = ReadEventsUncached(scanStart, scanEnd, cancellationToken);
                     var newEvents = newEventsResult.Events;
-                    var mergedEvents = UsageEventMerger.Merge(cachedEvents
-                        .Concat(newEvents)
-                        .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
+                    // A ledger-only scan that starts at the day boundary has
+                    // seen every call of the day so far: rebuild from it plus
+                    // the day's imported events instead of merging, so
+                    // log-sourced copies cached by earlier fallback scans
+                    // cannot survive beside their ledger rows.
+                    var authoritative = newEventsResult.FromLedger && scanStart <= dayStart;
+                    IReadOnlyList<TokenUsageEvent> mergedEvents;
+                    if (authoritative)
+                    {
+                        mergedEvents = UsageEventMerger.Merge(newEvents.Concat(
+                            cache.GetImportedDetailEvents(date, cancellationToken))).ToList();
+                        replaceDetails = true;
+                    }
+                    else
+                    {
+                        mergedEvents = UsageEventMerger.Merge(cachedEvents
+                            .Concat(newEvents)
+                            .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd))
+                            .ToList();
+                    }
+
                     var mergedBucket = CreateBucketFromEvents(dayStart, mergedEvents);
                     var isComplete = dayStart < todayStart && scanEnd >= dayEnd && newEventsResult.IsComplete;
                     cache.Put(
@@ -364,52 +419,20 @@ internal static class ZCodeUsageReader
         var entries = new Dictionary<string, ZCodeUsageEntry>(StringComparer.Ordinal);
         var isComplete = true;
 
-        var files = new List<string>();
-        foreach (var root in GetLogRoots())
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            files.AddRange(EnumerateJsonlFiles(root, startLocal));
-        }
-        fileProgress?.Invoke(0, files.Count);
-        for (var index = 0; index < files.Count; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!ReadFile(files[index], startLocal, endLocal, entries, cancellationToken))
-            {
-                isComplete = false;
-            }
-            fileProgress?.Invoke(index + 1, files.Count);
-        }
-
-        var events = entries.Values
-            .OrderBy(item => item.Timestamp)
-            .Select(item => new TokenUsageEvent(
-                item.Timestamp,
-                item.Input,
-                item.Cached,
-                item.Output,
-                item.Reasoning,
-                item.Total,
-                $"zcode:{item.Key}",
-                item.CacheWrite,
-                ModelId: item.ModelId))
-            .ToList();
-
-        // The CLI's own database is durable across log rotation. Both sources
-        // emit the same stable key (zcode:<request id>), so a call seen by
-        // both merges into one event downstream; log events the database does
-        // not know (older than its earliest row, or whose row has not landed
-        // yet) survive instead of being guessed away by a timestamp boundary.
+        // The CLI's own database is the authoritative usage ledger: it keeps
+        // every model call while the model-io logs rotate away, and the
+        // official usage statistics are computed from it. Read it first and
+        // confine the log pass to the era the ledger does not know, so one
+        // call is never contributed by both sources. Key-based deduplication
+        // cannot reconcile them — ledger rows carry logical_request_id while
+        // log lines carry the provider's request id, and the two never match.
         var dbRead = ZCodeCliUsageDatabase.ReadEvents(startLocal, endLocal, cancellationToken);
-        if (dbRead.Available)
+        var logEnd = endLocal;
+        if (dbRead.Available && dbRead.LedgerStart is { } ledgerStart)
         {
-            events = events
-                .Concat(dbRead.Events)
-                .OrderBy(item => item.Timestamp)
-                .ToList();
-            isComplete = isComplete && dbRead.IsComplete;
+            logEnd = Min(endLocal, ledgerStart);
         }
-        else if (dbRead.Unreadable)
+        else if (!dbRead.Available && dbRead.Unreadable)
         {
             // The ledger exists but could not be read this time (locked or
             // corrupt). The range must not cache as complete from logs alone:
@@ -419,7 +442,57 @@ internal static class ZCodeUsageReader
             isComplete = false;
         }
 
-        return new UsageEventScanResult(events, isComplete);
+        var logEvents = new List<TokenUsageEvent>();
+        if (logEnd > startLocal)
+        {
+            var files = new List<string>();
+            foreach (var root in GetLogRoots())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                files.AddRange(EnumerateJsonlFiles(root, startLocal));
+            }
+            fileProgress?.Invoke(0, files.Count);
+            for (var index = 0; index < files.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!ReadFile(files[index], startLocal, logEnd, entries, cancellationToken))
+                {
+                    isComplete = false;
+                }
+                fileProgress?.Invoke(index + 1, files.Count);
+            }
+
+            logEvents.AddRange(entries.Values
+                .OrderBy(item => item.Timestamp)
+                .Select(item => new TokenUsageEvent(
+                    item.Timestamp,
+                    item.Input,
+                    item.Cached,
+                    item.Output,
+                    item.Reasoning,
+                    item.Total,
+                    $"zcode:{item.Key}",
+                    item.CacheWrite,
+                    ModelId: item.ModelId)));
+        }
+        else
+        {
+            fileProgress?.Invoke(0, 0);
+        }
+
+        var events = logEvents.Concat(dbRead.Events).OrderBy(item => item.Timestamp).ToList();
+        // With nothing contributed by the logs the set is exactly the
+        // ledger's own — complete and authoritative, so a caller that scanned
+        // a whole day may replace its cached details instead of merging into
+        // them (cached log copies would otherwise survive forever, because
+        // their keys can never match a ledger row's).
+        var fromLedger = dbRead.Available && logEvents.Count == 0;
+        if (dbRead.Available)
+        {
+            isComplete = isComplete && dbRead.IsComplete;
+        }
+
+        return new UsageEventScanResult(events, isComplete, fromLedger);
     }
 
     private static IEnumerable<string> GetLogRoots()

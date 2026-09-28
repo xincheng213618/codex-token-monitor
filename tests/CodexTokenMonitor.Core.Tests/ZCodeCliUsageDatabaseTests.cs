@@ -45,7 +45,7 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
         using (var create = connection.CreateCommand())
         {
             create.CommandText = """
-                CREATE TABLE model_usage (
+                CREATE TABLE IF NOT EXISTS model_usage (
                     id INTEGER PRIMARY KEY,
                     logical_request_id TEXT,
                     model_id TEXT,
@@ -82,6 +82,14 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
         }
     }
 
+    // The CLI never shares an identifier between its two usage trails: ledger
+    // rows carry logical_request_id ("msg_<tag>_<uuid>") while model-io log
+    // lines carry the provider's request id (a bare uuid). Fixtures must keep
+    // those shapes apart — a unified id would paper over the real mismatch.
+    private static string LedgerRequestId(string tag) => $"msg_{tag}_{Guid.NewGuid()}";
+
+    private static string LogRequestId() => Guid.NewGuid().ToString();
+
     private void WriteLogRecord(DateTimeOffset at, string requestId)
     {
         var rollout = Path.Combine(root, UsageSource.ZCode.ToString(), "rollout");
@@ -98,19 +106,52 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
     public void ReadEvents_MapsDatabaseRowsWithModelAndStableKeys()
     {
         var start = DateTimeOffset.Now.AddMinutes(-60);
-        SeedDatabase(("db-1", start.AddMinutes(30), 50_000L));
+        SeedDatabase((LedgerRequestId("ab12cd34"), start.AddMinutes(30), 50_000L));
 
         var result = ZCodeCliUsageDatabase.ReadEvents(start, start.AddHours(2));
 
         Assert.True(result.Available);
         Assert.True(result.IsComplete);
         var row = Assert.Single(result.Events);
-        Assert.Equal("zcode:db-1", row.Key);
+        Assert.StartsWith("zcode:msg_ab12cd34_", row.Key);
         Assert.Equal("GLM-5.3-Flash", row.ModelId);
         Assert.Equal(49_800L, row.InputTokens);
         Assert.Equal(49_700L, row.CachedInputTokens);
         Assert.Equal(200L, row.OutputTokens);
         Assert.Equal(50_000L, row.TotalTokens);
+    }
+
+    [Fact]
+    public void ReadEvents_LedgerStartIsTheGlobalEarliestRow()
+    {
+        // The era boundary must come from the whole table: a window whose
+        // first call is recent is still fully covered when the ledger's first
+        // row ever is days older.
+        var start = DateTimeOffset.Now.AddMinutes(-60);
+        SeedDatabase(
+            (LedgerRequestId("old01234"), start.AddDays(-2), 5_000L),
+            (LedgerRequestId("new05678"), start.AddMinutes(30), 50_000L));
+
+        var result = ZCodeCliUsageDatabase.ReadEvents(start, start.AddHours(2));
+
+        // The column stores milliseconds, so compare at that precision.
+        var expected = DateTimeOffset.FromUnixTimeMilliseconds(start.AddDays(-2).ToUnixTimeMilliseconds());
+        Assert.Equal(expected, result.LedgerStart);
+        var row = Assert.Single(result.Events);
+        Assert.Equal(50_000L, row.TotalTokens);
+    }
+
+    [Fact]
+    public void ReadEvents_EmptyLedger_HasNoLedgerStart()
+    {
+        var start = DateTimeOffset.Now.AddMinutes(-60);
+        SeedDatabase();
+
+        var result = ZCodeCliUsageDatabase.ReadEvents(start, start.AddHours(2));
+
+        Assert.True(result.Available);
+        Assert.Null(result.LedgerStart);
+        Assert.Empty(result.Events);
     }
 
     [Fact]
@@ -120,7 +161,7 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
         // completed_at timestamp: that is the column the window filter and
         // Earliest use, so the event can never leak outside its scan range.
         var start = DateTimeOffset.Now.AddMinutes(-60);
-        SeedDatabase(("skew-1", start.AddMinutes(30), 50_000L));
+        SeedDatabase((LedgerRequestId("skew0abc"), start.AddMinutes(30), 50_000L));
         using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
                {
                    DataSource = DbPath,
@@ -153,23 +194,26 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
     }
 
     [Fact]
-    public void Reader_MergesSameRequestAcrossSourcesAndKeepsLogOnlyRequests()
+    public void Reader_DropsLogCopiesInLedgerEraAndKeepsPreLedgerLogs()
     {
-        // Log events and database rows share the stable key zcode:<request id>,
-        // so one call read from both sides counts once. A log record with a
-        // different request id is a different call and survives even when the
-        // database covers the range, and pre-database log records backfill.
+        // The production double-count: one call trails in both sources under
+        // different identifiers, so key-based deduplication never fires and
+        // every ledger-era day counted twice. The ledger is authoritative —
+        // log records from its era are copies (or calls official statistics
+        // do not know either) and are dropped; log records from before the
+        // ledger's first row are the only copy and survive.
         var start = DateTimeOffset.Now.AddMinutes(-60);
-        SeedDatabase(("req-1", start.AddMinutes(30), 50_000L));
-        WriteLogRecord(start.AddMinutes(30), "req-1");
-        WriteLogRecord(start.AddMinutes(40), "log-2");
-        WriteLogRecord(start.AddMinutes(5), "log-old");
+        SeedDatabase((LedgerRequestId("era1b2c3"), start.AddMinutes(30), 50_000L));
+        WriteLogRecord(start.AddMinutes(30), LogRequestId());
+        WriteLogRecord(start.AddMinutes(40), LogRequestId());
+        WriteLogRecord(start.AddMinutes(5), LogRequestId());
 
         var rows = ZCodeUsageReader.ReadTransientDetailRows(start, start.AddHours(2));
 
-        Assert.Equal(3, rows.Count);
-        var merged = rows.Single(row => row.TotalTokens == 50_000L);
-        Assert.Equal("GLM-5.3-Flash", Assert.Single(merged.ModelUsage).Key);
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(58_100L, rows.Sum(row => row.TotalTokens));
+        var ledgerRow = rows.Single(row => row.TotalTokens == 50_000L);
+        Assert.Equal("GLM-5.3-Flash", Assert.Single(ledgerRow.ModelUsage).Key);
     }
 
     [Fact]
@@ -177,13 +221,13 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
     {
         // The production double-count chain: a historical day cached from logs
         // while one file was unreadable (incomplete), then rescanned after the
-        // database became available. Shared stable keys make the cached log
-        // row and the rescanned database row replace each other instead of
-        // both persisting.
+        // database became available. The cached log row and the rescanned
+        // ledger row never share a key, so the ledger-only rescan must
+        // REPLACE the cached day rather than merge into it.
         var day = DateTimeOffset.Now.AddDays(-2);
         var dayStart = new DateTimeOffset(day.Year, day.Month, day.Day, 0, 0, 0, Beijing);
         var dayEnd = dayStart.AddDays(1);
-        WriteLogRecord(dayStart.AddMinutes(30), "req-1");
+        WriteLogRecord(dayStart.AddMinutes(30), LogRequestId());
         var blocked = Path.Combine(root, UsageSource.ZCode.ToString(), "rollout", "model-io-locked.jsonl");
         File.WriteAllText(blocked, "{\"type\":\"other\"}\n");
         using (new LockedFile(blocked))
@@ -192,7 +236,7 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
             Assert.Equal(8_100L, incomplete.TotalTokens);
         }
 
-        SeedDatabase(("req-1", dayStart.AddMinutes(30), 50_000L));
+        SeedDatabase((LedgerRequestId("era4d5e6"), dayStart.AddMinutes(30), 50_000L));
 
         var rescanned = ZCodeUsageReader.ReadRange(dayStart, dayEnd);
 
@@ -249,7 +293,7 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
     public void ReadEvents_LockedDatabase_ReportsWarningAndStaysUnavailable()
     {
         var start = DateTimeOffset.Now.AddMinutes(-60);
-        SeedDatabase(("db-1", start.AddMinutes(30), 50_000L));
+        SeedDatabase((LedgerRequestId("db01abcd"), start.AddMinutes(30), 50_000L));
 
         using (var operation = CacheOperationDiagnostics.Begin())
         using (new LockedFile(DbPath))
@@ -265,13 +309,36 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
     [Fact]
     public void Reader_WithoutDatabase_StillReadsLogs()
     {
-        WriteLogRecord(DateTimeOffset.Now.AddMinutes(-30), "log-only");
+        WriteLogRecord(DateTimeOffset.Now.AddMinutes(-30), LogRequestId());
 
         var rows = ZCodeUsageReader.ReadTransientDetailRows(
             DateTimeOffset.Now.AddMinutes(-60), DateTimeOffset.Now.AddMinutes(60));
 
         var row = Assert.Single(rows);
         Assert.Equal("GLM-5.3-Flash", Assert.Single(row.ModelUsage).Key);
+    }
+
+    [Fact]
+    public void Reader_LiveDayRescan_FindsLedgerRowCommittedAfterWatermark()
+    {
+        // The CLI commits a ledger row moments after flushing the log line.
+        // A live day that scanned incrementally from its watermark would miss
+        // a row whose completion time is already behind it, forever; the
+        // ledger-era full-day rescan picks it up on the next pass.
+        var dayStart = new DateTimeOffset(
+            DateTimeOffset.Now.Year, DateTimeOffset.Now.Month, DateTimeOffset.Now.Day, 0, 0, 0, Beijing);
+        var windowEnd = dayStart.AddHours(2);
+        SeedDatabase((LedgerRequestId("live1row1"), dayStart.AddMinutes(30), 50_000L));
+
+        var first = ZCodeUsageReader.ReadRange(dayStart, windowEnd);
+        Assert.Equal(50_000L, first.TotalTokens);
+
+        // Committed late, but its completed_at lies inside the scanned range.
+        SeedDatabase((LedgerRequestId("live2row2"), dayStart.AddMinutes(90), 60_000L));
+
+        var second = ZCodeUsageReader.ReadRange(dayStart, windowEnd);
+
+        Assert.Equal(110_000L, second.TotalTokens);
     }
 
     [Fact]
@@ -284,7 +351,7 @@ public sealed class ZCodeCliUsageDatabaseTests : IDisposable
         var day = DateTimeOffset.Now.AddDays(-2);
         var dayStart = new DateTimeOffset(day.Year, day.Month, day.Day, 0, 0, 0, Beijing);
         var dayEnd = dayStart.AddDays(1);
-        WriteLogRecord(dayStart.AddMinutes(30), "req-1");
+        WriteLogRecord(dayStart.AddMinutes(30), LogRequestId());
         Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
         File.WriteAllText(DbPath, "This is deliberately not a SQLite database.");
 

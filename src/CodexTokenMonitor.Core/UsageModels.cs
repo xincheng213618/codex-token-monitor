@@ -452,9 +452,13 @@ internal sealed record TokenUsageEvent(
 // A source scan may still return useful events after one file is temporarily
 // unreadable. Keep that health bit alongside the events so callers can show
 // the partial result without marking the day as permanently complete.
+// FromLedger marks event sets that came solely from an authoritative ledger
+// (no log-sourced events at all): a caller that scanned a whole day may then
+// replace its cached details instead of merging into them.
 internal sealed record UsageEventScanResult(
     IReadOnlyList<TokenUsageEvent> Events,
-    bool IsComplete);
+    bool IsComplete,
+    bool FromLedger = false);
 
 internal sealed record UsageRangeScanResult(
     TokenUsageSummary Summary,

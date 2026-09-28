@@ -28,10 +28,17 @@ internal static class ZCodeCliUsageDatabase
 
     public sealed record ReadResult(
         bool Available,
-        DateTimeOffset? Earliest,
+        DateTimeOffset? LedgerStart,
         IReadOnlyList<TokenUsageEvent> Events,
         bool IsComplete,
         bool Unreadable = false);
+
+    /// <summary>
+    /// Whether the ledger file exists. Callers use this to pick scan
+    /// strategies before spending a read: while it is on disk the ledger is
+    /// the authoritative source and a full-day rescan is one indexed query.
+    /// </summary>
+    public static bool LedgerFileExists() => File.Exists(ResolvePath());
 
     /// <summary>
     /// Reads completed model calls whose completion time falls in
@@ -40,6 +47,9 @@ internal static class ZCodeCliUsageDatabase
     /// Unreadable=true distinguishes "file exists but could not be read" from
     /// "no CLI database at all": only the former is a warning-worthy failure,
     /// and only the former means the scanned range is incomplete without it.
+    /// LedgerStart is the earliest completion time across the whole ledger
+    /// (null when it has no rows): calls before it predate the ledger and
+    /// exist only in the model-io logs, calls from it on are authoritative.
     /// </summary>
     public static ReadResult ReadEvents(
         DateTimeOffset startLocal,
@@ -53,7 +63,7 @@ internal static class ZCodeCliUsageDatabase
         }
 
         var events = new List<TokenUsageEvent>();
-        DateTimeOffset? earliest = null;
+        DateTimeOffset? ledgerStart = null;
         try
         {
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -64,6 +74,18 @@ internal static class ZCodeCliUsageDatabase
             }.ToString());
             connection.Open();
             Execute(connection, "PRAGMA busy_timeout = 2000;");
+
+            // The era boundary comes from the whole table, not the scanned
+            // window: a window whose first call is at 10:05 is still fully
+            // covered when the ledger's first row ever is from yesterday.
+            using var boundary = connection.CreateCommand();
+            boundary.CommandText = "SELECT MIN(completed_at) FROM model_usage WHERE completed_at IS NOT NULL";
+            var boundaryResult = boundary.ExecuteScalar();
+            if (boundaryResult is long earliestMs)
+            {
+                ledgerStart = DateTimeOffset.FromUnixTimeMilliseconds(earliestMs)
+                    .ToOffset(CodexUsageReader.BeijingOffset);
+            }
 
             // Half-open [start, end) on Unix-millisecond precision (the
             // column's unit) so abutting scan ranges never double-count.
@@ -105,7 +127,7 @@ internal static class ZCodeCliUsageDatabase
                 // input_tokens counts the request's total input including cache
                 // reads (verified field-by-field against model-io records).
                 // The timestamp must follow completed_at — the same column the
-                // window filter and Earliest use — or an anomalous row with
+                // window filter and LedgerStart use — or an anomalous row with
                 // started_at > completed_at would leak out of its scan range.
                 var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(completedMs)
                     .ToOffset(CodexUsageReader.BeijingOffset);
@@ -114,7 +136,6 @@ internal static class ZCodeCliUsageDatabase
                     ? computed
                     : TokenCountMath.AddNonNegative(
                         TokenCountMath.AddNonNegative(input + cacheCreation, output), reasoning);
-                earliest = earliest is { } current && current < timestamp ? current : timestamp;
                 events.Add(new TokenUsageEvent(
                     timestamp,
                     InputTokens: input,
@@ -122,9 +143,9 @@ internal static class ZCodeCliUsageDatabase
                     OutputTokens: output,
                     ReasoningOutputTokens: reasoning,
                     TotalTokens: total,
-                    // Same stable key the model-io log source emits for the
-                    // request, so a call read from both sides merges into one
-                    // event instead of double-counting in the cache.
+                    // The ledger's logical request id differs from the log's
+                    // provider request id. The reader keeps the sources in
+                    // separate time eras to avoid counting both copies.
                     Key: $"zcode:{requestId}",
                     CacheWriteInputTokens: cacheCreation,
                     ModelId: modelId));
@@ -142,7 +163,7 @@ internal static class ZCodeCliUsageDatabase
             return new ReadResult(false, null, Array.Empty<TokenUsageEvent>(), IsComplete: false, Unreadable: true);
         }
 
-        return new ReadResult(true, earliest, events, IsComplete: true);
+        return new ReadResult(true, ledgerStart, events, IsComplete: true);
     }
 
     private static void Execute(SqliteConnection connection, string sql)
