@@ -101,8 +101,8 @@ function Test-DesktopProbeReport {
         'main' { @('display-bindings-initialized', 'registered-tabs', 'historical-cycle-gate',
             'materialized-cycle-display', 'source-selection-round-trip', 'latest-wins-source-and-range',
             'independent-window-recovery', 'shared-import-copy-binding', 'empty-to-ready-binding',
-            'main-price-failure', 'main-price-recovery', 'real-closing-drain', 'isolation') }
-        'settings' { @('normal-load', 'failed-load-and-retry', 'failed-save-and-retry', 'isolation-and-shutdown') }
+            'main-price-failure', 'main-price-recovery', 'startup-update-check', 'real-closing-drain', 'isolation') }
+        'settings' { @('normal-load', 'failed-load-and-retry', 'failed-save-and-retry', 'ten-display-slots', 'isolation-and-shutdown') }
         'analysis' { @('cached-windows-bypass-gate', 'empty-known-period-fallback', 'cached-windows-corruption-recovery',
             'manual-estimate-corruption-recovery', 'single-window-close', 'cycle-corruption-recovery', 'parent-shutdown', 'isolation-and-exit') }
         default { throw "Unknown suite $Suite" }
@@ -121,6 +121,12 @@ function Test-DesktopProbeReport {
             }
             Assert-ProbeFlags (Get-ProbeCheck $report 'materialized-cycle-display') @{ bypassesGate = $true }
             Assert-ProbeFlags (Get-ProbeCheck $report 'latest-wins-source-and-range') @{ supersededPublished = $false }
+            $startup = Get-ProbeCheck $report 'startup-update-check'
+            Assert-ProbeFlags $startup @{
+                usageGateIndependent = $true; dispatcherResponsive = $true; newerReleaseEntry = $true
+                currentAndFailureQuiet = $true; closeCancelsRequest = $true
+            }
+            Assert-ProbeCondition ($startup.requestsPerStartup -eq 1 -and $startup.liveGitHubRequests -eq 0) 'Startup update check was duplicated or accessed GitHub.'
             $queries = @($report.checks | Where-Object check -EQ 'cache-only-refresh')
             foreach ($source in @('Codex', 'ClaudeCode', 'ZCode', 'WorkBuddy', 'Dsh')) {
                 foreach ($mode in @('Day', 'Week', 'Month')) {
@@ -133,7 +139,7 @@ function Test-DesktopProbeReport {
         'settings' {
             $isolation = Get-ProbeCheck $report 'isolation-and-shutdown'
             Assert-ProbeFlags $isolation @{ allClosed = $true; runtimeDrained = $true; mainWindowCreated = $false; accountRequestsSkipped = $true; sharedNetworkStarted = $false }
-            foreach ($window in @('PriceSettingsWindow', 'SubscriptionPlanWindow', 'ResetOpportunityWindow')) {
+            foreach ($window in @('ModelPricesWindow', 'SubscriptionPlanWindow', 'ResetOpportunityWindow')) {
                 foreach ($name in @('normal-load', 'failed-load-and-retry', 'failed-save-and-retry')) {
                     $check = @($report.checks | Where-Object { $_.check -ceq $name -and $_.window -ceq $window })
                     Assert-ProbeCondition ($check.Count -eq 1) "Missing $window/$name check."
@@ -144,6 +150,10 @@ function Test-DesktopProbeReport {
                         Assert-ProbeFlags $check[0] @{ editPreserved = $true; dialogRemainedOpen = $true; corruptBytesPreserved = $true; retryDialogResult = $true; persisted = $true }
                     }
                 }
+            }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'ten-display-slots') @{
+                providerModelBinding = $true; independentSources = $true; nestedPriceEntry = $true
+                draftCancelSafe = $true; corruptLoadAndSaveSafe = $true; saved = $true
             }
         }
         'analysis' {
@@ -162,12 +172,13 @@ function Test-DesktopProbeReport {
     Assert-ProbeCondition ($isolationPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) 'Fixture root escaped the suite directory.'
     $renders = @($report.checks | Where-Object check -EQ 'render')
     $requiredImages = switch ($Suite) {
-        'main' { @('wpf-architecture-probe.png', 'main-source-round-trip.png', 'main-independent-window.png', 'main-stale-result.png', 'main-first-failure.png', 'main-successful-empty.png', 'main-empty-recovered.png') }
+        'main' { @('wpf-architecture-probe.png', 'main-source-round-trip.png', 'main-independent-window.png', 'main-stale-result.png', 'main-first-failure.png', 'main-successful-empty.png', 'main-empty-recovered.png', 'startup-update-available.png') }
         'settings' {
-            foreach ($window in @('PriceSettingsWindow', 'SubscriptionPlanWindow', 'ResetOpportunityWindow')) {
+            foreach ($window in @('ModelPricesWindow', 'SubscriptionPlanWindow', 'ResetOpportunityWindow')) {
                 foreach ($state in @('healthy', 'load-failure', 'save-failure')) { "$window-$state.png" }
             }
             'SubscriptionPlanWindow-reload-failure.png'; 'ResetOpportunityWindow-reload-failure.png'
+            'PriceSettingsWindow-ten-slots.png'; 'ModelPricesWindow-openai.png'
         }
         'analysis' { @('quota-cost-curve.png', 'quota-estimate.png', 'cycle-cache-failure-preserved.png', 'cycle-analysis-recovered.png') }
     }
