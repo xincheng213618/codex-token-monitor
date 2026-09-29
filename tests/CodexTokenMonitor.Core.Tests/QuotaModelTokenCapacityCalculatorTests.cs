@@ -70,7 +70,7 @@ public sealed class QuotaModelTokenCapacityCalculatorTests
             Models = new[]
             {
                 new QuotaCycleModelShare("gpt-6-sol", 1, 90, 900_000, 1, 90, true),
-                new QuotaCycleModelShare("gpt-6-astra", 1, 10, 100_000, 1, 10, true)
+                new QuotaCycleModelShare("gpt-6-astra", 0, 0, 100_000, 1, 10, true)
             }
         };
         var estimate = Estimate("gpt-6-sol", 1200m) with
@@ -83,7 +83,87 @@ public sealed class QuotaModelTokenCapacityCalculatorTests
         Assert.Equal(500m, row.MinimumMillionTokens);
         Assert.Equal(600m, row.FullQuotaMillionTokens);
         Assert.Equal(700m, row.MaximumMillionTokens);
-        Assert.Equal("gpt-6-astra", Assert.Single(report.UnestimatedModels));
+        var missing = Assert.Single(report.UnestimatedModels);
+        Assert.Equal("gpt-6-astra", missing.ModelId);
+        Assert.Equal(QuotaModelTokenCapacityMissingReason.InsufficientCalibration, missing.Reason);
+    }
+
+    [Theory]
+    [InlineData("gpt-6.1-sol")]
+    [InlineData("gpt-6.1-sol-2026-09-30")]
+    public void PricedNewModelUsesAttributedPercentageForMarkedReference(string modelId)
+    {
+        var result = Result() with
+        {
+            Models = new[] { new QuotaCycleModelShare(modelId, .4m, 10m, 1_000_000, 6m, 10m, true) }
+        };
+        var report = QuotaModelTokenCapacityCalculator.Calculate(result,
+            Capacities(), PricePreset.Defaults());
+        var row = Assert.Single(report.Rows);
+
+        // A 0.4 percentage point allocation is below the independent-calibration
+        // threshold, but can still supply an explicitly marked reference.
+        Assert.Equal("gpt-6.1-sol", row.ModelId);
+        Assert.Equal(1500m, row.FullQuotaCost);
+        Assert.Equal(750m, row.FullQuotaMillionTokens);
+        Assert.True(row.IsShareExtrapolation);
+        Assert.Equal(.4m, row.AttributedQuotaDropPercent);
+        Assert.Empty(report.UnestimatedModels);
+    }
+
+    [Fact]
+    public void CalibrationTakesPriorityOverCurrentPercentageReference()
+    {
+        var result = Result() with
+        {
+            Models = new[] { new QuotaCycleModelShare("gpt-6.1-sol", .4m, 10m, 1_000_000, 6m, 10m, true) }
+        };
+        var row = Assert.Single(QuotaModelTokenCapacityCalculator.Calculate(result,
+            Capacities(Estimate("gpt-6.1-sol", 1200m)), PricePreset.Defaults()).Rows);
+
+        Assert.Equal(1200m, row.FullQuotaCost);
+        Assert.Equal(600m, row.FullQuotaMillionTokens);
+        Assert.False(row.IsShareExtrapolation);
+    }
+
+    [Fact]
+    public void MissingPriceAndMissingQuotaMovementHaveSeparateReasons()
+    {
+        var result = Result() with
+        {
+            Models = new[]
+            {
+                new QuotaCycleModelShare("gpt-6.1-sol", 0m, 0m, 1_000_000, 6m, 10m, true),
+                new QuotaCycleModelShare("gpt-unlisted", 1m, 10m, 1_000_000, 6m, 10m, false),
+                new QuotaCycleModelShare("gpt-5.3-codex-spark", 1m, 10m, 1_000_000, 0m, 0m, false)
+            }
+        };
+        var report = QuotaModelTokenCapacityCalculator.Calculate(result, Capacities(), PricePreset.Defaults());
+
+        Assert.Empty(report.Rows);
+        Assert.Equal(QuotaModelTokenCapacityMissingReason.InsufficientCalibration,
+            report.UnestimatedModels.Single(item => item.ModelId == "gpt-6.1-sol").Reason);
+        Assert.All(report.UnestimatedModels.Where(item => item.ModelId != "gpt-6.1-sol"), item =>
+            Assert.Equal(QuotaModelTokenCapacityMissingReason.MissingPrice, item.Reason));
+    }
+
+    [Fact]
+    public void QuotaPercentageCannotReplaceMissingTokenMixOrZeroTokenCost()
+    {
+        var models = new[] { new QuotaCycleModelShare("gpt-6-sol", 1m, 10m, 1_000_000, 6m, 10m, true) };
+        var empty = QuotaModelTokenCapacityCalculator.Calculate(Result(input: 0) with { Models = models },
+            Capacities(), Presets());
+        var zero = QuotaModelTokenCapacityCalculator.Calculate(Result() with { Models = models },
+            Capacities(), new[]
+            {
+                new PricePreset { Provider = "OpenAI", ModelId = "gpt-6-sol", CurrencySymbol = "$",
+                    UncachedInput = 0m, CachedInput = 0m, CacheWriteInput = 0m, Output = 0m }
+            });
+
+        Assert.Empty(empty.Rows);
+        Assert.Equal(QuotaModelTokenCapacityMissingReason.MissingTokenMix, Assert.Single(empty.UnestimatedModels).Reason);
+        Assert.Empty(zero.Rows);
+        Assert.Equal(QuotaModelTokenCapacityMissingReason.ZeroTokenCost, Assert.Single(zero.UnestimatedModels).Reason);
     }
 
     [Fact]

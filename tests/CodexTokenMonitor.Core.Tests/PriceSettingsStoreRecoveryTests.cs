@@ -10,6 +10,9 @@ public sealed class PriceSettingsStoreRecoveryTests
     [InlineData("null")]
     [InlineData("{\"Presets\":null}")]
     [InlineData("{\"CodexPresets\":[null]}")]
+    [InlineData("{\"DisplaySlots\":null}")]
+    [InlineData("{\"DisplaySlots\":{\"Codex\":null}}")]
+    [InlineData("{\"DisplaySlots\":{\"Codex\":[null]}}")]
     public void InvalidSettingsRemainIntactAndCannotBeReplacedWithFallback(string contents)
     {
         using var isolated = new IsolatedSettings();

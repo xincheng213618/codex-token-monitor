@@ -37,7 +37,7 @@
   - 可一键从 OpenAI 账户接口同步重置卡（使用本机 `~/.codex/auth.json` 的 access_token）；程序启动完成首轮刷新后也会静默同步，同步成功立即保存。
   - 当前默认示例包含 `2026-06-16`、`2026-06-24`、`2026-06-27` 三次机会，过期默认按获得时间 + 30 天。
 - 缓存详情窗口：查看后台缓存预热进度（按来源分类的完成天数、进度条、最近活动日志），可在暂停后手动恢复。
-- 主窗口“检查更新”会通过本项目 GitHub Releases 的最新发布页检查正式版本，避免 GitHub API 匿名请求限额；发现新版后可打开对应发布页下载。
+- 启动时在主窗口显示后，后台检查一次 GitHub 最新正式版；发现新版时，工具栏显示“新版 v… →”，点击打开发布页下载。无新版或连接失败时不弹窗，连接失败可点“检查更新”重试；检查不阻塞用量加载，关闭程序会取消请求。更新检查只访问本项目 GitHub Releases 的公开最新发布页，不发送本地用量数据，避免 GitHub API 匿名请求限额。
 
 ## 运行环境
 
@@ -59,34 +59,34 @@ CI（GitHub Actions，`.github/workflows/build.yml`）会在 push / PR 时在 `w
 便携版会把 .NET runtime 一起打进 exe，体积较大，但复制到没装 .NET 的 Windows 机器也能直接运行：
 
 ```powershell
-$publishDir = Join-Path (Get-Location) 'outputs/CodexTokenMonitor'
-if (Test-Path -LiteralPath $publishDir) {
-    Remove-Item -LiteralPath $publishDir -Recurse -Force
-}
-dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Release -r win-x64 --self-contained true -o .\outputs\CodexTokenMonitor
+$stagingDir = Join-Path $env:TEMP ('CodexTokenMonitor-publish-' + [Guid]::NewGuid().ToString('N'))
+dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Release -r win-x64 --self-contained true -o $stagingDir
 ```
 
-生成文件和第三方数据许可声明：
+先验证临时发布目录中的 exe，再按下述更新流程放到正式位置。正式文件和第三方数据许可声明：
 
 ```text
 outputs/CodexTokenMonitor/CodexTokenMonitor.exe
 outputs/CodexTokenMonitor/Notices/real-api-pricing/
 ```
 
-日常只使用这一个输出目录。一键生成和后续更新均覆盖此位置，不再按功能名称另建发布目录。
+日常只使用这一个输出目录。一键生成和后续更新均使用此位置，不再按功能名称另建发布目录。`outputs` 顶层仅保留 `CodexTokenMonitor` 正式目录和已纳入版本控制的 `一键生成CodexTokenMonitor.cmd`；临时发布、旧版备份、测试截图和验证目录放在系统临时目录或项目 `artifacts` 中。
+
+用户要求更新并重启时，先在临时目录生成、核对最新版 exe，再按完整路径关闭本次更新范围内的旧实例，替换正式目录并校验哈希，最后从 `outputs\CodexTokenMonitor\CodexTokenMonitor.exe` 启动一份程序并确认窗口响应。递归清理前必须解析并核对目标绝对路径，使用 PowerShell 的 `Remove-Item -LiteralPath`。具体约定见 [AGENTS.md](AGENTS.md)。
 
 Release 发布目录的根目录只保留这个 exe，不需要旁边的 Core PDB 或 .NET runtime 文件；`Notices` 目录保留内置参考价格数据的许可与来源声明。发布前应清理旧目录，避免旧版文件残留。
 
 轻量版（`Lite` 配置，框架依赖）只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime 和 ASP.NET Core 8 Runtime（局域网共享服务使用），exe 体积会小很多：
 
 ```powershell
-dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Lite -o .\outputs\CodexTokenMonitor-lite
+$stagingDir = Join-Path $env:TEMP ('CodexTokenMonitor-lite-' + [Guid]::NewGuid().ToString('N'))
+dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Lite -o $stagingDir
 ```
 
 生成文件：
 
 ```text
-outputs/CodexTokenMonitor-lite/CodexTokenMonitor.exe
+outputs/CodexTokenMonitor/CodexTokenMonitor.exe
 ```
 
 一键发布脚本会先执行 Core 回归测试，测试通过后才发布到 `outputs\CodexTokenMonitor`；可用 `--no-pause` / `--no-open` 控制窗口行为：

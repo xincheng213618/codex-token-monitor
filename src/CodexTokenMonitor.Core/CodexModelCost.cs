@@ -102,7 +102,7 @@ internal static class CodexModelCost
     // https://learn.chatgpt.com/docs/agent-configuration/speed
     public static decimal? FastQuotaMultiplier(string modelId) => ModelKey(modelId) switch
     {
-        "gpt-6-astra" or "gpt-6-sol" or "gpt-6-luna" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna" or "gpt-5.5" or ReserveModelId => 2.5m,
+        "gpt-6-astra" or "gpt-6.1-sol" or "gpt-6-sol" or "gpt-6-luna" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna" or "gpt-5.5" or ReserveModelId => 2.5m,
         "gpt-5.4" => 2m,
         _ => null
     };
@@ -254,6 +254,7 @@ internal static class CodexModelCost
     public static string DefaultModelId(string provider, string model) =>
         string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase) ? model switch
         {
+            "GPT-6.1 Sol" => "gpt-6.1-sol",
             "GPT-6 Sol" => "gpt-6-sol",
             "GPT-6 Luna" => "gpt-6-luna",
             "GPT-5.5 Standard Short" => "gpt-5.5",

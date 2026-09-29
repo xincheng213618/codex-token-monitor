@@ -37,8 +37,13 @@ public partial class MainWindow : Window
     private int fixedCostCardCount;
     private double MinimumCostCardWidth => RealPriceCalculator.Supports(CurrentModule().Source) ? 180 : CostCardWidth;
 
-    public MainWindow()
+    public MainWindow() : this(new GitHubReleaseUpdateChecker())
     {
+    }
+
+    internal MainWindow(GitHubReleaseUpdateChecker updateChecker)
+    {
+        releaseUpdateChecker = updateChecker;
         // Controls raise change events while the constructor assigns their
         // initial values; hold one suppression scope across the whole setup.
         using var setupScope = suppressUiEvents.Begin();
@@ -93,6 +98,7 @@ public partial class MainWindow : Window
             await RefreshUsageAsync(isAutomaticRefresh: true);
         });
         refreshTimer.Start();
+        ContentRendered += async (_, _) => await CheckForUpdatesOnStartupAsync();
         Loaded += async (_, _) => await RunUiActionAsync(async () =>
         {
             await StartDataSharingOnLaunchAsync();
@@ -1239,7 +1245,7 @@ public partial class MainWindow : Window
             builder.AppendLine(referenceCost.Describe());
         }
 
-        var presets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 3);
+        var presets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0);
         if (presets.Count > 0)
         {
             builder.AppendLine();

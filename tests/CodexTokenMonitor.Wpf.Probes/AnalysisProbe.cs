@@ -247,7 +247,7 @@ internal static class AnalysisProbe
 
     private static async Task CheckWindowCancellationAsync(MonitorRuntime runtime, CodexQuotaCycle period)
     {
-        var window = CreateWindow(typeof(QuotaCycleAnalysisWindow), period, null, null, runtime);
+        var window = CreateWindow(typeof(QuotaCycleAnalysisWindow), period, null, null, runtime, null, null, null);
         var session = Get<AnalysisQuerySession>(window, "querySession");
         await runtime.SharedIoGate.WaitAsync();
         try
@@ -278,7 +278,7 @@ internal static class AnalysisProbe
 
     private static async Task CheckCycleFaultAndRecoveryAsync(MonitorRuntime runtime, CodexQuotaCycle period, CodexQuotaCycle previous)
     {
-        var window = CreateWindow(typeof(QuotaCycleAnalysisWindow), period, null, previous, runtime);
+        var window = CreateWindow(typeof(QuotaCycleAnalysisWindow), period, null, previous, runtime, null, null, null);
         await ShowAsync(window);
         await WaitUntilAsync(() => !Get<bool>(window, "analysisLoading"), "cycle analysis completes");
         Require(Get<bool>(window, "hasSuccessfulResult"), "cycle starts with successful result");
@@ -362,12 +362,44 @@ internal static class AnalysisProbe
             "model composition sidebar uses the same cost shares");
         await RenderAsync(window, "cycle-token-capacity.png");
         Results.Add(new { check = "full-quota-token-capacity", capacityText, modelMix = row.ModelMix });
+
+        var withNewModel = analysis with
+        {
+            Models = models.Concat(new[]
+            {
+                new QuotaCycleModelShare("gpt-6.1-sol", .4m, 8m, 1_000_000, 6m, 10m, true),
+                new QuotaCycleModelShare("gpt-unlisted", .1m, 2m, 1_000_000, 0m, 0m, false)
+            }).ToArray()
+        };
+        Invoke(window, "ApplyResult", withNewModel, capacities);
+        capacityText = Get<TextBlock>(window, "ModelTokenCapacityValue").Text;
+        var fullCostText = Get<TextBlock>(window, "ModelCapacityValue").Text;
+        Require(capacityText.Contains("6.1 sol：100% ≈ 750.0M Token（本期占比外推）") &&
+                !capacityText.Contains("样本不足或未计价"),
+            "priced 6.1 Sol renders its quota-share reference rather than an unpriced message");
+        Require(fullCostText.Contains("6.1 sol ≈$1,500 [本期占比外推，仅供参考]"),
+            "full-quota cost shows the same marked reference");
+        Require(capacityText.Contains("gpt-unlisted：未设置可用价格"),
+            "a genuinely unpriced model has a separate message");
+        await RenderAsync(window, "cycle-token-capacity-61-reference.png");
+        Results.Add(new { check = "new-model-quota-share-reference", capacityText, fullCostText });
+
+        var datedNewModel = withNewModel with
+        {
+            Models = withNewModel.Models.Select(item => item.ModelId == "gpt-6.1-sol"
+                ? item with { ModelId = "gpt-6.1-sol-2026-09-30" } : item).ToArray()
+        };
+        Invoke(window, "ApplyResult", datedNewModel, new QuotaModelCapacityReport("Pro 20X", Array.Empty<QuotaModelCapacityEstimate>()));
+        Require(Get<TextBlock>(window, "ModelTokenCapacityValue").Text.Contains("6.1 sol：100% ≈ 750.0M Token（本期占比外推）"),
+            "quota-share references also render when there are no calibrated models");
+        Require(!Get<TextBlock>(window, "ModelCapacityValue").Text.Contains("样本不足"),
+            "dated model ids share the reference identity without a duplicate insufficient-sample label");
     }
 
     private static async Task CheckParentShutdownAsync(CodexQuotaCycle period)
     {
         using var runtime = new MonitorRuntime();
-        var window = CreateWindow(typeof(QuotaCycleAnalysisWindow), period, null, null, runtime);
+        var window = CreateWindow(typeof(QuotaCycleAnalysisWindow), period, null, null, runtime, null, null, null);
         var session = Get<AnalysisQuerySession>(window, "querySession");
         await runtime.SharedIoGate.WaitAsync();
         try

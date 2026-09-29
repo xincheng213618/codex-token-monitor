@@ -1,4 +1,6 @@
 using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
@@ -71,6 +73,7 @@ internal static class MainWindowProbe
         var appServer = UsageSourceReaders.Codex.AppServerQuota;
         var appServerAttempt = appServer.GetType().GetField("lastAttemptUtc", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var attemptBefore = appServerAttempt.GetValue(appServer);
+        await CheckStartupUpdatesAsync();
         var window = CreateWindow();
         var runtime = Get<MonitorRuntime>(window, "runtime");
         var mainWasLoaded = false;
@@ -807,9 +810,98 @@ internal static class MainWindowProbe
         }
     }
 
-    private static MainWindow CreateWindow()
+    private static async Task CheckStartupUpdatesAsync()
     {
-        var window = new MainWindow();
+        using var newerHandler = new UpdateResponseHandler();
+        using var newerClient = new HttpClient(newerHandler);
+        var newer = CreateWindow(new GitHubReleaseUpdateChecker(newerClient));
+        Invoke(newer, "SetStatus", "保留用量状态");
+        await DrainBindingsAsync(newer);
+        var runtime = Get<MonitorRuntime>(newer, "runtime");
+        await runtime.SharedIoGate.WaitAsync();
+        try
+        {
+            var pending = (Task)Invoke(newer, "CheckForUpdatesOnStartupAsync")!;
+            await ((Task)Invoke(newer, "CheckForUpdatesOnStartupAsync")!).WaitAsync(TimeSpan.FromSeconds(5));
+            Require(newerHandler.RequestCount == 1 && !pending.IsCompleted,
+                "startup checks once and does not wait on the usage I/O gate");
+            await newer.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+            Require(Get<TextBlock>(newer, "StatusText").Text == "保留用量状态",
+                "pending startup request preserves usage status and dispatcher responsiveness");
+            newerHandler.Respond("v2099.01.01");
+            await pending.WaitAsync(TimeSpan.FromSeconds(5));
+            Require(Get<Button>(newer, "CheckForUpdatesButton").Content.ToString() == "新版 v2099.01.01 →",
+                "new version has a nonmodal toolbar entry");
+            Require(Get<GitHubReleaseUpdateResult>(newer, "availableRelease").ReleaseTag == "v2099.01.01" &&
+                    Get<Button>(newer, "CheckForUpdatesButton").IsEnabled,
+                "release destination is retained and the download entry is enabled");
+            await DrainBindingsAsync(newer);
+            Require(Get<TextBlock>(newer, "StatusText").Text == "保留用量状态",
+                "available update does not overwrite usage status");
+            await RenderContentAsync(newer, Path.Combine(outputRoot, "startup-update-available.png"));
+        }
+        finally { runtime.SharedIoGate.Release(); }
+        await CloseWindowAsync(newer);
+
+        using var currentHandler = new UpdateResponseHandler();
+        using var currentClient = new HttpClient(currentHandler);
+        var current = CreateWindow(new GitHubReleaseUpdateChecker(currentClient));
+        var version = typeof(MainWindow).Assembly.GetName().Version!;
+        currentHandler.Respond($"v{version.Major}.{version.Minor}.{version.Build}");
+        await ((Task)Invoke(current, "CheckForUpdatesOnStartupAsync")!).WaitAsync(TimeSpan.FromSeconds(5));
+        Require(Get<Button>(current, "CheckForUpdatesButton").Content.ToString() == "检查更新" &&
+                GetObject(current, "availableRelease") is null,
+            "current release stays quiet with the manual check intact");
+        await CloseWindowAsync(current);
+
+        using var failedHandler = new UpdateResponseHandler();
+        using var failedClient = new HttpClient(failedHandler);
+        var failed = CreateWindow(new GitHubReleaseUpdateChecker(failedClient));
+        failedHandler.Response.SetResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+        await ((Task)Invoke(failed, "CheckForUpdatesOnStartupAsync")!).WaitAsync(TimeSpan.FromSeconds(5));
+        Require(Get<Button>(failed, "CheckForUpdatesButton").IsEnabled &&
+                Get<Button>(failed, "CheckForUpdatesButton").ToolTip.ToString()!.Contains("手动重试"),
+            "automatic network failure is quiet and permits a manual retry");
+        await CloseWindowAsync(failed);
+
+        using var cancelledHandler = new UpdateResponseHandler();
+        using var cancelledClient = new HttpClient(cancelledHandler);
+        var cancelled = CreateWindow(new GitHubReleaseUpdateChecker(cancelledClient));
+        var cancelledCheck = (Task)Invoke(cancelled, "CheckForUpdatesOnStartupAsync")!;
+        Require(!cancelledCheck.IsCompleted, "controlled startup request is pending before close");
+        await CloseWindowAsync(cancelled);
+        await cancelledCheck.WaitAsync(TimeSpan.FromSeconds(5));
+        Require(GetObject(cancelled, "availableRelease") is null,
+            "window close cancels and drains the update without late UI publication");
+        Results.Add(new { check = "startup-update-check", requestsPerStartup = 1,
+            usageGateIndependent = true, dispatcherResponsive = true, newerReleaseEntry = true,
+            currentAndFailureQuiet = true, closeCancelsRequest = true, liveGitHubRequests = 0 });
+    }
+
+    private sealed class UpdateResponseHandler : HttpMessageHandler
+    {
+        internal int RequestCount { get; private set; }
+        internal TaskCompletionSource<HttpResponseMessage> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal void Respond(string tag)
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Redirect);
+            response.Headers.Location = new Uri($"https://github.com/xincheng213618/codex-token-monitor/releases/tag/{tag}");
+            Response.SetResult(response);
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Require(request.Method == HttpMethod.Head && request.RequestUri!.AbsolutePath.EndsWith("/releases/latest"),
+                "startup uses the existing public latest-release checker");
+            RequestCount++;
+            return Response.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    private static MainWindow CreateWindow(GitHubReleaseUpdateChecker? checker = null)
+    {
+        var window = checker is null ? new MainWindow() : new MainWindow(checker);
         Windows.Add(window);
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ClosedSignals.Add(window, closed);

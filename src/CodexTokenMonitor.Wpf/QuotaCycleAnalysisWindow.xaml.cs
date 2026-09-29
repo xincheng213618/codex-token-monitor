@@ -209,8 +209,10 @@ public partial class QuotaCycleAnalysisWindow : Window
             ? "没有已识别模型"
             : $"折算代价占比 {dominant.CostSharePercent:N0}% · {dominant.Tokens / 1_000_000d:N2}M tokens";
 
-        ApplyModelCapacityEstimate(result, capacities);
-        ApplyModelTokenCapacity(result, capacities);
+        var tokenCapacities = QuotaModelTokenCapacityCalculator.Calculate(
+            result, capacities, PriceSettingsStore.Current.CodexPresets);
+        ApplyModelCapacityEstimate(result, capacities, tokenCapacities);
+        ApplyModelTokenCapacity(tokenCapacities);
 
         ModelShareList.ItemsSource = result.Models.OrderByDescending(item => item.EquivalentCost).Select(item => new QuotaCycleModelRow(
             QuotaCycleModelPalette.ShortName(item.ModelId),
@@ -240,7 +242,8 @@ public partial class QuotaCycleAnalysisWindow : Window
 
     private void ApplyModelCapacityEstimate(
         QuotaCycleAnalysisResult result,
-        QuotaModelCapacityReport report)
+        QuotaModelCapacityReport report,
+        QuotaModelTokenCapacityReport tokenCapacities)
     {
         var values = report.Estimates.Select(item =>
         {
@@ -269,41 +272,50 @@ public partial class QuotaCycleAnalysisWindow : Window
             return $"{QuotaCycleModelPalette.ShortName(item.ModelId)} ≈{FormatMoney(item.AverageFullQuotaCost)} [{range}]";
         });
         var estimatedModels = report.Estimates
-            .Select(item => item.ModelId)
+            .Select(item => QuotaModelTokenCapacityCalculator.ModelKey(item.ModelId))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var extrapolations = tokenCapacities.Rows.Where(item => item.IsShareExtrapolation).ToList();
+        estimatedModels.UnionWith(extrapolations.Select(item => item.ModelId));
+        var referenceValues = extrapolations.Select(item =>
+            $"{QuotaCycleModelPalette.ShortName(item.ModelId)} ≈{FormatMoney(item.FullQuotaCost)} [本期占比外推，仅供参考]");
         var insufficient = result.Models
             .Where(item => item.EquivalentCost > 0m &&
                            Math.Round(item.CostSharePercent, 1, MidpointRounding.AwayFromZero) > 0m)
-            .Select(item => CodexModelCost.NormalizeModelId(item.ModelId))
+            .Select(item => QuotaModelTokenCapacityCalculator.ModelKey(item.ModelId))
             .Where(item => !estimatedModels.Contains(item))
             .Take(2)
             .Select(item => $"{QuotaCycleModelPalette.ShortName(item)} 样本不足");
-        var display = values.Concat(insufficient).ToList();
+        var display = values.Concat(referenceValues).Concat(insufficient).ToList();
         ModelCapacityValue.Text = display.Count > 0
             ? $"模型 100% 动态估算（{report.PlanName}）：{string.Join("   ·   ", display)}"
             : "没有满足条件的单模型分段";
         ModelCapacityBadge.ToolTip =
             "同套餐、不重叠的往期校准按时间与样本量形成历史基准；单段历史需有超过 0.5 个百分点的模型额度归因。" +
             "本期可计价分段按模型成本联合回归更新。缺少可靠历史的模型按其余模型的历史估算推算，标记为“本期混用推算”，" +
-            "区间包含其他模型估算范围及额度读数取整的影响，不代表独立实测或统计置信区间。";
+            "区间包含其他模型估算范围及额度读数取整的影响，不代表独立实测或统计置信区间。" +
+            "尚无校准的模型按本期折算代价 ÷ 归因额度降幅 × 100% 外推，标为“本期占比外推”，仅供参考，不纳入历史校准。";
     }
 
-    private void ApplyModelTokenCapacity(
-        QuotaCycleAnalysisResult result,
-        QuotaModelCapacityReport capacities)
+    private void ApplyModelTokenCapacity(QuotaModelTokenCapacityReport report)
     {
-        var report = QuotaModelTokenCapacityCalculator.Calculate(
-            result, capacities, PriceSettingsStore.Current.CodexPresets);
-        if (report.Rows.Count == 0)
+        if (report.Rows.Count == 0 && report.UnestimatedModels.Count == 0)
         {
             ModelTokenCapacityValue.Text = report.UnavailableReason;
             ModelTokenCapacityValue.ToolTip = null;
             return;
         }
         var values = report.Rows.Select(item =>
-            $"{QuotaCycleModelPalette.ShortName(item.ModelId)}：100% ≈ {item.FullQuotaMillionTokens:N1}M Token");
+            $"{QuotaCycleModelPalette.ShortName(item.ModelId)}：100% ≈ {item.FullQuotaMillionTokens:N1}M Token" +
+            (item.IsShareExtrapolation ? "（本期占比外推）" : ""));
         var missing = report.UnestimatedModels.Select(model =>
-            $"{QuotaCycleModelPalette.ShortName(model)}：样本不足或未计价");
+            $"{QuotaCycleModelPalette.ShortName(model.ModelId)}：{model.Reason switch
+            {
+                QuotaModelTokenCapacityMissingReason.MissingPrice => "未设置可用价格",
+                QuotaModelTokenCapacityMissingReason.InsufficientCalibration => "已计价，暂无额度归因或校准",
+                QuotaModelTokenCapacityMissingReason.MissingTokenMix => "缺少 Token 构成",
+                QuotaModelTokenCapacityMissingReason.ZeroTokenCost => "当前 Token 构成的折算代价为 0",
+                _ => "估算超出可用范围"
+            }}");
         ModelTokenCapacityValue.Text = string.Join("   ·   ", values.Concat(missing));
         var uncached = TokenCountMath.SubtractNonNegative(
             TokenCountMath.SubtractNonNegative(report.InputTokens, report.CachedInputTokens),
@@ -317,8 +329,11 @@ public partial class QuotaCycleAnalysisWindow : Window
             string.Join("\n", report.Rows.Select(item =>
                 $"{QuotaCycleModelPalette.ShortName(item.ModelId)}：{FormatMoney(item.FullQuotaCost)} ÷ " +
                 $"${item.CostPerMillionTokens:N4}/M ≈ {item.FullQuotaMillionTokens:N1}M；" +
-                $"样本估算范围 {item.MinimumMillionTokens:N1}–{item.MaximumMillionTokens:N1}M。")) +
-            "\n缓存比例、输出比例或速度模式变化时，可用 Token 量也会变化；此处为同套餐样本估算。";
+                (item.IsShareExtrapolation
+                    ? $"本期归因额度降幅 {item.AttributedQuotaDropPercent:N3}%，占比外推，仅供参考，非独立校准。"
+                    : $"样本估算范围 {item.MinimumMillionTokens:N1}–{item.MaximumMillionTokens:N1}M。"))) +
+            "\n缓存比例、输出比例或速度模式变化时，可用 Token 量也会变化；此处为同套餐样本估算。" +
+            "本期占比外推只作参考；缺少价格或可用归因额度降幅时暂不显示数值，其已有用量仍保留在模型构成中。";
     }
 
     private void Chart_BandSelected(object? sender, QuotaCycleAnalysisBand band)

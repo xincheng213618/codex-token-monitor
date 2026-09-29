@@ -82,7 +82,7 @@ internal static class SettingsProbe
         Seed();
         using var runtime = new MonitorRuntime();
         suiteRuntime = runtime;
-        foreach (var kind in new[] { "PriceSettingsWindow", "SubscriptionPlanWindow", "ResetOpportunityWindow" })
+        foreach (var kind in new[] { "ModelPricesWindow", "SubscriptionPlanWindow", "ResetOpportunityWindow" })
         {
             var dialog = OpenDialog(kind, runtime);
             await WaitLoadedAsync(dialog.Window);
@@ -97,11 +97,12 @@ internal static class SettingsProbe
             Results.Add(new { check = "normal-load", window = kind, saveEnabled = true });
         }
 
-        foreach (var kind in new[] { "PriceSettingsWindow", "SubscriptionPlanWindow", "ResetOpportunityWindow" })
+        foreach (var kind in new[] { "ModelPricesWindow", "SubscriptionPlanWindow", "ResetOpportunityWindow" })
             await CheckFailedLoadAndRetryAsync(kind, runtime);
-        foreach (var kind in new[] { "PriceSettingsWindow", "SubscriptionPlanWindow", "ResetOpportunityWindow" })
+        foreach (var kind in new[] { "ModelPricesWindow", "SubscriptionPlanWindow", "ResetOpportunityWindow" })
             await CheckFailedSaveAndRetryAsync(kind, runtime);
 
+        await CheckDisplaySlotsAsync(runtime);
         var stop = await runtime.StopAsync(Budget);
         Require(stop.Completed, "runtime drained");
         Require(Windows.All(ClosedWindows.Contains), "every window raised Closed");
@@ -135,7 +136,7 @@ internal static class SettingsProbe
 
     private static async Task CheckFailedLoadAndRetryAsync(string kind, MonitorRuntime runtime)
     {
-        var path = kind == "PriceSettingsWindow" ? pricePath : settingsPath;
+        var path = kind == "ModelPricesWindow" ? pricePath : settingsPath;
         var healthy = Backup(path);
         var dialog = default(DialogHandle);
         try
@@ -161,7 +162,7 @@ internal static class SettingsProbe
                 Require(Get<TextBlock>(dialog.Window, "ResetRecordCountText").Text == "读取失败", "failed reset load never says zero rows");
             }
             Invoke(dialog.Window, "SaveButton_Click", dialog.Window, new RoutedEventArgs());
-            Invoke(dialog.Window, kind == "PriceSettingsWindow" ? "RestoreButton_Click" : "DefaultsButton_Click", dialog.Window, new RoutedEventArgs());
+            Invoke(dialog.Window, kind == "ModelPricesWindow" ? "RestoreButton_Click" : "DefaultsButton_Click", dialog.Window, new RoutedEventArgs());
             // Account import/sync is intentionally never invoked: a regression
             // in its UI guard must not give this fixture access to real auth or
             // a network service. Assert its disabled entry point instead.
@@ -176,7 +177,7 @@ internal static class SettingsProbe
             Require(Get<TextBlock>(dialog.Window, "StatusText").ToolTip is null, kind + " retry clears warning");
             Require(Get<Button>(dialog.Window, "RetryLoadButton").Visibility == Visibility.Collapsed, "retry hidden after success");
             Require(HasFixtureRow(dialog.Window, kind), kind + " original data recovered");
-            if (kind != "PriceSettingsWindow")
+            if (kind != "ModelPricesWindow")
             {
                 var grid = Get<DataGrid>(dialog.Window, GridName(kind));
                 var source = grid.ItemsSource;
@@ -198,7 +199,7 @@ internal static class SettingsProbe
             }
             Results.Add(new { check = "failed-load-and-retry", window = kind, staticCacheDidNotMaskFailure = true,
                 saveAndOverwriteDisabled = true, corruptBytesPreserved = true, originalRowsRecovered = true, tooltipCleared = true,
-                initialHeaderNotMisleading = true, reloadRetainsEdits = kind != "PriceSettingsWindow" ? (bool?)true : null });
+                initialHeaderNotMisleading = true, reloadRetainsEdits = kind != "ModelPricesWindow" ? (bool?)true : null });
         }
         finally
         {
@@ -210,14 +211,14 @@ internal static class SettingsProbe
 
     private static async Task CheckFailedSaveAndRetryAsync(string kind, MonitorRuntime runtime)
     {
-        var path = kind == "PriceSettingsWindow" ? pricePath : settingsPath;
+        var path = kind == "ModelPricesWindow" ? pricePath : settingsPath;
         var dialog = OpenDialog(kind, runtime);
         await WaitLoadedAsync(dialog.Window);
         Require(Get<bool>(dialog.Window, "hasLoadedSettings"), kind + " ready to edit");
         var grid = Get<DataGrid>(dialog.Window, GridName(kind));
         var source = grid.ItemsSource;
         var row = FixtureRow(dialog.Window, kind);
-        if (kind == "PriceSettingsWindow")
+        if (kind == "ModelPricesWindow")
         {
             var preset = Get<PricePreset>(row, "Preset").Clone();
             preset.UncachedInput = 4.5678m;
@@ -250,7 +251,7 @@ internal static class SettingsProbe
         using var diagnostics = CacheOperationDiagnostics.Begin();
         var persisted = kind switch
         {
-            "PriceSettingsWindow" => PriceSettingsStore.Load(forceReload: true).CodexPresets.Single(item => item.Model == "phase4-fixture-model").UncachedInput == 4.5678m,
+            "ModelPricesWindow" => PriceSettingsStore.Load(forceReload: true).CodexPresets.Single(item => item.Model == "phase4-fixture-model").UncachedInput == 4.5678m,
             "SubscriptionPlanWindow" => SubscriptionPlanStore.Load(forceReload: true).Single(item => item.Id == "phase4-plan").AmountCny == 246.80m,
             _ => ResetOpportunityStore.Load(forceReload: true).Single(item => item.Id == "phase4-reset").Note == "phase4 unsaved edit retained"
         };
@@ -261,21 +262,22 @@ internal static class SettingsProbe
 
     private static bool HasEditedValue(object row, string kind) => kind switch
     {
-        "PriceSettingsWindow" => Get<PricePreset>(row, "Preset").UncachedInput == 4.5678m,
+        "ModelPricesWindow" => Get<PricePreset>(row, "Preset").UncachedInput == 4.5678m,
         "SubscriptionPlanWindow" => Get<string>(row, "AmountText") == "246.80",
         _ => Get<string>(row, "Note") == "phase4 unsaved edit retained"
     };
     private static bool HasFixtureRow(Window window, string kind) => FixtureRow(window, kind) is not null;
     private static object FixtureRow(Window window, string kind) =>
         ((IEnumerable)Get<DataGrid>(window, GridName(kind)).ItemsSource).Cast<object>().Single(row =>
-            kind == "PriceSettingsWindow" ? Get<PricePreset>(row, "Preset").Model == "phase4-fixture-model" :
+            kind == "ModelPricesWindow" ? Get<PricePreset>(row, "Preset").Model == "phase4-fixture-model" :
             Get<string>(row, "Id") == (kind == "SubscriptionPlanWindow" ? "phase4-plan" : "phase4-reset"));
-    private static string GridName(string kind) => kind switch { "PriceSettingsWindow" => "PriceGrid", "SubscriptionPlanWindow" => "PlansGrid", _ => "ResetGrid" };
+    private static string GridName(string kind) => kind switch { "ModelPricesWindow" => "PriceGrid", "SubscriptionPlanWindow" => "PlansGrid", _ => "ResetGrid" };
 
     private static DialogHandle OpenDialog(string kind, MonitorRuntime runtime)
     {
         var type = typeof(QuotaCostCurveWindow).Assembly.GetType("CodexTokenMonitor." + kind)!;
-        var arguments = kind == "PriceSettingsWindow" ? new object?[] { PricePresetGroups.Codex, runtime } : new object?[] { runtime };
+        var arguments = kind == "ModelPricesWindow" ? new object?[] { PricePresetGroups.Codex, runtime, null } :
+            kind == "PriceSettingsWindow" ? new object?[] { PricePresetGroups.Codex, runtime } : new object?[] { runtime };
         var window = (Window)Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, arguments, null)!;
         if (kind == "SubscriptionPlanWindow")
         {
@@ -295,6 +297,99 @@ internal static class SettingsProbe
             catch (Exception ex) { completion.TrySetException(ex); }
         }));
         return new DialogHandle(window, completion.Task);
+    }
+
+    private static async Task CheckDisplaySlotsAsync(MonitorRuntime runtime)
+    {
+        var healthy = Backup(pricePath);
+        var dialog = OpenDialog("PriceSettingsWindow", runtime);
+        await WaitLoadedAsync(dialog.Window);
+        Require(Get<bool>(dialog.Window, "hasLoadedSettings"), "display settings loaded");
+        var grid = Get<DataGrid>(dialog.Window, "SlotGrid");
+        var rows = ((IEnumerable)grid.ItemsSource).Cast<PriceDisplaySlotRow>().ToArray();
+        Require(rows.Length == 10, "exactly ten display slots");
+        rows[0].SelectedProvider = "OpenAI";
+        Require(rows[0].Models.All(model => model.Provider == "OpenAI"), "provider filters models");
+        rows[0].SelectedModel = rows[0].Models.Single(model => model.ModelId == "gpt-6.1-sol");
+        rows[1].Clear();
+        var tabs = Get<TabControl>(dialog.Window, "SourceTabs");
+        tabs.SelectedIndex = UsageSourceRegistry.IndexOf(UsageSource.Dsh);
+        var dshRows = ((IEnumerable)grid.ItemsSource).Cast<PriceDisplaySlotRow>().ToArray();
+        Require(dshRows.Length == 10 && dshRows[0].SelectedModel!.Provider == "DeepSeek", "sources have independent selections");
+        tabs.SelectedIndex = UsageSourceRegistry.IndexOf(UsageSource.Codex);
+        Require(rows[0].SelectedModel!.ModelId == "gpt-6.1-sol" && rows[1].SelectedModel is null, "switching sources retains edits");
+        await RenderAsync(dialog.Window, "PriceSettingsWindow-ten-slots.png");
+        var firstRow = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(rows[0]);
+        var modelPicker = VisualDescendants(firstRow).OfType<ComboBox>().Single(combo => combo.DisplayMemberPath == "ChoiceLabel");
+        Require(ReferenceEquals(modelPicker.SelectedItem, rows[0].SelectedModel), "model selection is reflected in the real ComboBox");
+        // Open the child through the actual settings entry, then confirm a draft.
+        _ = dialog.Window.Dispatcher.BeginInvoke(new Action(() =>
+            Invoke(dialog.Window, "ModelPricesButton_Click", dialog.Window, new RoutedEventArgs())));
+        await WaitUntilAsync(() => Application.Current.Windows.OfType<ModelPricesWindow>().Any(window => window.IsLoaded &&
+            Get<bool>(window, "hasLoadedSettings")), "model prices entry opens");
+        var child = Application.Current.Windows.OfType<ModelPricesWindow>().Single();
+        Windows.Add(child);
+        child.Closed += (_, _) => ClosedWindows.Add(child);
+        var filter = Get<ComboBox>(child, "ProviderFilter");
+        filter.SelectedItem = "OpenAI";
+        var prices = Get<DataGrid>(child, "PriceGrid");
+        Require(prices.Items.Cast<ModelPriceRow>().All(row => row.Provider == "OpenAI"), "price page provider filter");
+        var sol = prices.Items.Cast<ModelPriceRow>().Single(row => row.Preset.ModelId == "gpt-6.1-sol");
+        var edited = sol.Preset.Clone();
+        edited.UncachedInput = 3m;
+        sol.Replace(edited);
+        await RenderAsync(child, "ModelPricesWindow-openai.png");
+        Invoke(child, "SaveButton_Click", child, new RoutedEventArgs());
+        await WaitUntilAsync(() => ClosedWindows.Contains(child), "confirmed model prices closes");
+        await WaitUntilAsync(() => grid.Items.Cast<PriceDisplaySlotRow>().First().SelectedModel?.UncachedInput == 3m,
+            "parent receives confirmed prices");
+        await dialog.Window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+        Require(ReadBytes(pricePath).SequenceEqual(healthy), "child confirmation does not persist before parent save");
+        rows = ((IEnumerable)grid.ItemsSource).Cast<PriceDisplaySlotRow>().ToArray();
+        Require(rows[0].SelectedModel!.UncachedInput == 3m, "confirmed prices refresh selected slot");
+        dialog.Window.Close();
+        await dialog.Completion.WaitAsync(Budget);
+        Require(ReadBytes(pricePath).SequenceEqual(healthy), "cancelling settings discards confirmed child edits");
+
+        // The new display editor also protects corrupt files and retains failed-save edits.
+        File.WriteAllBytes(pricePath, CorruptBytes);
+        dialog = OpenDialog("PriceSettingsWindow", runtime);
+        await WaitLoadedAsync(dialog.Window);
+        Require(!Get<bool>(dialog.Window, "hasLoadedSettings") && !Get<Button>(dialog.Window, "SaveButton").IsEnabled &&
+            !Get<Button>(dialog.Window, "ModelPricesButton").IsEnabled, "failed display load disables editing");
+        Require(ReadBytes(pricePath).SequenceEqual(CorruptBytes), "failed display load preserves corrupt data");
+        Restore(pricePath, healthy);
+        Invoke(dialog.Window, "RetryLoadButton_Click", dialog.Window, new RoutedEventArgs());
+        await WaitUntilAsync(() => Get<bool>(dialog.Window, "hasLoadedSettings") && !Get<bool>(dialog.Window, "isLoading"), "display load retry");
+        grid = Get<DataGrid>(dialog.Window, "SlotGrid");
+        rows = ((IEnumerable)grid.ItemsSource).Cast<PriceDisplaySlotRow>().ToArray();
+        rows[0].SelectedProvider = "OpenAI";
+        rows[0].SelectedModel = rows[0].Models.Single(model => model.ModelId == "gpt-6.1-sol");
+        rows[1].Clear();
+        File.WriteAllBytes(pricePath, CorruptBytes);
+        Invoke(dialog.Window, "SaveButton_Click", dialog.Window, new RoutedEventArgs());
+        await WaitUntilAsync(() => !Get<bool>(dialog.Window, "isSaving"), "display save failure ends");
+        Require(!ClosedWindows.Contains(dialog.Window) && rows[0].SelectedModel!.ModelId == "gpt-6.1-sol" &&
+            ReadBytes(pricePath).SequenceEqual(CorruptBytes), "display save failure preserves edits and corrupt file");
+        Restore(pricePath, healthy);
+        Invoke(dialog.Window, "SaveButton_Click", dialog.Window, new RoutedEventArgs());
+        Require(await dialog.Completion.WaitAsync(Budget) == true, "display save retry closes with true");
+        var saved = PriceSettingsStore.Load(forceReload: true);
+        Require(saved.DisplaySlotsForGroup(PricePresetGroups.Codex).Count == 10 &&
+            saved.DisplayPresetsForGroup(PricePresetGroups.Codex)[0].ModelId == "gpt-6.1-sol" &&
+            saved.DisplaySlotsForGroup(PricePresetGroups.Codex)[1] == "", "ten selections and empty slot persisted");
+        Results.Add(new { check = "ten-display-slots", providerModelBinding = true, independentSources = true,
+            nestedPriceEntry = true, draftCancelSafe = true, corruptLoadAndSaveSafe = true, saved = true });
+    }
+
+    private static IEnumerable<DependencyObject> VisualDescendants(DependencyObject parent)
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            yield return child;
+            foreach (var descendant in VisualDescendants(child)) yield return descendant;
+        }
     }
 
     private static Task WaitLoadedAsync(Window window) => WaitUntilAsync(() => window.IsLoaded && !Get<bool>(window, "isLoading"), "window load finishes");

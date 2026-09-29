@@ -57,6 +57,7 @@ internal static class QuotaCycleModelPalette
         }
 
         var normalized = CodexModelCost.NormalizeModelId(modelId);
+        if (MatchesModel(normalized, "gpt-6.1-sol")) return "6.1 sol";
         if (MatchesModel(normalized, "gpt-6-sol")) return "6 sol";
         if (MatchesModel(normalized, "gpt-5.6-sol")) return "5.6 sol";
         if (MatchesModel(normalized, "gpt-6-luna")) return "6 luna";

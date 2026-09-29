@@ -28,6 +28,28 @@ internal static class PricePresetGroups
 
 internal sealed class PriceSettings
 {
+    public const int DefaultDisplaySlotCount = 10;
+    public Dictionary<string, List<string>> DisplaySlots { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public List<string> DisplaySlotsForGroup(string group)
+    {
+        group = PricePresetGroups.Normalize(group);
+        var keys = DisplaySlots.TryGetValue(group, out var saved)
+            ? saved.Take(DefaultDisplaySlotCount).ToList()
+            : PresetsForGroup(group).Take(DefaultDisplaySlotCount).Select(item => item.SelectionKey).ToList();
+        while (keys.Count < DefaultDisplaySlotCount) keys.Add("");
+        return keys;
+    }
+
+    public IReadOnlyList<PricePreset> DisplayPresetsForGroup(string group)
+    {
+        var catalog = PresetsForGroup(group);
+        return DisplaySlotsForGroup(group)
+            .Select(key => catalog.FirstOrDefault(item => string.Equals(item.SelectionKey, key, StringComparison.OrdinalIgnoreCase)))
+            .Where(item => item is not null)
+            .Select(item => item!.Clone()).ToList();
+    }
+
     public int DisplayOrderVersion { get; set; } = 20;
     public string GptName { get; set; } = "GPT-5.6 Sol";
     public decimal GptUncachedInputPerMillion { get; set; } = 4.00m;
@@ -89,6 +111,7 @@ internal sealed class PriceSettings
     {
         return new PriceSettings
         {
+            DisplaySlots = DisplaySlots.ToDictionary(item => item.Key, item => item.Value.ToList(), StringComparer.OrdinalIgnoreCase),
             DisplayOrderVersion = DisplayOrderVersion,
             GptName = GptName,
             GptUncachedInputPerMillion = GptUncachedInputPerMillion,
@@ -152,6 +175,7 @@ internal sealed class PriceSettings
 
 internal sealed class PricePreset
 {
+    public const string Gpt61PriceSource = "OpenAI 标准短上下文价（2026-09-30；输入 ≤272K tokens）：https://developers.openai.com/api/docs/pricing";
     public const string KimiPreviewPriceSource = "B.AI 第三方参考价（2026-09-22；非 Kimi 官方账单）：https://docs.b.ai/llmservice/models/kimi-k2.8-preview/";
     public const string OpenAiPriceSource = "OpenAI 标准价（2026-09-05）：https://developers.openai.com/api/docs/pricing";
     public const string Gpt6PriceSource = "OpenAI 标准价（2026-09-23）：https://developers.openai.com/api/docs/pricing";
@@ -173,6 +197,8 @@ internal sealed class PricePreset
     public PriceSchedule Schedule { get; set; }
 
     public string DisplayName => string.IsNullOrWhiteSpace(Provider) ? Model : $"{Provider} {Model}".Trim();
+    public string SelectionKey => JsonSerializer.Serialize(new[] { Provider, Model, CurrencySymbol, UnitLabel, Divisor.ToString(CultureInfo.InvariantCulture) });
+    public string ChoiceLabel => $"{Model} · {CurrencySymbol}";
     public string ScheduleLabel => Schedule == PriceSchedule.DeepSeekBeijingPeakDouble ? "峰谷自动" : "固定价";
     public decimal EffectiveCacheWriteInput => CacheWriteInput ?? UncachedInput;
 
@@ -219,6 +245,7 @@ internal sealed class PricePreset
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
             Preset("OpenAI", "GPT-6 Astra", "$", "USD / 1M tokens", 1_000_000m, 10m, 1m, 50m, "https://developers.openai.com/api/docs/models/gpt-6-astra (Standard)", cacheWrite: 12.5m),
             Preset("OpenAI", "GPT-6 Sol", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.20m, 10m, Gpt6PriceSource, cacheWrite: 2.50m),
+            Preset("OpenAI", "GPT-6.1 Sol", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.10m, 10m, Gpt61PriceSource, cacheWrite: 2.50m),
             Preset("OpenAI", "GPT-6 Luna", "$", "USD / 1M tokens", 1_000_000m, 0.10m, 0.01m, 0.50m, Gpt6PriceSource, cacheWrite: 0.125m),
             Preset("OpenAI", "codex-auto-review", "$", "USD / 1M tokens", 1_000_000m, 0.20m, 0.02m, 1.20m, "用户截图参考价（2026-09-05）；未核实为 OpenAI 官方报价，可编辑"),
             Preset("OpenAI", "GPT-5.6 Sol", "$", "USD / 1M tokens", 1_000_000m, 4.00m, 0.40m, 20.00m, OpenAiPriceSource, cacheWrite: 5.00m),
@@ -332,7 +359,7 @@ internal sealed class PricePreset
             PricePresetGroups.WorkBuddy => ("Kimi（月之暗面）", "K3"),
             PricePresetGroups.Dsh => ("DeepSeek", "V4.1 Flash"),
             PricePresetGroups.Kimi => ("Kimi（月之暗面）", "K2.8 Preview"),
-            _ => ("OpenAI", "GPT-6 Sol")
+            _ => ("OpenAI", "GPT-6.1 Sol")
         };
         var ordered = new List<PricePreset>();
         var first = presets.FirstOrDefault(item =>
@@ -481,24 +508,8 @@ internal static class PriceSettingsStore
 
     public static IReadOnlyList<PricePreset> DisplayPresetsForGroup(string group, int count)
     {
-        var candidates = Current.PresetsForGroup(group)
-            .Select(item => item.Clone())
-            .ToList();
-        if (count <= 0)
-        {
-            return candidates;
-        }
-
-        if (candidates.Count < count)
-        {
-            candidates.AddRange(PricePreset.DefaultsForGroup(group)
-                .Where(item => !candidates.Any(existing => SameCatalogPreset(existing, item)))
-                .Select(item => item.Clone()));
-        }
-
-        return candidates
-            .Take(Math.Max(1, count))
-            .ToList();
+        var candidates = Current.DisplayPresetsForGroup(group);
+        return count <= 0 ? candidates : candidates.Take(count).ToList();
     }
 
     private static bool ContainsIgnoreCase(string value, string pattern)
@@ -575,6 +586,8 @@ internal static class PriceSettingsStore
             settings.ZCodePresets, settings.WorkBuddyPresets, settings.DshPresets, settings.KimiPresets];
         if (groups.Any(group => group is null || group.Any(preset => preset is null)))
             throw new JsonException("Price preset collections and their entries must not be null.");
+        if (settings.DisplaySlots is null || settings.DisplaySlots.Values.Any(slots => slots is null || slots.Any(key => key is null)))
+            throw new JsonException("Price display slots and their entries must not be null.");
         return settings;
     }
 
@@ -685,7 +698,7 @@ internal static class PriceSettingsStore
             settings.GptCachedInputPerMillion == .5m && settings.GptOutputPerMillion == 30m &&
             settings.GptCacheWriteInputPerMillion is null or 6.25m;
 
-        return new PriceSettings
+        var normalized = new PriceSettings
         {
             DisplayOrderVersion = defaults.DisplayOrderVersion,
             GptName = gptName,
@@ -715,6 +728,23 @@ internal static class PriceSettingsStore
             DshPresets = dshPresets,
             KimiPresets = kimiPresets
         };
+        foreach (var group in PricePresetGroups.All)
+        {
+            // Capture the saved ordering before any legacy catalog-order migration.
+            // Selection keys carry identity only; costs always come from the live catalog.
+            var keys = settings.DisplaySlotsForGroup(group);
+            var catalog = normalized.PresetsForGroup(group);
+            normalized.DisplaySlots[group] = keys.Select(key =>
+            {
+                if (catalog.Any(item => string.Equals(item.SelectionKey, key, StringComparison.OrdinalIgnoreCase))) return key;
+                var original = settings.PresetsForGroup(group).FirstOrDefault(item =>
+                    string.Equals(item.SelectionKey, key, StringComparison.OrdinalIgnoreCase));
+                var migratedKey = original is null ? "" : NormalizePreset(original, group).SelectionKey;
+                return catalog.Any(item => string.Equals(item.SelectionKey, migratedKey, StringComparison.OrdinalIgnoreCase))
+                    ? migratedKey : "";
+            }).ToList();
+        }
+        return normalized;
     }
 
     // Overwrites only placeholder rows: every rate is still 0, so the user has
@@ -794,7 +824,7 @@ internal static class PriceSettingsStore
     {
         var preferred = new (string Group, string Provider, string Model)[]
         {
-            ("Codex", "OpenAI", "GPT-6 Sol"),
+            ("Codex", "OpenAI", "GPT-6.1 Sol"),
             ("Codex", "DeepSeek", "V4.1 Flash"),
             ("Codex", "Xiaomi", "MiMo V2.5 Pro"),
             ("Claude Code", "Claude", "Fable 5.1 API"),
@@ -883,6 +913,15 @@ internal static class PriceSettingsStore
         };
 
         RefreshOldOpenAiDefault(normalized);
+        // Earlier builds discover new model ids as zero-price placeholders.
+        // Replace only untouched placeholders so they cannot shadow the published tariff.
+        if (normalized.Provider == "OpenAI" &&
+            CodexModelCost.NormalizeModelId(normalized.ModelId) == "gpt-6.1-sol" &&
+            CodexModelCost.IsPending(normalized))
+        {
+            normalized = PricePreset.Defaults().Single(item => item.ModelId == "gpt-6.1-sol").Clone();
+            normalized.Group = PricePresetGroups.Normalize(group);
+        }
         // Upgrade only the untouched placeholder; retain user prices and order.
         if (normalized.Group == PricePresetGroups.Kimi &&
             normalized.Provider == "Kimi（月之暗面）" && normalized.Model == "K2.8 Preview" &&
