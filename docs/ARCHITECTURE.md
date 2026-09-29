@@ -70,12 +70,20 @@ Claude Code / ZCode / WorkBuddy 结构类似：各自读取本地日志目录，
 
 DSH（DeepSeek Harness，`DshUsageReader`）比较特殊：
 
-- 输入是 `~/.dsh/sessions/--<normalized-cwd>--/<session-id>/session.jsonl.zstd`：**zstd 多帧拼接**的 JSONL（一个 header 帧 + 每批追加一个帧，帧内行不跨帧）。
-- 用 `ZstdSharp.Port`（纯托管，适合单文件发布）解压：按帧 magic（`28 B5 2F FD`）流式切分并逐帧、逐行消费，**容忍不完整尾帧**（写入中的帧失败时保留已解码前缀），不会把整份压缩文件和完整解压文本同时载入内存。
-- 每个模型调用对应一条 `assistant/chunk { "type": "usage" }` 记录（usage chunk 永远不会被打包压缩），字段：`inputTokens`（未缓存）、`cacheReadTokens`、`cacheWriteTokens`、`outputTokens`、`reasoningTokens`，顶层 `time` 为毫秒时间戳。
-- 字段映射：`InputTokens = inputTokens + cacheReadTokens + cacheWriteTokens`、`CachedInputTokens = cacheReadTokens`、`CacheWriteInputTokens = cacheWriteTokens`、`UncachedInputTokens = inputTokens`、`OutputTokens = outputTokens`、`ReasoningOutputTokens = reasoningTokens`、`TotalTokens = input + output`。
-- 稳定 key 为 `(会话 id, seq)`，重复扫描/导入不重复计数；`assistant/message` 里的 `message.source` 记录 provider/model（如 `deepseek-official` / `deepseek-v4-flash`），`message.usage` 仅在无 usage chunk 时作为后备（当前版本不产生）。
+- 输入是 `~/.dsh/sessions/--<normalized-cwd>--/<session-id>/session.<vN.>jsonl[.zstd]`：**zstd 多帧拼接**的 JSONL（一个 header 帧 + 每批追加一个帧，帧内行不跨帧）；`compression: 'none'` 时同名的裸 JSONL 行。物理文件名带会话格式代次（已发布的 v0–v2 为 `session.jsonl.zstd`、v3 为 `session.v3.jsonl.zstd`、当前 v4 为 `session.v4.jsonl.zstd`），运行时取**代次最高**的那一份：迁移会保留被取代的旧代次文件（同名不同名并存），把它们一起读会重复计数。裸 JSONL 由 `ReadRawTranscript` 按块解码。
+- 用 `ZstdSharp.Port`（纯托管，适合单文件发布）解压：按帧 magic（`28 B5 2F FD`）流式切分并逐帧、逐行消费，**容忍不完整尾帧**（写入中的帧失败时保留已解码前缀），不会把整份压缩文件和完整解压文本同时载入内存。压缩与裸文本按文件头 magic 区分（`IsZstandardTranscript`）。
+- 每个模型调用对应一条结算记录：当前格式（v4）把 token 账目放在 `assistant/message.data.usage`，与 harness 自身 tokenUsage 投影读的是同一份样本；已发布的 v0–v3 放在 `assistant/chunk { "type": "usage" }`。两者字段一致：`inputTokens`（未缓存）、`cacheReadTokens`、`cacheWriteTokens`、`outputTokens`，旧格式额外带 `reasoningTokens`；顶层 `time` 为毫秒时间戳。
+- 字段映射：`InputTokens = inputTokens + cacheReadTokens + cacheWriteTokens`、`CachedInputTokens = cacheReadTokens`、`CacheWriteInputTokens = cacheWriteTokens`、`UncachedInputTokens = inputTokens`、`OutputTokens = outputTokens`、`ReasoningOutputTokens = reasoningTokens`（v4 无此字段，记 0）、`TotalTokens = input + output`。
+- 稳定 key 为 `(会话 id, seq)`，重复扫描/导入不重复计数；模型归属优先取结算记录自带的 `message.source.model`（v4 的 `assistant/message` 每步都写），无该字段时回退到最近的 `request/context` / `request/header` 的 `model`/`header.config.model`。
 - 价格组映射到 DSH 组（默认首选 DeepSeek V4.1 Flash 峰谷合并档），每条事件按北京时间工作日峰谷规则进入子汇总，后台预热会自动覆盖该来源。
+
+DSH 页的账号余额面板（`DshBalanceReader`）读的是 DeepSeek 平台账号状态，和用量日志无关：
+
+- 数据来自 dsh 桌面端“账号与余额”同一份数据：`GET {platformOrigin}/api/v0/users/get_user_summary`，token 放在 `x-dsh-auth-token` 请求头；`platformOrigin` 默认 `https://platform.deepseek.com`，可用 `DSH_PLATFORM_ORIGIN` 覆盖（与 dsh 自身配置同源）。
+- token 只来自 dsh 的凭据文档 `$DSH_HOME/.credentials.yaml`（默认 `~/.dsh/.credentials.yaml`）中 owner 为 `deepseek-account-platform/default` 的 grant；该文档是“只有凭据”的小型 YAML（`version`/`refs`/`records`），因此只解析这一个记录需要的两个标量，不引入 YAML 依赖。token 仅在内存中使用，不落盘、不进日志。
+- 签发方（`issuer`）与配置的平台地址不一致时不发请求，按解析失败上报——与 dsh 自身“启动时删除签发方不匹配的 grant”策略一致，避免把凭据发到别的源。
+- 钱包口径：`normal_wallets` 是充值余额、`bonus_wallets` 是赠金，两者**分开显示不合并**；`total_costs` 是该账号的累计消费，只作为余额的上下文，不代表所选区间的消费。余额（金额字符串）按 `decimal` 解析，容忍 `0E-16` 这类平台 Web 端也会接受的十进制写法；解析不出的钱包被跳过而不是记 0。
+- 缓存与失败分类：成功缓存 5 分钟、失败 30 秒，请求限时 15 秒（与 ZCode 额度读取一致），429/网络故障不会清空上次余额；401 与业务码 `40003` 按“未登录”上报。该来源的 `SupportsQuota` 仍为 false——面板走的是 `ShouldRefreshQuota` 里的显式分支，`UsageQueryService` 的额度管线不受影响。
 
 ## 3. 缓存与统计管线
 

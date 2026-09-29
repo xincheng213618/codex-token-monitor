@@ -26,24 +26,36 @@ internal sealed record DshUsageEntry(
 /// <summary>
 /// Reads token usage from DeepSeek Harness (dsh) session transcripts.
 ///
-/// dsh persists each session as an append-only JSONL log compressed into a
-/// concatenation of independent Zstandard frames (one header frame plus one
-/// frame per durable append batch) at:
+/// dsh persists each session as an append-only JSONL log, compressed by
+/// default into a concatenation of independent Zstandard frames (one header
+/// frame plus one frame per durable append batch), at:
 ///
-///   %USERPROFILE%\.dsh\sessions\--<normalized-cwd>--\<session-id>\session.jsonl.zstd
+///   %USERPROFILE%\.dsh\sessions\--<normalized-cwd>--\<session-id>\session.<vN.>jsonl[.zstd]
 ///
-/// Every model call reports its token accounting through an
-/// `assistant/chunk { "type": "usage" }` record (never packed into chunk
-/// rows), carrying inputTokens (uncached), cacheReadTokens, cacheWriteTokens,
-/// outputTokens and reasoningTokens. The stable key is (session id, seq), so
-/// repeated scans and overlapping imports never double count.
+/// The physical filename carries the session format generation — released
+/// v0–v2 wrote `session.jsonl.zstd` (no version segment), v3 writes
+/// `session.v3.jsonl.zstd`, v4 (current) writes `session.v4.jsonl.zstd` — and
+/// `compression: 'none'` drops the `.zstd` suffix while keeping the raw JSONL
+/// lines. Runtime operations select the numerically highest generation in a
+/// session directory, and migration deliberately retains the superseded
+/// generation beside its successor; reading every matching file would count
+/// the same session twice, so the highest generation alone is scanned.
+///
+/// Every model call reports its token accounting on its assistant settlement:
+/// current format in `assistant/message.data.usage`, released v0–v3 in an
+/// `assistant/chunk { "type": "usage" }` record. Both carry inputTokens
+/// (uncached), cacheReadTokens, cacheWriteTokens, outputTokens and — in the
+/// released format only — reasoningTokens. The stable key is (session id,
+/// seq), so repeated scans and overlapping imports never double count.
 /// </summary>
 internal static class DshUsageReader
 {
     private const string CacheFolder = "DshTokenMonitor";
     private const string SessionsRootName = ".dsh";
     private const string SessionsDirName = "sessions";
-    private const string TranscriptFileName = "session.jsonl.zstd";
+    private const string TranscriptFileNamePrefix = "session";
+    private const string TranscriptFileNameSuffix = ".jsonl";
+    private const string CompressedTranscriptSuffix = ".jsonl.zstd";
     private const byte ZstdMagic0 = 0x28;
     private const byte ZstdMagic1 = 0xB5;
     private const byte ZstdMagic2 = 0x2F;
@@ -445,13 +457,7 @@ internal static class DshUsageReader
         }
 
         var startUtc = startLocal.UtcDateTime;
-        var options = new EnumerationOptions
-        {
-            RecurseSubdirectories = true,
-            IgnoreInaccessible = true
-        };
-
-        foreach (var file in Directory.EnumerateFiles(sessionsRoot, TranscriptFileName, options))
+        foreach (var file in SelectHighestGenerations(sessionsRoot))
         {
             FileInfo info;
             try
@@ -473,6 +479,97 @@ internal static class DshUsageReader
         }
     }
 
+    /// <summary>
+    /// Resolves one transcript per session directory: the numerically highest
+    /// format generation present. Migration keeps the superseded generation on
+    /// disk, so scanning every match would report one session twice.
+    /// </summary>
+    private static List<string> SelectHighestGenerations(string sessionsRoot)
+    {
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            MatchType = MatchType.Simple
+        };
+
+        var selected = new Dictionary<string, (int Version, string Path)>(StringComparer.OrdinalIgnoreCase);
+        IEnumerable<string> candidates;
+        try
+        {
+            candidates = Directory.EnumerateFiles(sessionsRoot, "session*.jsonl*", options);
+        }
+        catch
+        {
+            return [];
+        }
+
+        foreach (var file in candidates)
+        {
+            if (!TryGetTranscriptGeneration(Path.GetFileName(file), out var version))
+            {
+                continue;
+            }
+
+            var directory = Path.GetDirectoryName(file) ?? file;
+            if (!selected.TryGetValue(directory, out var current) || version > current.Version)
+            {
+                selected[directory] = (version, file);
+            }
+        }
+
+        return selected.Values
+            .Select(item => item.Path)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Accepts the released/current transcript names — `session.jsonl`,
+    /// `session.jsonl.zstd`, `session.v3.jsonl.zstd`, `session.v4.jsonl` —
+    /// and reports their format generation (a missing version segment is 0).
+    /// </summary>
+    private static bool TryGetTranscriptGeneration(string fileName, out int version)
+    {
+        version = 0;
+        if (!fileName.StartsWith(TranscriptFileNamePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var remainder = fileName[TranscriptFileNamePrefix.Length..];
+        var compressed = remainder.EndsWith(CompressedTranscriptSuffix, StringComparison.OrdinalIgnoreCase);
+        if (!compressed && !remainder.EndsWith(TranscriptFileNameSuffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // `.jsonl.zstd` and `.jsonl` include their separating dot, so the
+        // remaining segment is `.v4` or empty.
+        var suffixLength = compressed ? CompressedTranscriptSuffix.Length : TranscriptFileNameSuffix.Length;
+        var versionSegment = remainder[..^suffixLength];
+        if (versionSegment.StartsWith('.'))
+        {
+            versionSegment = versionSegment[1..];
+        }
+
+        if (versionSegment.Length == 0)
+        {
+            return true;
+        }
+
+        if (versionSegment.Length < 2 ||
+            versionSegment[0] is not ('v' or 'V') ||
+            !int.TryParse(versionSegment[1..], out version) ||
+            version < 0)
+        {
+            version = 0;
+            return false;
+        }
+
+        return true;
+    }
+
     private static bool ReadFile(
         string file,
         DateTimeOffset startLocal,
@@ -489,7 +586,7 @@ internal static class DshUsageReader
             var sessionId = Path.GetFileName(Path.GetDirectoryName(file)) ?? file;
             var pendingLine = "";
             var context = new DshTranscriptContext();
-            var decodedCompletely = ReadDecodedTranscript(file, decoded =>
+            void ConsumeDecoded(string decoded)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (decoded.Length == 0)
@@ -514,7 +611,11 @@ internal static class DshUsageReader
                     context,
                     cancellationToken);
                 pendingLine = text[(lastNewLine + 1)..];
-            }, cancellationToken);
+            }
+
+            var decodedCompletely = IsZstandardTranscript(file)
+                ? ReadDecodedTranscript(file, ConsumeDecoded, cancellationToken)
+                : ReadRawTranscript(file, ConsumeDecoded, cancellationToken);
 
             if (pendingLine.Length > 0)
             {
@@ -561,6 +662,7 @@ internal static class DshUsageReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!line.Contains("\"usage\"", StringComparison.Ordinal) &&
+            !line.Contains("\"assistant/message\"", StringComparison.Ordinal) &&
             !line.Contains("\"request/context\"", StringComparison.Ordinal) &&
             !line.Contains("\"request/header\"", StringComparison.Ordinal))
         {
@@ -579,6 +681,91 @@ internal static class DshUsageReader
             entry.CompletenessScore > existing.CompletenessScore)
         {
             entries[dayKey] = entry;
+        }
+    }
+
+    /// <summary>
+    /// Distinguishes the compressed transcript from a `compression: 'none'`
+    /// root by its Zstandard magic, so either encoding is read correctly and a
+    /// mislabeled file still degrades to a corrupt-frame report rather than
+    /// silently yielding nothing.
+    /// </summary>
+    private static bool IsZstandardTranscript(string file)
+    {
+        try
+        {
+            Span<byte> magic = stackalloc byte[4];
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var read = stream.ReadAtLeast(magic, magic.Length, throwOnEndOfStream: false);
+            return read == magic.Length &&
+                   magic[0] == ZstdMagic0 &&
+                   magic[1] == ZstdMagic1 &&
+                   magic[2] == ZstdMagic2 &&
+                   magic[3] == ZstdMagic3;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Streams newline-delimited transcript text, one bounded block at a time,
+    /// for a log written with compression disabled. A trailing partial line (a
+    /// live append in progress) stays buffered until the next append completes
+    /// it, mirroring the truncated-tail tolerance of the compressed reader.
+    /// </summary>
+    private static bool ReadRawTranscript(
+        string file,
+        Action<string> consumeDecoded,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var bytes = ArrayPool<byte>.Shared.Rent(64 * 1024);
+            var chars = ArrayPool<char>.Shared.Rent(64 * 1024);
+            var decoder = Encoding.UTF8.GetDecoder();
+            try
+            {
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var bytesRead = stream.Read(bytes, 0, bytes.Length);
+                    if (bytesRead <= 0)
+                    {
+                        break;
+                    }
+
+                    var flush = stream.Position >= stream.Length;
+                    decoder.Convert(
+                        bytes, 0, bytesRead,
+                        chars, 0, chars.Length,
+                        flush,
+                        out _,
+                        out var charsUsed,
+                        out _);
+                    if (charsUsed > 0)
+                    {
+                        consumeDecoded(new string(chars, 0, charsUsed));
+                    }
+                }
+
+                return true;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(bytes);
+                ArrayPool<char>.Shared.Return(chars);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -770,16 +957,7 @@ internal static class DshUsageReader
                 return null;
             }
 
-            if (!StringEquals(root, "type", "assistant/chunk") ||
-                !root.TryGetProperty("time", out var timeElement) ||
-                timeElement.ValueKind != JsonValueKind.Number ||
-                !timeElement.TryGetInt64(out var timeMs) ||
-                !root.TryGetProperty("seq", out var seqElement) ||
-                !seqElement.TryGetInt64(out var seq) ||
-                !root.TryGetProperty("data", out var data) ||
-                !data.TryGetProperty("chunk", out var chunk) ||
-                !StringEquals(chunk, "type", "usage") ||
-                !chunk.TryGetProperty("usage", out var usage))
+            if (!TryGetUsageSettlement(root, context, out var usage, out var timeMs, out var seq))
             {
                 return null;
             }
@@ -799,8 +977,10 @@ internal static class DshUsageReader
 
             // The bucket pipeline computes Uncached = input - cached - cacheWrite, so the
             // input figure must include every billed input component (same
-            // convention as ClaudeUsageReader). cacheWrite is usually 0 for
-            // DeepSeek, but keep it inside input for forward compatibility.
+            // convention as ClaudeUsageReader). Both transcript generations
+            // report inputTokens as the uncached remainder; cacheWrite is
+            // usually 0 for DeepSeek, but stays inside input for forward
+            // compatibility.
             var input = TokenCountMath.AddNonNegative(
                 TokenCountMath.AddNonNegative(inputTokens, cacheRead),
                 cacheWrite);
@@ -821,6 +1001,62 @@ internal static class DshUsageReader
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Extracts the token accounting of one assistant settlement, accepting
+    /// both transcript generations: current-format `assistant/message`
+    /// (`data.usage`, the same sample the harness folds into its own
+    /// tokenUsage projection) and released v0–v3
+    /// `assistant/chunk { "type": "usage" }`. A settlement in the current
+    /// format also carries the route that produced it, which keeps model
+    /// attribution correct even when no request record precedes it.
+    /// </summary>
+    private static bool TryGetUsageSettlement(
+        JsonElement root,
+        DshTranscriptContext context,
+        out JsonElement usage,
+        out long timeMs,
+        out long seq)
+    {
+        usage = default;
+        timeMs = 0;
+        seq = 0;
+
+        if (!root.TryGetProperty("time", out var timeElement) ||
+            timeElement.ValueKind != JsonValueKind.Number ||
+            !timeElement.TryGetInt64(out timeMs) ||
+            !root.TryGetProperty("seq", out var seqElement) ||
+            !seqElement.TryGetInt64(out seq) ||
+            !root.TryGetProperty("data", out var data))
+        {
+            return false;
+        }
+
+        if (StringEquals(root, "type", "assistant/message"))
+        {
+            if (!data.TryGetProperty("usage", out usage) || usage.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var modelId = data.TryGetProperty("message", out var message) &&
+                          message.TryGetProperty("source", out var source)
+                ? GetString(source, "model")
+                : null;
+            if (modelId is not null)
+            {
+                context.ModelId = modelId;
+            }
+
+            return true;
+        }
+
+        return StringEquals(root, "type", "assistant/chunk") &&
+               data.TryGetProperty("chunk", out var chunk) &&
+               StringEquals(chunk, "type", "usage") &&
+               chunk.TryGetProperty("usage", out usage) &&
+               usage.ValueKind == JsonValueKind.Object;
     }
 
     private static string? GetString(JsonElement element, string property)

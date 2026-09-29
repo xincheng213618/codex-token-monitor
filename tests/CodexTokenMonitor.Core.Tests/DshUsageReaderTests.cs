@@ -11,23 +11,38 @@ public sealed class DshUsageReaderTests : IDisposable
     // UsageLogPaths resolves the DSH sessions root as <scope root>/Dsh, so the
     // transcript tree lives one level below the pushed scope like real logs do.
     private readonly IDisposable logScope;
+
+    // The range readers write a day cache through UsageCacheStore. Without an
+    // isolated root that cache lives in the machine's real %LOCALAPPDATA% and
+    // survives the run, so a later run reuses a "complete" day the previous run
+    // recorded and never rescans the synthetic transcript.
+    private readonly IDisposable cacheScope;
+    private readonly string cacheRoot = Path.Combine(Path.GetTempPath(), $"DshReaderCache-{Guid.NewGuid():N}");
+
     private string SessionsRoot => Path.Combine(testRoot, UsageSource.Dsh.ToString());
 
     public DshUsageReaderTests()
     {
+        Directory.CreateDirectory(cacheRoot);
         logScope = UsageLogPaths.PushRoot(testRoot);
+        cacheScope = MonitorCachePaths.PushLocalAppDataRoot(cacheRoot);
     }
 
     public void Dispose()
     {
+        cacheScope.Dispose();
         logScope.Dispose();
-        try
+        UsageCacheStore.Delete("DshTokenMonitor");
+        foreach (var directory in new[] { testRoot, cacheRoot })
         {
-            Directory.Delete(testRoot, recursive: true);
-        }
-        catch
-        {
-            // Best-effort cleanup of the temporary tree.
+            try
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup of the temporary tree.
+            }
         }
     }
 
@@ -142,6 +157,48 @@ public sealed class DshUsageReaderTests : IDisposable
     {
         Assert.Equal("deepseek-v4-flash", CodexModelCost.DefaultModelId("DeepSeek", "V4.1 Flash"));
         Assert.Equal("deepseek-v4-pro", CodexModelCost.DefaultModelId("DeepSeek", "V4 Pro"));
+    }
+
+    [Fact]
+    public void HarnessRouteIdsAliasToThePricedCatalogIds()
+    {
+        // dsh v4 settles under its own short route id while the price catalog
+        // and released-format transcripts use the published API id; without the
+        // alias the DSH "实际模型" card cannot price anything.
+        Assert.Equal("deepseek-v4-flash", CodexModelCost.NormalizeModelId("deepseek-flash"));
+        Assert.Equal("deepseek-v4-pro", CodexModelCost.NormalizeModelId("deepseek-pro"));
+        Assert.Equal("deepseek-v4-flash", CodexModelCost.NormalizeModelId("deepseek-account/deepseek-flash"));
+        Assert.Equal("deepseek-v4-flash", CodexModelCost.NormalizeModelId("DeepSeek-Flash"));
+        // Released-format ids and unrelated models stay untouched.
+        Assert.Equal("deepseek-v4-flash", CodexModelCost.NormalizeModelId("deepseek-v4-flash"));
+        Assert.Equal("deepseek-chat", CodexModelCost.NormalizeModelId("deepseek-chat"));
+    }
+
+    [Fact]
+    public void PricesCurrentFormatUsageThroughTheAlias()
+    {
+        var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
+        // 03:00 is inside DeepSeek's off-peak window, so the preset's base rate
+        // applies without the working-hours peak multiplier: one million
+        // uncached input tokens cost exactly the preset's input rate.
+        var timestamp = new DateTimeOffset(2026, 8, 13, 3, 0, 0, TimeSpan.FromHours(8));
+        WriteTranscript("--C-work--", "session-v4-priced", Header(),
+            CurrentFormatUsageLine(1, timestamp, input: 1_000_000, cached: 0, output: 0, model: "deepseek-flash"));
+
+        var summary = DshUsageReader.ReadRange(start, start.AddDays(1), includeLiveToday: false);
+
+        // The shipped DSH preset catalog prices "deepseek-v4-flash" while the
+        // harness reports "deepseek-flash"; the alias must bridge them, which is
+        // what makes the DSH "实际模型 · 标准 API 等价" card non-zero.
+        var flashPreset = Assert.Single(
+            PricePreset.DefaultsForGroup(PricePresetGroups.Dsh),
+            preset => preset.ModelId == "deepseek-v4-flash");
+
+        var estimate = CodexModelCost.Estimate(summary, PricePresetGroups.Dsh);
+        var line = Assert.Single(estimate.Models);
+        Assert.Equal("deepseek-flash", line.ModelId);
+        Assert.NotNull(line.Cost);
+        Assert.Equal(flashPreset.UncachedInput, line.Cost);
     }
 
     [Fact]
@@ -271,10 +328,10 @@ public sealed class DshUsageReaderTests : IDisposable
         var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
         var timestamp = new DateTimeOffset(2026, 8, 13, 10, 30, 0, TimeSpan.FromHours(8));
         var header = Header();
-        // A usage-carrying assistant/message is NOT counted (only usage chunks are);
-        // a text chunk and a malformed line are ignored.
+        // A text chunk, a usage-less assistant message and a malformed line are
+        // ignored; only settlements that carry token accounting count.
         var message = "{\"type\":\"assistant/message\",\"seq\":5,\"time\":" + ToMilliseconds(timestamp) +
-                      ",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"usage\":{\"inputTokens\":999,\"outputTokens\":1}}}\n";
+                      ",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}}\n";
         var textChunk = "{\"type\":\"assistant/chunk\",\"seq\":6,\"time\":" + ToMilliseconds(timestamp) +
                         ",\"data\":{\"turn\":1,\"step\":1,\"chunk\":{\"type\":\"text\",\"delta\":\"hi\"}}}\n";
         var malformed = "{\"type\":\"assistant/chunk\",\"seq\":7\n";
@@ -283,6 +340,109 @@ public sealed class DshUsageReaderTests : IDisposable
         var rows = DshUsageReader.ReadTransientDetailRows(start, start.AddDays(1));
 
         Assert.Empty(rows);
+    }
+
+    [Fact]
+    public void ParsesCurrentFormatAssistantMessageUsage()
+    {
+        var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
+        var timestamp = new DateTimeOffset(2026, 8, 13, 10, 30, 0, TimeSpan.FromHours(8));
+        // dsh v4 settlements carry the usage sample on assistant/message (the
+        // same sample the harness folds into its own tokenUsage projection) and
+        // name the model on the message source instead of a request record.
+        var first = CurrentFormatUsageLine(1, timestamp, input: 7803, cached: 1024, output: 131, model: "deepseek-flash");
+        var second = CurrentFormatUsageLine(2, timestamp.AddMinutes(1), input: 300, cached: 18944, output: 325, model: "deepseek-flash");
+
+        WriteTranscript("--C-work--", "session-v4", Header(), first + second);
+
+        var rows = DshUsageReader.ReadTransientDetailRows(start, start.AddDays(1));
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(7803 + 1024 + 300 + 18944, rows.Sum(item => item.InputTokens));
+        Assert.Equal(1024 + 18944, rows.Sum(item => item.CachedInputTokens));
+        Assert.Equal(7803 + 300, rows.Sum(item => item.UncachedInputTokens));
+        Assert.Equal(131 + 325, rows.Sum(item => item.OutputTokens));
+        Assert.Equal(0, rows.Sum(item => item.ReasoningOutputTokens));
+        Assert.Equal(7803 + 1024 + 131 + 300 + 18944 + 325, rows.Sum(item => item.TotalTokens));
+        Assert.All(rows, row => Assert.Equal("deepseek-flash", Assert.Single(row.ModelUsage).Key));
+    }
+
+    [Fact]
+    public void ReadsOnlyTheHighestTranscriptGeneration()
+    {
+        var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
+        var timestamp = new DateTimeOffset(2026, 8, 13, 10, 30, 0, TimeSpan.FromHours(8));
+        // Migration retains the superseded generation beside its successor, so
+        // a migrated session directory holds both files and only v4 may be
+        // counted, while an unmigrated session keeps contributing through its
+        // released-generation name.
+        WriteTranscriptName("--C-work--", "session-migrated", "session.jsonl.zstd",
+            Header() + UsageLine(1, timestamp, 1000, 0, 100, 0));
+        WriteTranscriptName("--C-work--", "session-migrated", "session.v4.jsonl.zstd",
+            Header() + CurrentFormatUsageLine(2, timestamp.AddMinutes(1), 1000, 0, 100, "deepseek-flash"));
+        WriteTranscriptName("--C-work--", "session-unmigrated", "session.jsonl.zstd",
+            Header() + UsageLine(1, timestamp.AddMinutes(2), 7, 0, 3, 0));
+
+        var rows = DshUsageReader.ReadTransientDetailRows(start, start.AddDays(1));
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2, rows.Sum(row => row.Events));
+        Assert.Equal(1100 + 10, rows.Sum(row => row.TotalTokens));
+        Assert.Equal("deepseek-flash", Assert.Single(rows[0].ModelUsage).Key);
+        Assert.Empty(rows[1].ModelUsage);
+    }
+
+    [Fact]
+    public void ReadsUncompressedTranscriptGeneration()
+    {
+        var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
+        var timestamp = new DateTimeOffset(2026, 8, 13, 10, 30, 0, TimeSpan.FromHours(8));
+        // `compression: 'none'` keeps the logical lines but drops the suffix.
+        WriteRawTranscript("--C-work--", "session-raw", "session.v4.jsonl",
+            Header() + CurrentFormatUsageLine(1, timestamp, 500, 250, 40, "deepseek-flash"));
+
+        var row = Assert.Single(DshUsageReader.ReadTransientDetailRows(start, start.AddDays(1)));
+
+        Assert.Equal(750, row.InputTokens);
+        Assert.Equal(250, row.CachedInputTokens);
+        Assert.Equal(500, row.UncachedInputTokens);
+        Assert.Equal(40, row.OutputTokens);
+    }
+
+    [Fact]
+    public void CurrentFormatMessageAttributesModelWithoutRequestRecord()
+    {
+        var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
+        var timestamp = new DateTimeOffset(2026, 8, 13, 10, 30, 0, TimeSpan.FromHours(8));
+        // A v4 transcript names the route on each settlement, so attribution
+        // survives a session that never wrote a request/context record.
+        WriteTranscript("--C-work--", "session-v4-model", Header(),
+            CurrentFormatUsageLine(1, timestamp, 100, 50, 10, "deepseek-v4-pro"));
+
+        var row = Assert.Single(DshUsageReader.ReadTransientDetailRows(start, start.AddDays(1)));
+
+        Assert.Equal("deepseek-v4-pro", Assert.Single(row.ModelUsage).Key);
+        Assert.Equal(160, row.TotalTokens);
+    }
+
+    [Fact]
+    public void VersionedTranscriptNamesAreRecognized()
+    {
+        var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
+        var timestamp = new DateTimeOffset(2026, 8, 13, 10, 30, 0, TimeSpan.FromHours(8));
+        var header = Header();
+        // Every released generation name must still be readable on its own,
+        // in both compressed and raw (compression: 'none') encodings.
+        var legacy = header + UsageLine(1, timestamp, 100, 0, 10, 0);
+        var current = header + CurrentFormatUsageLine(1, timestamp, 100, 0, 10, "deepseek-flash");
+        WriteTranscriptName("--C-work--", "session-name-0", "session.jsonl.zstd", legacy);
+        WriteTranscriptName("--C-work--", "session-name-1", "session.v3.jsonl.zstd", legacy);
+        WriteTranscriptName("--C-work--", "session-name-2", "session.v4.jsonl.zstd", current);
+        WriteRawTranscript("--C-work--", "session-name-3", "session.v4.jsonl", current);
+
+        var rows = DshUsageReader.ReadTransientDetailRows(start, start.AddDays(1));
+
+        Assert.Equal(4, rows.Sum(row => row.Events));
     }
 
     [Fact]
@@ -333,6 +493,29 @@ public sealed class DshUsageReaderTests : IDisposable
         return line[..^1] + ",\"padding\":\"" + padding + "\"}\n";
     }
 
+    /// <summary>
+    /// A current-format (dsh v4) settlement: token accounting on
+    /// `assistant/message.data.usage` and the producing model on the message
+    /// source, exactly as the harness writes it.
+    /// </summary>
+    private static string CurrentFormatUsageLine(
+        long seq,
+        DateTimeOffset timestamp,
+        long input,
+        long cached,
+        long output,
+        string model,
+        long cacheWrite = 0)
+    {
+        return "{\"type\":\"assistant/message\",\"seq\":" + seq + ",\"time\":" + ToMilliseconds(timestamp) +
+               ",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"role\":\"assistant\"," +
+               "\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]," +
+               "\"source\":{\"kind\":\"model\",\"provider\":\"deepseek-account\",\"model\":\"" + model + "\"}}," +
+               "\"usage\":{\"inputTokens\":" + input + ",\"outputTokens\":" + output +
+               ",\"cacheReadTokens\":" + cached + ",\"cacheWriteTokens\":" + cacheWrite + "," +
+               "\"totalTokens\":" + (input + cached + cacheWrite + output) + "}}}\n";
+    }
+
     private static long ToMilliseconds(DateTimeOffset value)
     {
         return value.ToUnixTimeMilliseconds();
@@ -340,9 +523,14 @@ public sealed class DshUsageReaderTests : IDisposable
 
     private string WriteTranscript(string projectDir, string sessionId, params string[] frames)
     {
+        return WriteTranscriptName(projectDir, sessionId, "session.jsonl.zstd", frames);
+    }
+
+    private string WriteTranscriptName(string projectDir, string sessionId, string fileName, params string[] frames)
+    {
         var directory = Path.Combine(SessionsRoot, projectDir, sessionId);
         Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, "session.jsonl.zstd");
+        var path = Path.Combine(directory, fileName);
         var combined = new List<byte>();
         foreach (var frame in frames)
         {
@@ -350,6 +538,16 @@ public sealed class DshUsageReaderTests : IDisposable
         }
 
         File.WriteAllBytes(path, combined.ToArray());
+        return path;
+    }
+
+    /// <summary>Writes a `compression: 'none'` transcript: plain JSONL lines.</summary>
+    private string WriteRawTranscript(string projectDir, string sessionId, string fileName, string text)
+    {
+        var directory = Path.Combine(SessionsRoot, projectDir, sessionId);
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, fileName);
+        File.WriteAllText(path, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         return path;
     }
 

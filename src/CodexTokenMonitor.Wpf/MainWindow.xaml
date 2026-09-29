@@ -143,6 +143,31 @@
                 </StackPanel>
             </Grid>
         </Border>
+        <Border x:Name="DshBalancePanel" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,10" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="1.6*" /><ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                    <TextBlock Text="充值余额" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="DshBalanceValue" Text="--" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="DshBalanceDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="0,0,16,0">
+                    <TextBlock Text="赠金余额" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="DshBonusValue" Text="--" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="DshBonusDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Margin="0,0,16,0">
+                    <TextBlock Text="账号（dsh 登录）" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="DshAccountValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" />
+                    <TextBlock x:Name="DshAccountDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" VerticalAlignment="Center">
+                    <Button x:Name="DshBalanceRefreshButton" Style="{StaticResource ToolbarButton}" Content="刷新余额" Click="DshBalanceRefreshButton_Click" ToolTip="立即从 DeepSeek 平台重新读取账号余额" />
+                </StackPanel>
+            </Grid>
+        </Border>
         <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,6" Margin="0,0,0,10">
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="统计范围" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,12,0" />

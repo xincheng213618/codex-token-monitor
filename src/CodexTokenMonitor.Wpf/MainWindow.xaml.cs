@@ -860,12 +860,57 @@ public partial class MainWindow : Window
 
     private static bool ShouldRefreshQuota(UsageSourceModule module)
     {
-        return module.SupportsQuota || module is ZCodeUsageModule;
+        return module.SupportsQuota || module is ZCodeUsageModule || module is DshUsageModule;
     }
 
-    private Task RefreshQuotaSummaryAsync() => runtime.Run("额度刷新", _ => CurrentModule() is ZCodeUsageModule
-        ? RefreshZCodeQuotaCoreAsync()
-        : RefreshQuotaSummaryCoreAsync());
+    private Task RefreshQuotaSummaryAsync() => runtime.Run("额度刷新", _ => CurrentModule() switch
+    {
+        ZCodeUsageModule => RefreshZCodeQuotaCoreAsync(),
+        DshUsageModule => RefreshDshBalanceCoreAsync(),
+        _ => RefreshQuotaSummaryCoreAsync()
+    });
+
+    /// <summary>
+    /// Reads the DeepSeek account wallet behind the dsh login. The balance is
+    /// account state rather than range state, so it refreshes with the page
+    /// selection the same way the Codex and ZCode quota panels do.
+    /// </summary>
+    private async Task RefreshDshBalanceCoreAsync()
+    {
+        if (isQuotaRefreshing || CurrentModule() is not DshUsageModule dshModule)
+        {
+            return;
+        }
+
+        isQuotaRefreshing = true;
+        try
+        {
+            var result = await Task.Run(
+                () => DshBalanceReader.Shared.ReadCurrentResult(runtime.LifetimeToken),
+                runtime.LifetimeToken);
+            if (!isClosed && CurrentModule() is DshUsageModule current && ReferenceEquals(current, dshModule))
+            {
+                dshModule.CurrentBalance = result.Balance;
+                dshModule.CurrentBalanceFailure = result.Failure;
+                ApplyDshBalanceSummary(dshModule);
+            }
+        }
+        catch (OperationCanceledException) when (runtime.IsStopping || isClosed)
+        {
+            // Window shutdown cancels the shared account read.
+        }
+        catch (Exception ex)
+        {
+            if (!isClosed)
+            {
+                SetStatus($"DSH 余额刷新失败：{ex.Message}");
+            }
+        }
+        finally
+        {
+            isQuotaRefreshing = false;
+        }
+    }
 
     private async Task RefreshZCodeQuotaCoreAsync()
     {
@@ -1435,12 +1480,18 @@ public partial class MainWindow : Window
         var show = module is CodexUsageModule;
         QuotaPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         ZCodeQuotaPanel.Visibility = module is ZCodeUsageModule ? Visibility.Visible : Visibility.Collapsed;
+        DshBalancePanel.Visibility = module is DshUsageModule ? Visibility.Visible : Visibility.Collapsed;
         ResetSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         PlanSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         ClearReserveUsageDisplay();
         if (module is ZCodeUsageModule zcodeModule)
         {
             ApplyZCodeQuotaSummary(zcodeModule);
+        }
+
+        if (module is DshUsageModule dshModule)
+        {
+            ApplyDshBalanceSummary(dshModule);
         }
 
         if (!show)
@@ -1467,6 +1518,88 @@ public partial class MainWindow : Window
 
         ApplyQuotaWindow(Quota5hValue, Quota5hDetail, effectiveQuota.FiveHour, QuotaWindowDisplayMode.FiveHour);
         ApplyQuotaWindow(QuotaWeekValue, QuotaWeekDetail, effectiveQuota.Week, QuotaWindowDisplayMode.Week);
+    }
+
+    /// <summary>
+    /// Renders the DeepSeek account wallet behind the dsh login. The recharge
+    /// balance is the headline; the bonus (gift) wallets stay separate, exactly
+    /// as the Platform API reports them.
+    /// </summary>
+    private void ApplyDshBalanceSummary(DshUsageModule module)
+    {
+        if (module.CurrentBalance is not { } balance)
+        {
+            DshBalanceValue.Text = "--";
+            DshBalanceDetail.Text = "等待 DeepSeek 账号余额";
+            DshBonusValue.Text = "--";
+            DshBonusDetail.Text = DescribeDshBalanceFailure(module.CurrentBalanceFailure);
+            DshAccountValue.Text = "-";
+            DshAccountDetail.Text = null;
+            return;
+        }
+
+        var recharge = balance.PrimaryRecharge;
+        DshBalanceValue.Text = recharge is null ? "--" : FormatDshAmount(recharge);
+        var otherRecharge = balance.RechargeWallets
+            .Where(wallet => recharge is not null && !ReferenceEquals(wallet, recharge))
+            .ToList();
+        var balanceDetail = otherRecharge.Count == 0
+            ? null
+            : string.Join(" · ", otherRecharge.Select(wallet => $"{wallet.Currency} {wallet.Amount:N2}"));
+        DshBalanceDetail.Text = string.Join(
+            " · ",
+            new[] { balanceDetail, $"数据 {balance.SnapshotLocal:HH:mm:ss}" }.Where(part => !string.IsNullOrWhiteSpace(part)));
+
+        var bonus = balance.PrimaryBonus;
+        DshBonusValue.Text = bonus is null ? "--" : FormatDshAmount(bonus);
+        var otherBonus = balance.BonusWallets
+            .Where(wallet => bonus is not null && !ReferenceEquals(wallet, bonus))
+            .ToList();
+        DshBonusDetail.Text = bonus is null
+            ? "该账号暂无赠金"
+            : string.Join(" · ", otherBonus.Select(wallet => $"{wallet.Currency} {wallet.Amount:N2}")
+                .Append($"共 {balance.BonusWallets.Count} 个赠金钱包"));
+
+        // The Platform summary reports the account's lifetime cost alongside the
+        // wallets; it is context for the balance, not this range's spend.
+        var cost = balance.PrimaryCost;
+        DshAccountValue.Text = cost is null ? "-" : $"累计 {FormatDshAmount(cost)}";
+        DshAccountDetail.Text = $"{DshRechargeKindText(recharge)} · dsh 账号登录凭据（只读，不落盘）";
+    }
+
+    private static string DshRechargeKindText(DshWallet? recharge)
+    {
+        return recharge is null ? "暂无充值余额" : $"充值 {recharge.Currency}";
+    }
+
+    private static string FormatDshAmount(DshWallet wallet)
+    {
+        var symbol = wallet.Currency switch
+        {
+            "CNY" => "¥",
+            "USD" => "$",
+            _ => wallet.Currency + " "
+        };
+        return $"{symbol}{wallet.Amount:N2}";
+    }
+
+    private static string DescribeDshBalanceFailure(DshBalanceFailure? failure)
+    {
+        return failure?.Kind switch
+        {
+            DshBalanceFailureKind.NotSignedIn => "需要已登录的 dsh 账号（在 DeepSeek Harness 里登录后重试）",
+            DshBalanceFailureKind.HttpError => $"DeepSeek 平台返回 HTTP {failure.StatusCode}，稍后自动重试",
+            DshBalanceFailureKind.NetworkError => "网络异常，稍后自动重试",
+            DshBalanceFailureKind.ParseError => "DeepSeek 平台响应无法解析，稍后自动重试",
+            DshBalanceFailureKind.Unknown => failure.Message ?? "读取失败，稍后自动重试",
+            _ => "等待 DeepSeek 账号余额"
+        };
+    }
+
+    private void DshBalanceRefreshButton_Click(object sender, RoutedEventArgs e)
+    {
+        DshBalanceReader.Shared.ResetCache();
+        _ = RefreshQuotaSummaryAsync();
     }
 
     private void ApplyZCodeQuotaSummary(ZCodeUsageModule module)

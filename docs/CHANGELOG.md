@@ -1,4 +1,4 @@
-﻿# 变更记录
+# 变更记录
 
 按日期分组的变更摘要（依据 git 提交历史，哈希可点击到对应提交）。从 2026-09-06 起，正式发布采用 `vYYYY.MM.DD` 日期版本号。
 
@@ -9,6 +9,12 @@
 - 周期分析中，GPT-6.1 Sol 等已有价格与归因额度降幅的新模型，即使尚无独立校准，也显示满额金额和同构成 Token 数，明确标注“本期占比外推，仅供参考”；参考值不写入历史校准，可靠校准优先。缺价格与缺样本的提示分开，不再统称“样本不足或未计价”。
 
 - 新增 GPT-6.1 Sol 的官方标准短上下文价格（输入 $2 / 缓存输入 $0.10 / 缓存创建 $2.50 / 输出 $10 每百万 tokens）与模型 ID、Fast 订阅倍率识别。价格设置改为每个来源独立的 10 个展示位置，供应商与模型联动选择，支持清空和调整顺序；“模型价格”独立页面从价格设置进入，按供应商筛选并保留价格编辑功能。展示选择与完整计价目录分开保存，迁移保留旧顺序和手动报价，子页面确认后由父页面统一保存，取消不会写入修改。
+
+- 修复 DSH 页“实际模型 · 标准 API 等价”恒显示 `¥0.00（含 0x 待填）`：harness 在 v4 结算里报的是自己的短路由 id（`deepseek-flash`、`deepseek-pro`），而价格目录与已发布格式的日志用的是公开 API id（`deepseek-v4-flash`、`deepseek-v4-pro`），`CodexModelCost.NormalizeModelId` 没有这层别名，于是每次都落进“0x 待填”。现在规范化时按别名归一，DSH 的实际模型卡与明细“模型费用列”按 V4.1 Flash 档（空闲 ¥1.00 / 缓存 ¥0.02 / 输出 ¥4.00 每百万，工作日高峰 ×2）正常计价；`deepseek-chat` 等未收录 id 与 `deepseek-v4-*` 原样保留，Codex/其它来源的模型 id 不受影响。新增 3 项测试（路由 id 与带 provider 前缀的写法都归一、已发布 id 不被改写、v4 记录经别名后按空闲价精确计价）。另修正 `DshUsageReaderTests` 的缓存隔离：该类里调用范围读取的用例此前把日缓存写进真实 `%LOCALAPPDATA%`，跨运行残留的“完整日”会让后续运行不再重扫合成日志，现改为每用例独立缓存根并在结束时清理。
+
+- DSH 页新增“账号余额”面板（对齐 Codex / ZCode 的额度面板）：直读 dsh 桌面端账号设置里同一份数据——`GET {platformOrigin}/api/v0/users/get_user_summary`，用 dsh 自己凭据文件（`~/.dsh/.credentials.yaml` 的 `deepseek-account-platform/default` grant）里的 token 放在 `x-dsh-auth-token` 请求头。面板显示**充值余额**（主数值）、**赠金余额**（Platform 的 `bonus_wallets` 与充值钱包分开列，不合并）、以及账号**累计消费**（Platform 的 `total_costs`，作为余额上下文，不是所选区间的消费），另有数据时间和“刷新余额”按钮；随页面刷新与 30 秒定时器更新，成功缓存 5 分钟、失败 30 秒，请求限时 15 秒。安全边界：token 仅在内存中使用、不落盘不写日志；凭据签发方与平台地址不一致时**不发请求**（与 dsh 自身“签发方不匹配即删除本地 grant”的策略一致）；未登录（缺凭据文件或 401 / 业务码 40003）显示“需要已登录的 dsh 账号”，网络/HTTP/解析失败分别提示且保留上次余额。新增 18 项测试（凭据文档解析只取目标 owner、钱包桶与币种选择、`0E-16` 等十进制字符串、坏信封与坏金额拒绝、401 与业务码按未登录上报、签发方不匹配不发请求、成功窗口内复用缓存、取消语义、超时上限）。
+
+- 修复 DSH 来源完全读不到用量：dsh 0.2.0 起会话日志改名并迁移格式，监控器仍按旧名精确匹配，因而新会话一条都读不到（DSH 页恒显示“今天还没有 DSH 用量”）。两处根因同时修掉：(1) 物理文件名从固定的 `session.jsonl.zstd` 变为带会话格式代次的 `session.<vN>.jsonl[.zstd]`（已发布 v0–v2 无名、v3 为 `session.v3.jsonl.zstd`、当前 v4 为 `session.v4.jsonl.zstd`），且 `compression: 'none'` 时后缀 `.zstd` 消失——现在按 `session*.jsonl*` 枚举、解析代次后**每个会话目录只取代次最高的一份**（迁移会保留被取代的旧文件，全读会双计），并按文件头 magic 区分压缩与裸 JSONL（裸文件改按块流式解码，保留截断容忍）；(2) 当前格式不再写 `assistant/chunk { "type": "usage" }`，token 账目改挂在每次结算的 `assistant/message.data.usage`（与 harness 自身 tokenUsage 投影同源：`inputTokens` 为未缓存部分，另有 `cacheReadTokens`/`cacheWriteTokens`/`outputTokens`，v4 不再有 `reasoningTokens`）——现同时解析两代记录，并优先用结算记录自带的 `message.source.model` 做模型归属（v4 每步都写，不再依赖 `request/context`）。真机会话核对：单会话累计与 dsh 投影缓存 `tokenUsage.totals` 逐字段一致（如 219716 / 43092 / 14937344）。缓存无需迁移：DSH 缓存目录此前根本未生成，修复后首次读取即重建。新增 5 项测试（v4 `assistant/message` 结算、同目录只取最高代次、裸 JSONL、无 request 记录时的模型归属、各代次文件名与旧 `assistant/chunk` 兼容）。
 
 ## 2026-09-28（v2026.09.28）
 

@@ -188,6 +188,12 @@ internal sealed class DshUsageModule : UsageSourceModule
         : base(UsageSource.Dsh)
     {
     }
+
+    /// <summary>The DeepSeek account wallet state shown by the balance panel.</summary>
+    public DshAccountBalance? CurrentBalance { get; set; }
+
+    /// <summary>Why the last balance read produced no snapshot, if it did not.</summary>
+    public DshBalanceFailure? CurrentBalanceFailure { get; set; }
 }
 
 internal sealed class KimiUsageModule : UsageSourceModule

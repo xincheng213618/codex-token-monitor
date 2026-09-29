@@ -219,7 +219,16 @@ internal static class CodexModelCost
             value = value[(separator + 1)..];
         }
         value = Regex.Replace(value, @"\s+", "-");
-        return value == "gpt-5.6" ? "gpt-5.6-sol" : value;
+        return value switch
+        {
+            "gpt-5.6" => "gpt-5.6-sol",
+            // The harness reports its own short route id ("deepseek-flash",
+            // "deepseek-pro") while the price catalog and older transcripts use
+            // the model's published API id, so pricing needs the alias to hit.
+            "deepseek-flash" => "deepseek-v4-flash",
+            "deepseek-pro" => "deepseek-v4-pro",
+            _ => value
+        };
     }
 
     public static bool IsReserveModel(string? modelId) => ModelKey(modelId) == ReserveModelId;

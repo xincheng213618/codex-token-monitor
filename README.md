@@ -7,7 +7,7 @@
 ## 功能
 
 - 统计 Codex / Claude Code / ZCode / WorkBuddy / DSH / Kimi 六种来源的 token 使用量。
-  - DSH（DeepSeek Harness）直接读取 `~/.dsh/sessions` 下 zstd 压缩的会话日志，统计每次模型调用的 input / 缓存读取 / 缓存创建 / output / reasoning。
+  - DSH（DeepSeek Harness）直接读取 `~/.dsh/sessions` 下 zstd 压缩的会话日志，统计每次模型调用的 input / 缓存读取 / 缓存创建 / output / reasoning；DSH 页另有账号余额面板，复用 dsh 自己的登录凭据直读 DeepSeek 平台的账号钱包（充值余额、赠金余额、累计消费），凭据只在内存中使用。
   - Kimi 读取桌面端及本地 Kimi Code 的 `wire.jsonl` 中 `usage.record`（已验证协议 1.4），分别统计普通输入、缓存读取、缓存创建、输出及真实模型名；失败任务已产生的用量仍计入。暂不提供账户剩余额度百分比，`k2d8-preview` 的 API 等价价格默认为待填写，不套用其他模型单价。详见 [Kimi 数据口径](docs/kimi-usage.md)。
 - 支持按天、近 7 天窗口、按月、按 Codex 额度周期（7d 周期）查看。
 - 当前周/月/周期范围若截止到现在，会叠加当天实时日志并随自动刷新更新；历史范围继续优先使用缓存。
@@ -116,7 +116,8 @@ outputs/一键生成CodexTokenMonitor.cmd
 - `%USERPROFILE%\.codex` 下与 quota / state 相关的本地 sqlite/json 日志
 - `%USERPROFILE%\.codex\auth.json`：仅“同步重置卡”时读取 access_token
 - `%USERPROFILE%\.claude`（Claude Code 日志）、ZCode / WorkBuddy 的本地日志目录
-- `%USERPROFILE%\.dsh\sessions`：DeepSeek Harness 会话日志（`session.jsonl.zstd`，zstd 多帧拼接的 JSONL）
+- `%USERPROFILE%\.dsh\sessions`：DeepSeek Harness 会话日志（`session.<格式代次>.jsonl[.zstd]`，如当前 `session.v4.jsonl.zstd`；zstd 多帧拼接的 JSONL，`compression: 'none'` 时为裸 JSONL）
+- `%USERPROFILE%\.dsh\.credentials.yaml`：仅 DSH 账号余额面板使用（读取 `deepseek-account-platform/default` grant 的 token 查询账号钱包，token 只在内存中使用）
 - `%USERPROFILE%\.kimi-code\sessions`、`%APPDATA%\kimi-desktop\daimon-share\daimon\runtime\kimi-code\home\sessions`：Kimi 会话下 `agents\<agent>\wire.jsonl`；派生缓存独立存放在 `%LOCALAPPDATA%\KimiTokenMonitor`。
 
 不同版本客户端日志结构可能变化，所以统计器会尽量容错。
@@ -200,7 +201,7 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 - `src/CodexTokenMonitor.Core/CodexCliLocator.cs`：自动发现可运行的 Codex CLI。
 - `src/CodexTokenMonitor.Core/CodexQuotaCycle.cs`：7d 额度周期的识别与异常快照剔除。
 - `src/CodexTokenMonitor.Core/QuotaCycleAnalysisCalculator.cs` / `QuotaPace.cs` / `QuotaSnapshotLookup.cs`：周期分段分析、重置评估、快照查询。
-- `src/CodexTokenMonitor.Core/ClaudeUsageReader.cs` / `ZCodeUsageReader.cs` / `WorkBuddyUsageReader.cs` / `DshUsageReader.cs`：其他来源日志读取（DSH 读取 zstd 压缩的会话日志，按 frame 解压并容忍不完整尾帧）。
+- `src/CodexTokenMonitor.Core/ClaudeUsageReader.cs` / `ZCodeUsageReader.cs` / `WorkBuddyUsageReader.cs` / `DshUsageReader.cs`：其他来源日志读取（DSH 按会话格式代次取最高的一份日志，按 frame 解压或按块读裸 JSONL，并容忍不完整尾帧）。
 - `src/CodexTokenMonitor.Core/UsageSourceReader.cs` / `UsageSourceRegistry.cs` / `UsageQueryModels.cs`：来源能力与元数据、查询范围和结果模型。
 - `src/CodexTokenMonitor.Wpf/UsageSourceModule.cs` / `UsageDisplayViewModel.cs`：每窗口的来源选择和显示缓存，以及主统计快照、空/失败/恢复状态。
 - `src/CodexTokenMonitor.Core/UsageQueryService.cs`：与 WPF 无关的用量查询服务，组合来源读取、缓存修复、分桶和额度锚点；`ExecuteCached` 只接收缓存查询能力，不扫描原始来源日志。
