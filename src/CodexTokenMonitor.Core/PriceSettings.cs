@@ -157,6 +157,7 @@ internal sealed class PricePreset
     public const string Gpt6PriceSource = "OpenAI 标准价（2026-09-23）：https://developers.openai.com/api/docs/pricing";
     public const string ClaudePriceSource = "Anthropic 标准价（2026-09-23；5 分钟缓存写入）：https://platform.claude.com/docs/en/about-claude/pricing";
     public const string DeepSeekPriceSource = "DeepSeek API 官方定价（2026-09-10；空闲价；北京时间工作日高峰 ×2）：https://api-docs.deepseek.com/zh-cn/quick_start/pricing";
+    public const string HunyuanHy4PriceSource = "腾讯混元 Hy4 preview 官方价格（2026-08-28 发布；输入 6 元 / 输出 18 元 / 缓存命中 0.3 元 每百万 tokens）：https://hy.tencent.com/research/hy4-preview";
     public string Group { get; set; } = "";
     public string Provider { get; set; } = "";
     public string Model { get; set; } = "";
@@ -263,6 +264,7 @@ internal sealed class PricePreset
             Preset("腾讯混元", "Hunyuan Turbo S", "¥", "CNY / 1M tokens", 1_000_000m, 0.80m, 0.08m, 2.00m, "腾讯混元官方参考"),
             Preset("腾讯混元", "Hunyuan Turbo", "¥", "CNY / 1M tokens", 1_000_000m, 0.70m, 0.07m, 1.40m, "腾讯混元官方参考"),
             Preset("腾讯混元", "Hy3", "¥", "CNY / 1M tokens", 1_000_000m, 1.00m, 0.25m, 4.00m, "腾讯云 TokenHub 官方价格"),
+            Preset("腾讯混元", "Hy4 Preview", "¥", "CNY / 1M tokens", 1_000_000m, 6.00m, 0.30m, 18.00m, HunyuanHy4PriceSource),
             Preset("Claude", "Fable 5 API", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 50.00m, "Anthropic pricing/cache read/write", cacheWrite: 12.50m),
             Preset("Claude", "Fable 5.1 API", "$", "USD / 1M tokens", 1_000_000m, 10m, 0.25m, 50m, ClaudePriceSource, cacheWrite: 12.50m),
             Preset("Claude", "Opus 5.5 API", "$", "USD / 1M tokens", 1_000_000m, 4m, 0.20m, 20m, ClaudePriceSource, cacheWrite: 5m),
@@ -391,6 +393,7 @@ internal static class PriceSettingsStore
 {
     private const string FolderName = "CodexTokenMonitor";
     private const string FileName = "price-settings.json";
+    private const string Hy4PreviewModelName = "Hy4 Preview";
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, SettingsState> States = new(StringComparer.OrdinalIgnoreCase);
@@ -653,6 +656,22 @@ internal static class PriceSettingsStore
             kimiPresets = ApplyDefaultDisplayOrder(kimiPresets, PricePresetGroups.Kimi);
         }
 
+        // Hy4 preview shipped as an unfilled 0x row before Tencent published its
+        // tariff. Saved settings never absorb changed defaults, so fill the
+        // official rate into rows the user never priced. A non-zero (edited)
+        // row always wins.
+        var hy4Official = defaults.CodexPresets.FirstOrDefault(item =>
+            string.Equals(item.Model, Hy4PreviewModelName, StringComparison.OrdinalIgnoreCase));
+        if (hy4Official is not null)
+        {
+            FillPublishedRate(codexPresets, hy4Official);
+            FillPublishedRate(claudePresets, hy4Official);
+            FillPublishedRate(zCodePresets, hy4Official);
+            FillPublishedRate(workBuddyPresets, hy4Official);
+            FillPublishedRate(dshPresets, hy4Official);
+            FillPublishedRate(kimiPresets, hy4Official);
+        }
+
         var gptName = string.IsNullOrWhiteSpace(settings.GptName)
             ? defaults.GptName
             : settings.GptName.Trim();
@@ -696,6 +715,25 @@ internal static class PriceSettingsStore
             DshPresets = dshPresets,
             KimiPresets = kimiPresets
         };
+    }
+
+    // Overwrites only placeholder rows: every rate is still 0, so the user has
+    // never entered a price for that model.
+    private static void FillPublishedRate(List<PricePreset> presets, PricePreset published)
+    {
+        foreach (var preset in presets)
+        {
+            if (!string.Equals(preset.Model, Hy4PreviewModelName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (preset.UncachedInput != 0 || preset.CachedInput != 0 || preset.Output != 0 || (preset.CacheWriteInput ?? 0) != 0) continue;
+            preset.UncachedInput = published.UncachedInput;
+            preset.CachedInput = published.CachedInput;
+            preset.Output = published.Output;
+            preset.CacheWriteInput = published.CacheWriteInput;
+            preset.CurrencySymbol = published.CurrencySymbol;
+            preset.UnitLabel = published.UnitLabel;
+            preset.Divisor = published.Divisor;
+            preset.Source = published.Source;
+        }
     }
 
     private static IReadOnlyList<PricePreset> SelectConfiguredPresets(PriceSettings settings, string group)

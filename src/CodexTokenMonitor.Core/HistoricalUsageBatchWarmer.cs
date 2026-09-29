@@ -52,9 +52,11 @@ internal static class HistoricalUsageBatchWarmer
             var bucket = new TokenUsageBucket { StartLocal = day };
             foreach (var item in merged)
             {
-                bucket.Add(item.Timestamp, item.InputTokens, item.CachedInputTokens,
-                    item.CacheWriteInputTokens, item.OutputTokens,
-                    item.ReasoningOutputTokens, item.TotalTokens);
+                // Event-based Add keeps per-model usage in the day bucket.
+                // The scalar overload would persist empty ModelUsage while the
+                // detail events keep model ids, so every daily row would show
+                // "未识别" forever on days the warmer marked complete.
+                bucket.Add(item);
             }
 
             // Preserve summary-only history when its original source is gone.

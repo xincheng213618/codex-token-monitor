@@ -11,6 +11,7 @@ internal sealed record WorkBuddyUsageEntry(
     long CacheWrite,
     long Output,
     long Total,
+    long Reasoning = 0,
     string? ModelId = null)
 {
     public decimal CompletenessScore =>
@@ -18,6 +19,7 @@ internal sealed record WorkBuddyUsageEntry(
         TokenCountMath.NonNegative(Cached) +
         TokenCountMath.NonNegative(CacheWrite) +
         TokenCountMath.NonNegative(Output) +
+        TokenCountMath.NonNegative(Reasoning) +
         TokenCountMath.NonNegative(Total);
 }
 
@@ -404,7 +406,7 @@ internal static class WorkBuddyUsageReader
                 item.Input,
                 item.Cached,
                 item.Output,
-                0,
+                item.Reasoning,
                 item.Total,
                 $"workbuddy:{item.Key}",
                 item.CacheWrite,
@@ -562,11 +564,25 @@ internal static class WorkBuddyUsageReader
             // Provider records live on the same row as message.usage: the raw
             // model id ("hy3", endpoint ids like "ep-…") drives actual-model
             // pricing; requestModelId is the fallback when model is absent.
-            var modelId = root.TryGetProperty("providerData", out var providerData)
-                ? GetString(providerData, "model") ?? GetString(providerData, "requestModelId")
-                : null;
+            // Reasoning tokens are only on providerData.rawUsage — message.usage
+            // omits them — so the 推理 column works like the DSH source.
+            long reasoning = 0;
+            string? modelId = null;
+            if (root.TryGetProperty("providerData", out var providerData))
+            {
+                modelId = GetString(providerData, "model") ?? GetString(providerData, "requestModelId");
+                if (providerData.TryGetProperty("rawUsage", out var rawUsage))
+                {
+                    reasoning = GetInt64(rawUsage, "completion_thinking_tokens");
+                    if (reasoning <= 0 &&
+                        rawUsage.TryGetProperty("completion_tokens_details", out var completionDetails))
+                    {
+                        reasoning = GetInt64(completionDetails, "reasoning_tokens");
+                    }
+                }
+            }
 
-            return new WorkBuddyUsageEntry(key, timestamp, input, cached, cacheWrite, output, total, modelId);
+            return new WorkBuddyUsageEntry(key, timestamp, input, cached, cacheWrite, output, total, reasoning, modelId);
         }
         catch
         {

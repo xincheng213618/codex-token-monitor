@@ -31,11 +31,19 @@ public sealed class WorkBuddyUsageReaderTests : IDisposable
         }
     }
 
-    private static string UsageLine(string id, DateTimeOffset timestamp, string? model, long input, long cached, long output)
+    private static string UsageLine(string id, DateTimeOffset timestamp, string? model, long input, long cached, long output, long reasoning = 0)
     {
         var providerData = model is null
             ? "{\"messageId\":\"msg-" + id + "\"}"
             : "{\"messageId\":\"msg-" + id + "\",\"model\":\"" + model + "\",\"requestModelId\":\"" + model + "\"}";
+        if (reasoning > 0)
+        {
+            // Reasoning tokens live on providerData.rawUsage only; message.usage
+            // omits them.
+            providerData = providerData.Insert(providerData.Length - 1,
+                ",\"rawUsage\":{\"completion_thinking_tokens\":" + reasoning + "}");
+        }
+
         return "{\"id\":\"" + id + "\",\"timestamp\":" + timestamp.ToUnixTimeMilliseconds() +
                ",\"type\":\"function_call\",\"providerData\":" + providerData +
                ",\"message\":{\"usage\":{\"input_tokens\":" + input +
@@ -114,5 +122,26 @@ public sealed class WorkBuddyUsageReaderTests : IDisposable
         Assert.Equal(1, summary.Events);
         Assert.Empty(summary.ModelUsage);
         Assert.Equal(5_100, summary.TotalTokens);
+    }
+
+    [Fact]
+    public void ReadTransientDetailRows_CarriesReasoningTokensFromRawUsage()
+    {
+        var start = DateTimeOffset.Now.AddMinutes(-60);
+        var moment = DateTimeOffset.Now.AddMinutes(-50);
+        var project = Path.Combine(root, UsageSource.WorkBuddy.ToString(), "projects", "c-Users-17917-Reasoning");
+        Directory.CreateDirectory(project);
+        File.WriteAllText(
+            Path.Combine(project, "session-reasoning.jsonl"),
+            UsageLine("reasoning-1", moment, "hy4-preview", input: 6_000, cached: 1_000, output: 400, reasoning: 320));
+
+        var rows = WorkBuddyUsageReader.ReadTransientDetailRows(start, start.AddHours(2));
+
+        var row = Assert.Single(rows);
+        // Reasoning is a subset of the completion output, not an addition to it.
+        Assert.Equal(320, row.ReasoningOutputTokens);
+        Assert.Equal(400, row.OutputTokens);
+        Assert.Equal(6_400, row.TotalTokens);
+        Assert.Equal("hy4-preview", Assert.Single(row.ModelUsage).Key);
     }
 }

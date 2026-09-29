@@ -7,6 +7,8 @@ namespace CodexTokenMonitor;
 /// <summary>
 /// One entitlement bucket of the ZCode plan balance: the server meters tokens
 /// per model entitlement, so a plan can expose several balances at once.
+/// Window-scaled buckets (BigModel coding plan) carry percentages instead of
+/// tokens: usage/remaining scaled so 10000 ≙ 100%.
 /// </summary>
 internal sealed record ZCodeQuotaBalance(
     string ModelName,
@@ -17,27 +19,85 @@ internal sealed record ZCodeQuotaBalance(
     long? AvailableUnits,
     DateTimeOffset? ExpiresAtLocal,
     DateTimeOffset? PeriodStartLocal,
-    DateTimeOffset? PeriodEndLocal)
+    DateTimeOffset? PeriodEndLocal,
+    string? PlanId = null,
+    string? UserPlanId = null,
+    bool IsWindowScaled = false)
 {
     public decimal? UsedPercent => TotalUnits > 0
         ? decimal.Round(100m * Math.Min(UsedUnits, TotalUnits) / TotalUnits, 1)
         : null;
+
+    public decimal? RemainingPercent => TotalUnits > 0
+        ? decimal.Round(100m * Math.Max(0m, TotalUnits - UsedUnits) / TotalUnits, 1)
+        : null;
 }
 
-internal sealed record ZCodeQuotaSnapshot(
-    DateTimeOffset SnapshotLocal,
+/// <summary>
+/// One purchased plan. The account can hold several concurrently (the balance
+/// endpoint lists them all with status "active"), each metering its own buckets.
+/// </summary>
+internal sealed record ZCodeQuotaPlan(
     string PlanId,
-    string PlanName,
-    string? PlanDescription,
-    string PlanStatus,
-    IReadOnlyList<ZCodeQuotaBalance> Balances,
-    DateTimeOffset? ServerTimeLocal)
+    string? UserPlanId,
+    string Name,
+    string? Description,
+    string Status,
+    DateTimeOffset? StartsAtLocal,
+    DateTimeOffset? EndsAtLocal,
+    IReadOnlyList<ZCodeQuotaBalance> Balances)
 {
+    /// <summary>Stable identity of this plan instance, used to persist the UI selection.</summary>
+    public string SelectionKey => UserPlanId ?? PlanId;
+
+    public bool IsActive => string.Equals(Status, "active", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The balance shown as the headline number: the first bucket that still carries units.</summary>
     public ZCodeQuotaBalance? PrimaryBalance =>
         Balances.FirstOrDefault(item => item.RemainingUnits > 0) ??
         Balances.FirstOrDefault(item => item.TotalUnits > 0) ??
         Balances.FirstOrDefault();
+}
+
+internal sealed record ZCodeQuotaSnapshot(
+    DateTimeOffset SnapshotLocal,
+    IReadOnlyList<ZCodeQuotaPlan> Plans,
+    DateTimeOffset? ServerTimeLocal)
+{
+    /// <summary>
+    /// The plan a fresh session lands on: an active one that still carries
+    /// units, else the first active one, else the server's first entry.
+    /// </summary>
+    public ZCodeQuotaPlan DefaultPlan =>
+        Plans.FirstOrDefault(item => item.IsActive && item.PrimaryBalance?.RemainingUnits > 0) ??
+        Plans.FirstOrDefault(item => item.IsActive) ??
+        Plans[0];
+
+    /// <summary>Resolves a persisted selection; user_plan_id wins, then plan_id.</summary>
+    public ZCodeQuotaPlan? FindPlan(string? userPlanId, string? planId)
+    {
+        if (!string.IsNullOrWhiteSpace(userPlanId))
+        {
+            var match = Plans.FirstOrDefault(item =>
+                string.Equals(item.UserPlanId, userPlanId, StringComparison.Ordinal));
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(planId))
+        {
+            var match = Plans.FirstOrDefault(item =>
+                string.Equals(item.PlanId, planId, StringComparison.Ordinal));
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
 }
 
 internal enum ZCodeQuotaFailureKind
@@ -77,26 +137,16 @@ internal static class ZCodeQuotaParser
                 return null;
             }
 
-            var plan = ReadActivePlan(data);
-            if (plan.ValueKind != JsonValueKind.Object)
-            {
-                return null;
-            }
-
+            var plans = ReadPlans(data);
             var balances = ReadBalances(data);
-            if (balances.Count == 0)
+            if (plans.Count == 0 && balances.Count == 0)
             {
                 return null;
             }
 
-            var planId = GetString(plan, "plan_id") ?? "zcode";
             return new ZCodeQuotaSnapshot(
                 snapshotLocal,
-                planId,
-                GetString(plan, "name") ?? planId,
-                GetString(plan, "description"),
-                GetString(plan, "status") ?? "unknown",
-                balances,
+                AttachBalances(plans, balances),
                 ReadUnixSeconds(data, "server_time"));
         }
         catch (JsonException)
@@ -125,11 +175,12 @@ internal static class ZCodeQuotaParser
         return !root.TryGetProperty("success", out var success) || success.ValueKind != JsonValueKind.False;
     }
 
-    private static JsonElement ReadActivePlan(JsonElement data)
+    private static List<ZCodeQuotaPlan> ReadPlans(JsonElement data)
     {
+        var result = new List<ZCodeQuotaPlan>();
         if (!data.TryGetProperty("plans", out var plans) || plans.ValueKind != JsonValueKind.Array)
         {
-            return default;
+            return result;
         }
 
         foreach (var candidate in plans.EnumerateArray())
@@ -139,17 +190,19 @@ internal static class ZCodeQuotaParser
                 continue;
             }
 
-            var status = GetString(candidate, "status");
-            if (string.Equals(status, "active", StringComparison.OrdinalIgnoreCase))
-            {
-                return candidate;
-            }
+            var planId = GetString(candidate, "plan_id") ?? "zcode";
+            result.Add(new ZCodeQuotaPlan(
+                planId,
+                GetString(candidate, "user_plan_id"),
+                GetString(candidate, "name") ?? planId,
+                GetString(candidate, "description"),
+                GetString(candidate, "status") ?? "unknown",
+                ReadUnixSeconds(candidate, "starts_at"),
+                ReadUnixSeconds(candidate, "ends_at"),
+                Array.Empty<ZCodeQuotaBalance>()));
         }
 
-        return plans.ValueKind == JsonValueKind.Array && plans.GetArrayLength() > 0 &&
-               plans[0].ValueKind == JsonValueKind.Object
-            ? plans[0]
-            : default;
+        return result;
     }
 
     private static IReadOnlyList<ZCodeQuotaBalance> ReadBalances(JsonElement data)
@@ -184,12 +237,67 @@ internal static class ZCodeQuotaParser
                 GetInt64OrNull(item, "available_units"),
                 ReadUnixSeconds(item, "expires_at"),
                 ReadUnixSeconds(item, "period_start"),
-                ReadUnixSeconds(item, "period_end")));
+                ReadUnixSeconds(item, "period_end"),
+                GetString(item, "plan_id"),
+                GetString(item, "user_plan_id")));
         }
 
-        return result
-            .OrderByDescending(item => item.RemainingUnits)
-            .ToList();
+        return result;
+    }
+
+    /// <summary>
+    /// Attributes each metered bucket to its purchased plan (user_plan_id first,
+    /// plan_id as the legacy fallback). The account may hold several plans at
+    /// once — merging their buckets would show one plan's name over another
+    /// plan's balance. Buckets whose plan record vanished stay visible under a
+    /// synthetic entry so no metered quota silently disappears.
+    /// </summary>
+    private static IReadOnlyList<ZCodeQuotaPlan> AttachBalances(
+        List<ZCodeQuotaPlan> plans, IReadOnlyList<ZCodeQuotaBalance> balances)
+    {
+        var unclaimed = balances.ToList();
+        var result = new List<ZCodeQuotaPlan>(plans.Count);
+        foreach (var plan in plans)
+        {
+            IReadOnlyList<ZCodeQuotaBalance> owned;
+            if (plan.UserPlanId is { } userPlanId)
+            {
+                owned = unclaimed.Where(item => string.Equals(item.UserPlanId, userPlanId, StringComparison.Ordinal)).ToList();
+            }
+            else
+            {
+                owned = unclaimed.Where(item => item.UserPlanId is null &&
+                                                string.Equals(item.PlanId, plan.PlanId, StringComparison.Ordinal)).ToList();
+            }
+
+            foreach (var item in owned)
+            {
+                unclaimed.Remove(item);
+            }
+
+            result.Add(plan with { Balances = OrderBalances(owned) });
+        }
+
+        foreach (var group in unclaimed.GroupBy(item => item.UserPlanId ?? item.PlanId ?? "zcode"))
+        {
+            var first = group.First();
+            result.Add(new ZCodeQuotaPlan(
+                first.PlanId ?? group.Key,
+                first.UserPlanId,
+                first.PlanId ?? group.Key,
+                null,
+                "unknown",
+                null,
+                null,
+                OrderBalances(group.ToList())));
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<ZCodeQuotaBalance> OrderBalances(IReadOnlyList<ZCodeQuotaBalance> balances)
+    {
+        return balances.OrderByDescending(item => item.RemainingUnits).ToList();
     }
 
     private static string? ReadCapabilityModelId(JsonElement item)
@@ -369,6 +477,7 @@ internal sealed class ZCodeQuotaReader
     private readonly Func<string?> locateDeviceMidFile;
     private readonly Func<string?> locateAppVersion;
     private readonly Func<HttpMessageInvoker> createHttpSender;
+    private readonly Func<CancellationToken, ZCodeQuotaPlan?> readCodingPlan;
     private readonly TimeSpan requestTimeout;
     private HttpMessageInvoker? cachedHttpSender;
     private DateTimeOffset lastAttemptUtc = DateTimeOffset.MinValue;
@@ -381,7 +490,8 @@ internal sealed class ZCodeQuotaReader
         Func<string?>? locateDeviceMidFile = null,
         Func<string?>? locateAppVersion = null,
         Func<HttpMessageInvoker>? createHttpSender = null,
-        TimeSpan? requestTimeout = null)
+        TimeSpan? requestTimeout = null,
+        Func<CancellationToken, ZCodeQuotaPlan?>? readCodingPlan = null)
     {
         this.locateCredentialsFile = locateCredentialsFile ?? LocateCredentialsFile;
         this.locateDeviceMidFile = locateDeviceMidFile ?? LocateDeviceMidFile;
@@ -390,6 +500,7 @@ internal sealed class ZCodeQuotaReader
         {
             PooledConnectionLifetime = TimeSpan.FromMinutes(10)
         }));
+        this.readCodingPlan = readCodingPlan ?? (token => ZCodeCodingPlanReader.Shared.ReadCurrent(token));
         this.requestTimeout = requestTimeout ?? DefaultRequestTimeout;
     }
 
@@ -588,10 +699,43 @@ internal sealed class ZCodeQuotaReader
             }
 
             var snapshot = ZCodeQuotaParser.Parse(json, BeijingClock.Now);
+            snapshot = MergeCodingPlan(snapshot, timeoutCts.Token);
             return snapshot is not null
                 ? new ZCodeQuotaReadResult(snapshot, null)
                 : new ZCodeQuotaReadResult(null, new ZCodeQuotaFailure(ZCodeQuotaFailureKind.ParseError));
         }
+    }
+
+    /// <summary>
+    /// Appends the BigModel coding plan (GLM Coding Lite, percentage windows)
+    /// to the snapshot so it joins the plan selector. A failed or absent coding
+    /// plan never fails the read; a coding plan without balance-endpoint data
+    /// still produces a usable snapshot.
+    /// </summary>
+    private ZCodeQuotaSnapshot? MergeCodingPlan(ZCodeQuotaSnapshot? snapshot, CancellationToken cancellationToken)
+    {
+        ZCodeQuotaPlan? codingPlan;
+        try
+        {
+            codingPlan = readCodingPlan(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            codingPlan = null;
+        }
+
+        if (codingPlan is null)
+        {
+            return snapshot;
+        }
+
+        return snapshot is { } existing
+            ? existing with { Plans = existing.Plans.Concat(new[] { codingPlan }).ToList() }
+            : new ZCodeQuotaSnapshot(BeijingClock.Now, new[] { codingPlan }, null);
     }
 
     private HttpMessageInvoker GetHttpSender()

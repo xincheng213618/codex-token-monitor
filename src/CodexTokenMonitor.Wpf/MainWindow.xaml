@@ -130,7 +130,7 @@
                 </StackPanel>
                 <StackPanel Grid.Column="2" Margin="0,0,16,0">
                     <TextBlock Text="当前套餐" Style="{StaticResource QuotaCaption}" />
-                    <TextBlock x:Name="ZCodeQuotaPlanValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" />
+                    <ComboBox x:Name="ZCodeQuotaPlanBox" MinWidth="180" MaxWidth="280" Margin="0,2,0,3" HorizontalAlignment="Left" SelectionChanged="ZCodeQuotaPlanBox_SelectionChanged" />
                     <TextBlock x:Name="ZCodeQuotaPlanDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
                 <StackPanel Grid.Column="3" Margin="0,0,16,0">

@@ -96,9 +96,10 @@ public sealed class UsageSourceRegistryTests
             Assert.Equal(source, first.Source);
             Assert.Equal(first.Title, second.Title);
             Assert.Equal(UsageSourceRegistry.For(source).SupportsQuota, first.SupportsQuota);
-            Assert.Equal(source == UsageSource.Codex, first.SupportsCycle);
+            Assert.Equal(source is UsageSource.Codex or UsageSource.ZCode, first.SupportsCycle);
             first.Mode = RangeMode.Cycle;
-            Assert.Equal(source == UsageSource.Codex ? RangeMode.Cycle : RangeMode.Day, first.Mode);
+            Assert.Equal(source is UsageSource.Codex or UsageSource.ZCode ? RangeMode.Cycle : RangeMode.Day,
+                first.Mode);
             Assert.Equal(RangeMode.Day, second.Mode);
             first.CustomStartLocal = start;
             first.StoreDisplay(range, result);

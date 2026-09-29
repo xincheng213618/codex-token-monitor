@@ -855,6 +855,9 @@ internal static class MainWindowProbe
     private static async Task CheckRealPriceCardsAsync(MainWindow window, IReadOnlyDictionary<UsageSource, UsageSourceModule> modules)
     {
         var previousPlans = GetObject(window, "currentPlanSnapshot");
+        var zcodeModule = (ZCodeUsageModule)modules[UsageSource.ZCode];
+        var previousZCodeSnapshot = zcodeModule.CurrentQuotaSnapshot;
+        var previousZCodeSelection = zcodeModule.SelectedPlan;
         Set(window, "currentPlanSnapshot", new[] { SubscriptionPlanStore.CreateMonthly(BeijingClock.Now.AddDays(-1), "Pro 20x") });
         try
         {
@@ -862,12 +865,27 @@ internal static class MainWindowProbe
             {
                 var module = modules[source];
                 Select(window, module, RangeMode.Day);
+                if (source == UsageSource.ZCode)
+                {
+                    zcodeModule.CurrentQuotaSnapshot = null;
+                    zcodeModule.SelectedPlan = null;
+                }
                 var summary = new TokenUsageSummary { StartLocal = SeedDay, EndLocal = SeedDay.AddHours(12) };
                 summary.Add(new TokenUsageEvent(SeedDay.AddHours(11), 3_299_000, 3_001_000, 34_000,
                     6_520, 3_333_000, "real-price-fixture", ModelId: source == UsageSource.Codex ? "gpt-6-sol" : "GLM-5.3-Flash"));
                 var range = new SelectedRange(SeedDay, SeedDay.AddDays(1), "参考价界面样本", "样本明细", RangeMode.Day);
                 var result = new UsageQueryResult(summary, new[] { summary }, TimeSpan.FromMinutes(8), null, Array.Empty<CodexQuotaSnapshot>());
                 Invoke(window, "ApplySummary", range, result, module);
+                if (source == UsageSource.ZCode)
+                {
+                    // Match the live order: usage arrives before the asynchronous
+                    // quota snapshot, then the selected plan refreshes the card.
+                    module.StoreDisplay(range, result);
+                    zcodeModule.CurrentQuotaSnapshot = new ZCodeQuotaSnapshot(BeijingClock.Now,
+                        new[] { new ZCodeQuotaPlan("bigmodel-individual-coding-plan", "probe-lite",
+                            "GLM Coding Lite", null, "active", null, null, Array.Empty<ZCodeQuotaBalance>()) }, null);
+                    Invoke(window, "RefreshZCodeRealPriceCard", zcodeModule);
+                }
                 var presets = PriceSettingsStore.DisplayPresetsForSource(source, count: 0).ToList();
                 foreach (var width in new[] { 1380, 1060 })
                 {
@@ -882,7 +900,10 @@ internal static class MainWindowProbe
                         var card = (CostCardControl)panel.Children[1];
                         var detail = ((TextBlock)card.ToolTip).Text;
                         Require(detail.Contains("2026-09-27") && detail.Contains("real-api-pricing"), "real price provenance");
-                        Require(source == UsageSource.Codex ? detail.Contains("跨套餐参考") : detail.Contains("最高真实单价"), "source-specific pricing basis");
+                        Require(source == UsageSource.Codex ? detail.Contains("跨套餐参考") :
+                            detail.Contains("非高峰") && detail.Contains("GLM Coding Lite"), "source-specific pricing basis");
+                        if (source == UsageSource.ZCode)
+                            Require(Get<TextBlock>(card, "ModelText").Text.Contains("Lite ¥118"), "selected Lite plan is visible on card");
                         Require(panel.Children.Cast<FrameworkElement>().Sum(child => child.Width + child.Margin.Left + child.Margin.Right)
                             <= Get<FrameworkElement>(window, "CostCardsViewport").ActualWidth + 1, "all cost cards fit viewport");
                         Results.Add(new { check = "real-price-card", source = source.ToString(), width,
@@ -896,6 +917,8 @@ internal static class MainWindowProbe
         finally
         {
             Set(window, "currentPlanSnapshot", previousPlans);
+            zcodeModule.CurrentQuotaSnapshot = previousZCodeSnapshot;
+            zcodeModule.SelectedPlan = previousZCodeSelection;
             Select(window, modules[UsageSource.Codex], RangeMode.Day);
             await RefreshAndDrainAsync(window);
         }

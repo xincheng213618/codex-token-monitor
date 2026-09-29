@@ -21,31 +21,39 @@ internal static class ZCodeQuotaProbe
                 checks.Add(new
                 {
                     check = "live-read-snapshot",
-                    passed = snapshot.Balances.Count > 0,
-                    planId = snapshot.PlanId,
-                    planName = snapshot.PlanName,
-                    planStatus = snapshot.PlanStatus,
-                    balanceCount = snapshot.Balances.Count,
-                    balances = snapshot.Balances.Select(item => new
+                    passed = snapshot.Plans.Count > 0,
+                    planCount = snapshot.Plans.Count,
+                    plans = snapshot.Plans.Select(plan => new
                     {
-                        item.ModelName,
-                        item.ModelId,
-                        item.TotalUnits,
-                        item.UsedUnits,
-                        item.RemainingUnits,
-                        UsedPercent = item.UsedPercent,
-                        ExpiresAtLocal = item.ExpiresAtLocal?.ToString("yyyy-MM-dd HH:mm zzz")
+                        plan.PlanId,
+                        plan.UserPlanId,
+                        plan.Name,
+                        plan.Status,
+                        StartsAtLocal = plan.StartsAtLocal?.ToString("yyyy-MM-dd HH:mm zzz"),
+                        EndsAtLocal = plan.EndsAtLocal?.ToString("yyyy-MM-dd HH:mm zzz"),
+                        balances = plan.Balances.Select(item => new
+                        {
+                            item.ModelName,
+                            item.ModelId,
+                            item.TotalUnits,
+                            item.UsedUnits,
+                            item.RemainingUnits,
+                            UsedPercent = item.UsedPercent,
+                            ExpiresAtLocal = item.ExpiresAtLocal?.ToString("yyyy-MM-dd HH:mm zzz")
+                        }).ToArray()
                     }).ToArray(),
                     snapshotLocal = snapshot.SnapshotLocal.ToString("yyyy-MM-dd HH:mm:ss zzz")
                 });
+                var defaultPlan = snapshot.DefaultPlan;
                 checks.Add(new
                 {
-                    check = "primary-balance-selected",
-                    passed = snapshot.PrimaryBalance is not null &&
-                             snapshot.PrimaryBalance.RemainingUnits >= 0 &&
-                             snapshot.PrimaryBalance.TotalUnits >= snapshot.PrimaryBalance.UsedUnits,
-                    modelName = snapshot.PrimaryBalance?.ModelName,
-                    remainingUnits = snapshot.PrimaryBalance?.RemainingUnits
+                    check = "default-plan-primary-balance-selected",
+                    passed = defaultPlan.PrimaryBalance is not null &&
+                             defaultPlan.PrimaryBalance.RemainingUnits >= 0 &&
+                             defaultPlan.PrimaryBalance.TotalUnits >= defaultPlan.PrimaryBalance.UsedUnits,
+                    planName = defaultPlan.Name,
+                    modelName = defaultPlan.PrimaryBalance?.ModelName,
+                    remainingUnits = defaultPlan.PrimaryBalance?.RemainingUnits
                 });
             }
             else

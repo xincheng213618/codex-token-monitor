@@ -41,7 +41,24 @@ public sealed class RealPriceReferenceTests
         Assert.Equal("glm_coding_lite_cn_new_peak", Assert.Single(estimate.Lines).Reference!.PlanId);
         Assert.InRange(estimate.KnownCost, 117.999999m, 118.000001m);
         Assert.Equal("¥", estimate.CurrencySymbol);
-        Assert.Contains("免费", estimate.Describe());
+        Assert.Contains("套餐未匹配", estimate.Describe());
+    }
+
+    [Fact]
+    public void ZCode_SelectedLiteUses118YuanOffPeakReferenceWithoutChangingApiRates()
+    {
+        var planId = RealPriceCalculator.ZCodeReferencePlanId("GLM Coding Lite");
+        Assert.Equal("glm_coding_lite_cn_new_offpeak", planId);
+        var estimate = RealPriceCalculator.Estimate(
+            Usage("GLM-5.3-Flash", 1_249_000_000), UsageSource.ZCode, planId);
+
+        var line = Assert.Single(estimate.Lines);
+        Assert.Equal(planId, line.Reference!.PlanId);
+        Assert.InRange(estimate.KnownCost, 117.999999m, 118.000001m);
+        Assert.False(estimate.UsesOtherPlans);
+        Assert.Contains("不是实付金额", estimate.Describe());
+        Assert.Contains("非高峰", estimate.Describe());
+        Assert.Null(RealPriceCalculator.ZCodeReferencePlanId("GLM Coding Pro"));
     }
 
     [Fact]

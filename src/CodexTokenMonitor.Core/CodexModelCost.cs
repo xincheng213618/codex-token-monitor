@@ -211,7 +211,13 @@ internal static class CodexModelCost
     public static string NormalizeModelId(string? model)
     {
         var value = (model ?? "").Trim().ToLowerInvariant();
-        if (value.StartsWith("openai/", StringComparison.Ordinal)) value = value[7..];
+        // Logs report the same model through different gateways ("tencent/hy3",
+        // "openai/gpt-6-sol"). The provider prefix is routing, not identity.
+        var separator = value.IndexOf('/');
+        if (separator > 0 && separator < value.Length - 1)
+        {
+            value = value[(separator + 1)..];
+        }
         value = Regex.Replace(value, @"\s+", "-");
         return value == "gpt-5.6" ? "gpt-5.6-sol" : value;
     }
@@ -264,6 +270,8 @@ internal static class CodexModelCost
             "GLM-5.3 Flash" => "glm-5.3-flash",
             "GLM-5.2 1M" => "glm-5.2",
             "MiMo V2.5 Pro" => "mimo-v2.5-pro",
+            "V4.1 Flash" or "V4 Flash" when provider.Contains("DeepSeek", StringComparison.OrdinalIgnoreCase) => "deepseek-v4-flash",
+            "V4 Pro" when provider.Contains("DeepSeek", StringComparison.OrdinalIgnoreCase) => "deepseek-v4-pro",
             _ => ""
         };
 
@@ -303,6 +311,9 @@ internal static class CodexModelCost
 
     private static string ModelKey(string? model) => Regex.Replace(NormalizeModelId(model), @"-\d{4}-\d{2}-\d{2}$", "");
 
+    // "hy3-preview-20260421" -> "hy3-preview" (ModelKey drops the date) -> "hy3".
+    private static string FamilyKey(string? model) => Regex.Replace(ModelKey(model), @"-preview(-.*)?$", "");
+
     internal static bool IsPending(PricePreset? preset) => preset is null ||
         (preset.Source == PlaceholderPriceSource || preset.Source == NoPublicPriceSource) &&
         preset.UncachedInput == 0 && preset.CachedInput == 0 && preset.Output == 0 && (preset.CacheWriteInput ?? 0) == 0;
@@ -313,6 +324,14 @@ internal static class CodexModelCost
         if (!prices.TryGetValue(key, out preset))
         {
             prices.TryGetValue(ModelKey(key), out preset);
+        }
+
+        // Preview and dated builds are the same tariff family as the priced
+        // base model ("tencent/hy3-preview-20260421" -> "hy3"). Endpoint ids
+        // ("ep-…") have no family to fall back to and stay unpriced.
+        if (preset is null)
+        {
+            prices.TryGetValue(FamilyKey(key), out preset);
         }
 
         // Codex reports the post-limit fallback as gpt-reserve. It is not a

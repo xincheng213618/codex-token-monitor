@@ -25,6 +25,14 @@ internal abstract class UsageSourceModule
     public string Title { get; }
     public bool SupportsQuota { get; }
     public virtual bool SupportsCycle => false;
+
+    /// <summary>
+    /// Quota periods offered in the 按周期 dropdown, newest first. Codex fills
+    /// them from weekly cycles, ZCode from the plan's recorded balance history.
+    /// </summary>
+    public IReadOnlyList<CodexQuotaCycle> QuotaCycles { get; set; } = Array.Empty<CodexQuotaCycle>();
+    public CodexQuotaCycle? SelectedCycle { get; set; }
+
     public DateTime PickerValue { get; set; } = BeijingClock.Today;
     public DateTimeOffset? CustomStartLocal { get; set; }
     public SelectedRange? LastRange { get; private set; }
@@ -137,8 +145,6 @@ internal sealed class CodexUsageModule : UsageSourceModule
     public override bool SupportsCycle => true;
     public CodexQuotaEstimate? CurrentQuotaEstimate { get; set; }
     public IReadOnlyList<CodexQuotaSnapshot> CurrentQuotaSnapshots { get; set; } = Array.Empty<CodexQuotaSnapshot>();
-    public IReadOnlyList<CodexQuotaCycle> QuotaCycles { get; set; } = Array.Empty<CodexQuotaCycle>();
-    public CodexQuotaCycle? SelectedCycle { get; set; }
 }
 
 internal sealed class ClaudeCodeUsageModule : UsageSourceModule
@@ -156,9 +162,16 @@ internal sealed class ZCodeUsageModule : UsageSourceModule
     {
     }
 
+    // Plan periods come from the recorded balance history (ReadPeriods), so
+    // past windows can be browsed and analyzed like Codex cycles.
+    public override bool SupportsCycle => true;
+
     public ZCodeQuotaSnapshot? CurrentQuotaSnapshot { get; set; }
 
     public ZCodeQuotaFailure? CurrentQuotaFailure { get; set; }
+
+    /// <summary>The plan the quota panel is showing; null means "pick the snapshot default".</summary>
+    public ZCodePlanSelection? SelectedPlan { get; set; }
 }
 
 internal sealed class WorkBuddyUsageModule : UsageSourceModule

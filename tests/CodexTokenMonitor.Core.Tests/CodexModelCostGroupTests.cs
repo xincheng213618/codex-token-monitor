@@ -121,4 +121,53 @@ public sealed class CodexModelCostGroupTests
         Assert.False(cost.IsComplete);
         Assert.Equal(1_000_000, cost.UnpricedTokens);
     }
+
+    [Fact]
+    public void WorkBuddyGroupEstimate_PricesPrefixedPreviewIdWithItsFamilyRate()
+    {
+        // Logs report the same tariff through a gateway prefix and a dated
+        // preview build: "tencent/hy3-preview-20260421" is billed like hy3,
+        // so 1M uncached input + 1M output costs 1.00 + 4.00 = 5.00 yuan.
+        var bucket = new TokenUsageBucket();
+        bucket.Add(new TokenUsageEvent(
+            DateTimeOffset.Now, InputTokens: 1_000_000, CachedInputTokens: 0, OutputTokens: 1_000_000,
+            ReasoningOutputTokens: 0, TotalTokens: 2_000_000,
+            Key: "workbuddy-hy3-preview", ModelId: "tencent/hy3-preview-20260421"));
+        var cost = CodexModelCost.Estimate(bucket, PricePresetGroups.WorkBuddy);
+
+        Assert.True(cost.IsComplete);
+        Assert.Equal("¥", cost.CurrencySymbol);
+        Assert.Equal(5.00m, cost.KnownCost);
+    }
+
+    [Fact]
+    public void WorkBuddyGroupEstimate_PricesHy4PreviewWithItsOwnRate()
+    {
+        // Hy4 preview is a newer generation than Hy3 and has its own published
+        // tariff: 6 yuan / 1M input, 18 yuan / 1M output, 0.30 yuan / 1M cached
+        // read. It must not inherit Hy3's cheaper rate (which would understate
+        // the bill by ~4.8x on the same tokens).
+        var bucket = new TokenUsageBucket();
+        bucket.Add(new TokenUsageEvent(
+            DateTimeOffset.Now, InputTokens: 1_000_000, CachedInputTokens: 0, OutputTokens: 1_000_000,
+            ReasoningOutputTokens: 0, TotalTokens: 2_000_000,
+            Key: "workbuddy-hy4-preview", ModelId: "hy4-preview"));
+        var cost = CodexModelCost.Estimate(bucket, PricePresetGroups.WorkBuddy);
+
+        Assert.True(cost.IsComplete);
+        Assert.Equal("¥", cost.CurrencySymbol);
+        Assert.Equal(24.00m, cost.KnownCost);
+    }
+
+    [Fact]
+    public void WorkBuddyGroupEstimate_PreviewIdWithoutPricedFamily_StaysUnpriced()
+    {
+        // A future/unnamed preview build has no catalog row and no priced
+        // family to inherit from; it must stay pending instead of being
+        // quietly billed at another Hunyuan rate.
+        var cost = CodexModelCost.Estimate(Bucket("hy9-preview", 1_000_000), PricePresetGroups.WorkBuddy);
+
+        Assert.False(cost.IsComplete);
+        Assert.Equal(1_000_000, cost.UnpricedTokens);
+    }
 }

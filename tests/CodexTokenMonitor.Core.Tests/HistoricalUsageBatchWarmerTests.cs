@@ -18,6 +18,9 @@ public sealed class HistoricalUsageBatchWarmerTests
         new object[] { "Dsh", "DshTokenMonitor", "Dsh" }
     };
 
+    public static IEnumerable<object[]> ModelReaders => Readers
+        .Concat(new[] { new object[] { "Kimi", "KimiTokenMonitor", "Kimi" } });
+
     [Theory]
     [MemberData(nameof(Readers))]
     public void Batch_ScansFilesOncePreservesDailyIdentityAndImports(
@@ -149,6 +152,42 @@ public sealed class HistoricalUsageBatchWarmerTests
         }
     }
 
+    [Theory]
+    [MemberData(nameof(ModelReaders))]
+    public void Batch_PreservesPerModelUsageInDayBuckets(
+        string source, string cacheFolder, string logFolder)
+    {
+        var root = CreateRoot();
+        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(root);
+        using var logScope = UsageLogPaths.PushRoot(Path.Combine(root, "logs"));
+        try
+        {
+            var model = WriteModelLog(source, Path.Combine(root, "logs", logFolder));
+            Warm(source, new[] { FirstDay });
+
+            var cache = UsageCacheStore.Load(cacheFolder);
+            var date = DateOnly.FromDateTime(FirstDay.DateTime);
+            Assert.True(cache.TryGet(date, out var dayBucket));
+            Assert.True(dayBucket.ModelUsage.TryGetValue(model, out var modelBucket));
+            Assert.Equal(1, modelBucket.Events);
+            Assert.Equal(dayBucket.Events, modelBucket.Events);
+            Assert.Equal(dayBucket.TotalTokens, modelBucket.TotalTokens);
+            Assert.All(cache.GetDetailEvents(date), item => Assert.Equal(model, item.ModelId));
+
+            // A second warm pass sees a complete day and must not blank the
+            // day bucket's per-model usage.
+            Warm(source, new[] { FirstDay });
+            Assert.True(cache.TryGet(date, out var rewarmed));
+            Assert.True(rewarmed.ModelUsage.ContainsKey(model));
+            Assert.Empty(UsageCacheStore.GetIncompleteDays(cacheFolder, FirstDay, FirstDay));
+        }
+        finally
+        {
+            UsageCacheStore.Delete(cacheFolder);
+            DeleteRoot(root);
+        }
+    }
+
     private static void Warm(string source, IEnumerable<DateTimeOffset> days,
         CancellationToken cancellationToken = default,
         Action<DateTimeOffset>? dayCompleted = null, Action<int, int>? fileProgress = null)
@@ -166,6 +205,9 @@ public sealed class HistoricalUsageBatchWarmerTests
                 break;
             case "Dsh":
                 DshUsageReader.WarmHistoricalDays(days, cancellationToken, dayCompleted, fileProgress);
+                break;
+            case "Kimi":
+                new KimiUsageReader().WarmHistoricalDays(days, cancellationToken, dayCompleted, fileProgress);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(source));
@@ -215,6 +257,75 @@ public sealed class HistoricalUsageBatchWarmerTests
             File.WriteAllText(path, text);
         }
         return path;
+    }
+
+    private static string WriteModelLog(string source, string root)
+    {
+        var model = $"{source}-test-model".ToLowerInvariant();
+        if (source == "ZCode")
+        {
+            root = Path.Combine(root, "rollout");
+        }
+        if (source == "Dsh")
+        {
+            root = Path.Combine(root, "batch");
+        }
+        Directory.CreateDirectory(root);
+        var lines = new List<string>();
+        if (source == "Dsh")
+        {
+            // DSH records the active model on a context line before usage chunks.
+            lines.Add(JsonSerializer.Serialize(new { type = "request/context", data = new { model } }));
+        }
+
+        lines.Add(JsonSerializer.Serialize(source switch
+        {
+            "Claude" => (object)new
+            {
+                type = "assistant", timestamp = FirstDay,
+                message = new { id = "model-check", model, usage = new { input_tokens = 100, cache_read_input_tokens = 40, cache_creation_input_tokens = 20, output_tokens = 10 } }
+            },
+            "WorkBuddy" => new
+            {
+                timestamp = FirstDay,
+                providerData = new { model },
+                message = new { id = "model-check", usage = new { input_tokens = 160, cache_read_input_tokens = 40, cache_write_input_tokens = 20, output_tokens = 10, total_tokens = 170 } }
+            },
+            "ZCode" => new
+            {
+                type = "model_io", completedAt = FirstDay, requestId = "model-check",
+                model = new { modelId = model },
+                response = new { usage = new { inputTokens = 160, cacheReadTokens = 40, cacheWriteTokens = 20, outputTokens = 10, totalTokens = 170 } }
+            },
+            "Dsh" => new
+            {
+                type = "assistant/chunk", seq = 1, time = FirstDay.ToUnixTimeMilliseconds(),
+                data = new { chunk = new { type = "usage", usage = new { inputTokens = 100, cacheReadTokens = 40, cacheWriteTokens = 20, outputTokens = 10 } } }
+            },
+            "Kimi" => new
+            {
+                type = "usage.record", usageScope = "turn", time = FirstDay.ToUnixTimeMilliseconds(), model,
+                usage = new { inputOther = 100, inputCacheRead = 40, inputCacheCreation = 20, output = 10 }
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(source))
+        }));
+
+        var text = string.Join("\n", lines) + "\n";
+        var path = Path.Combine(root,
+            source == "Dsh" ? "session.jsonl.zstd" :
+            source == "Kimi" ? "wire.jsonl" :
+            "model-io-batch.jsonl");
+        if (source == "Dsh")
+        {
+            using var compressor = new Compressor();
+            File.WriteAllBytes(path, compressor.Wrap(Encoding.UTF8.GetBytes(text)).ToArray());
+        }
+        else
+        {
+            File.WriteAllText(path, text);
+        }
+
+        return model;
     }
 
     private static string LogLine(string source, DateTimeOffset timestamp, long input)

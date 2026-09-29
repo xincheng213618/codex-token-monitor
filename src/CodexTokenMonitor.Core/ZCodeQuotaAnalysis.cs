@@ -14,28 +14,51 @@ internal sealed class ZCodeQuotaAnalysisSource : IQuotaCycleAnalysisSource
     private const string CacheFolder = "ZCodeTokenMonitor";
     private const int HistoryDayLimit = 60;
 
+    private readonly string? historyLimitPrefix;
+
+    /// <summary>
+    /// When set, analysis only sees balance points of that plan (prefix of the
+    /// stored LimitId). Multiple concurrent plans each meter their own buckets,
+    /// so an unscoped query would mix one plan's consumption into another's.
+    /// </summary>
+    public ZCodeQuotaAnalysisSource(string? historyLimitPrefix = null)
+    {
+        this.historyLimitPrefix = historyLimitPrefix;
+    }
+
     public bool ResolvesCurrentPeriod => false;
+
+    /// <summary>Plan-scoped LimitId prefix used by the persisted balance history.</summary>
+    public static string HistoryLimitPrefix(ZCodeQuotaPlan plan) => plan.SelectionKey + ":";
+
+    private static string HistoryLimitId(ZCodeQuotaPlan plan, ZCodeQuotaBalance balance) =>
+        HistoryLimitPrefix(plan) + (balance.ModelId ?? balance.ModelName);
+
+    private bool MatchesScope(CodexQuotaSnapshot point) =>
+        historyLimitPrefix is null ||
+        (point.LimitId?.StartsWith(historyLimitPrefix, StringComparison.Ordinal) ?? false);
 
     // ---- balance history ----
 
     /// <summary>
-    /// Appends one point per metered balance after a successful quota read.
-    /// Points within two seconds of an existing one for the same bucket are
-    /// merged, so a manual refresh right after the timed one cannot double the
-    /// series.
+    /// Appends one point per metered balance of every plan after a successful
+    /// quota read. Points within two seconds of an existing one for the same
+    /// bucket are merged, so a manual refresh right after the timed one cannot
+    /// double the series.
     /// </summary>
     public static void RecordSnapshot(ZCodeQuotaSnapshot snapshot, CancellationToken cancellationToken = default)
     {
-        var points = snapshot.Balances
-            .Where(item => item.UsedPercent is not null)
-            .Select(item => new CodexQuotaSnapshot(
+        var points = snapshot.Plans
+            .SelectMany(plan => plan.Balances.Select(item => (plan, item)))
+            .Where(entry => entry.item.UsedPercent is not null)
+            .Select(entry => new CodexQuotaSnapshot(
                 snapshot.SnapshotLocal,
-                LimitId: item.ModelId ?? item.ModelName,
-                LimitName: item.ModelName,
+                LimitId: HistoryLimitId(entry.plan, entry.item),
+                LimitName: entry.item.ModelName,
                 FiveHourUsedPercent: null,
                 FiveHourResetAtLocal: null,
-                WeekUsedPercent: item.UsedPercent,
-                WeekResetAtLocal: item.ExpiresAtLocal ?? item.PeriodEndLocal))
+                WeekUsedPercent: entry.item.UsedPercent,
+                WeekResetAtLocal: entry.item.ExpiresAtLocal ?? entry.item.PeriodEndLocal))
             .ToArray();
         if (points.Length == 0)
         {
@@ -78,28 +101,31 @@ internal sealed class ZCodeQuotaAnalysisSource : IQuotaCycleAnalysisSource
         return result;
     }
 
-    /// <summary>Maps the live balance onto the analysis period and window estimate.</summary>
-    public static ZCodeQuotaAnalysisDescription? DescribeCurrent(ZCodeQuotaSnapshot snapshot)
+    /// <summary>Maps the selected plan's live balance onto the analysis period and window estimate.</summary>
+    public static ZCodeQuotaAnalysisDescription? DescribeCurrent(ZCodeQuotaSnapshot snapshot, ZCodeQuotaPlan plan)
     {
-        var balance = snapshot.PrimaryBalance;
+        var balance = plan.PrimaryBalance;
         if (balance?.UsedPercent is not { } usedPercent)
         {
             return null;
         }
 
         var start = balance.PeriodStartLocal ??
-                    snapshot.Balances.Select(item => item.PeriodStartLocal)
+                    plan.Balances.Select(item => item.PeriodStartLocal)
                         .Where(item => item is not null).Min() ??
+                    plan.StartsAtLocal ??
                     snapshot.SnapshotLocal;
-        var end = balance.ExpiresAtLocal ?? balance.PeriodEndLocal;
+        var end = balance.ExpiresAtLocal ?? balance.PeriodEndLocal ?? plan.EndsAtLocal;
         if (end is not { } periodEnd || periodEnd <= start)
         {
             return null;
         }
 
+        var prefix = HistoryLimitPrefix(plan);
         var now = BeijingClock.Now;
         var historyPoints = ReadHistory(start, periodEnd)
             .Count(item => item.WeekUsedPercent is not null &&
+                           (item.LimitId?.StartsWith(prefix, StringComparison.Ordinal) ?? false) &&
                            item.SnapshotLocal >= start && item.SnapshotLocal <= periodEnd);
         var period = new CodexQuotaCycle(
             start,
@@ -125,7 +151,76 @@ internal sealed class ZCodeQuotaAnalysisSource : IQuotaCycleAnalysisSource
     // ---- pipeline adaptation ----
 
     public IReadOnlyList<CodexQuotaSnapshot> ReadSnapshots(
-        DateTimeOffset start, DateTimeOffset end, CancellationToken token) => ReadHistory(start, end, token);
+        DateTimeOffset start, DateTimeOffset end, CancellationToken token) =>
+        ReadHistory(start, end, token).Where(MatchesScope).ToList();
+
+    private const int MaxPeriods = 30;
+
+    /// <summary>
+    /// Rebuilds the plan's period list (newest first) from the recorded balance
+    /// history: points sharing a reset time form one period, and consecutive
+    /// reset times tile the period starts. Mirrors the Codex cycle list so the
+    /// shared 按周期 toolbar and analysis pipeline can consume any past window,
+    /// not only the live one.
+    /// </summary>
+    public static IReadOnlyList<CodexQuotaCycle> ReadPeriods(
+        string? historyLimitPrefix, DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        var end = now;
+        var start = end.AddDays(-HistoryDayLimit);
+        var points = ReadHistory(start, end, cancellationToken)
+            .Where(item => item.WeekUsedPercent is not null && item.WeekResetAtLocal is not null)
+            .Where(item => historyLimitPrefix is null ||
+                           (item.LimitId?.StartsWith(historyLimitPrefix, StringComparison.Ordinal) ?? false))
+            .OrderBy(item => item.WeekResetAtLocal)
+            .ThenBy(item => item.SnapshotLocal)
+            .ToList();
+        if (points.Count == 0)
+        {
+            return Array.Empty<CodexQuotaCycle>();
+        }
+
+        var clusters = new List<List<CodexQuotaSnapshot>>();
+        foreach (var point in points)
+        {
+            if (clusters.Count > 0 &&
+                CodexQuotaCycleReader.IsSameQuotaReset(clusters[^1][0].WeekResetAtLocal, point.WeekResetAtLocal))
+            {
+                clusters[^1].Add(point);
+            }
+            else
+            {
+                clusters.Add(new List<CodexQuotaSnapshot> { point });
+            }
+        }
+
+        var periods = new List<CodexQuotaCycle>(clusters.Count);
+        for (var index = 0; index < clusters.Count; index++)
+        {
+            var cluster = clusters[index];
+            var resetAt = cluster[0].WeekResetAtLocal!.Value;
+            // Consecutive reset times tile the boundary; the oldest cluster has
+            // no predecessor, so its first observation stands in for the start.
+            var periodStart = index > 0
+                ? clusters[index - 1][0].WeekResetAtLocal!.Value.AddSeconds(1)
+                : cluster.Min(item => item.SnapshotLocal);
+            if (periodStart >= resetAt)
+            {
+                periodStart = cluster.Min(item => item.SnapshotLocal);
+            }
+
+            periods.Add(new CodexQuotaCycle(
+                periodStart,
+                resetAt,
+                resetAt,
+                cluster.Count,
+                cluster.Max(item => item.WeekUsedPercent) ?? 0m,
+                IsCurrent: now < resetAt));
+        }
+
+        periods.Reverse();
+        return periods.Count > MaxPeriods ? periods.Take(MaxPeriods).ToList() : periods;
+    }
 
     public QuotaCycleAnalysisResult BuildAnalysis(
         CodexQuotaCycle period,
@@ -158,6 +253,7 @@ internal sealed class ZCodeQuotaAnalysisSource : IQuotaCycleAnalysisSource
         }
 
         var points = ReadHistory(start, end, token)
+            .Where(MatchesScope)
             .Where(item => item.WeekUsedPercent is not null &&
                            CodexQuotaCycleReader.IsSameQuotaReset(item.WeekResetAtLocal, period.ResetAt))
             .OrderBy(item => item.SnapshotLocal)

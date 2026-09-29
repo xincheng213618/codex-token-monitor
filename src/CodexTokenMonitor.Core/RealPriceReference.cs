@@ -52,7 +52,8 @@ internal sealed record RealPriceLine(string Model, long Tokens, RealPriceReferen
     bool UsedOtherPlan);
 
 internal sealed record RealPriceEstimate(UsageSource Source, decimal KnownCost, long CoveredTokens,
-    long UnpricedTokens, long UnpricedEvents, IReadOnlyList<RealPriceLine> Lines)
+    long UnpricedTokens, long UnpricedEvents, IReadOnlyList<RealPriceLine> Lines,
+    string? PreferredPlanId = null)
 {
     public bool IsComplete => UnpricedTokens == 0 && UnpricedEvents == 0;
     public bool UsesOtherPlans => Lines.Any(line => line.UsedOtherPlan);
@@ -66,10 +67,14 @@ internal sealed record RealPriceEstimate(UsageSource Source, decimal KnownCost, 
         var catalog = RealPriceCatalog.Current;
         var text = new StringBuilder();
         text.AppendLine(Source == UsageSource.ZCode
-            ? "免费 ZCode 用量：逐模型取网站 GLM Coding Plan 表中的最高真实单价折算；不是实付金额。"
+            ? PreferredPlanId is null
+                ? "ZCode 套餐未匹配：逐模型取网站 GLM Coding Plan 表中的最高参考单价；不是实付金额。"
+                : "按当前所选 ZCode 套餐匹配网站的非高峰、标准负载参考价；不是实付金额，也不是按实际时段结算的账单。"
             : "按当前 Codex 套餐优先匹配网站参考价；无对应样本时借用同模型最高参考价，并逐项标明。");
         text.AppendLine("公式：各模型全口径 Total Token ÷ 1,000,000 × 参考单价，再求和。");
         text.AppendLine("综合单价沿用来源负载假设，不等同于逐项 API 计费；不追加 Fast 倍率，不计额外重置优惠。");
+        if (Source == UsageSource.ZCode && PreferredPlanId is not null)
+            text.AppendLine("当前套餐只用于参考价选择：历史用量可能早于开通时间；月底实际单位成本应以实付月费 ÷ 当月实际总用量计算。");
         text.AppendLine($"数据快照：{catalog.SnapshotDate} · 固定参考快照，历史区间也按此快照折算。");
         foreach (var line in Lines)
         {
@@ -104,6 +109,13 @@ internal static class RealPriceCalculator
         };
     }
 
+    // The connected quota endpoint reports the tier but not the paid amount.
+    // This is the published new-customer ¥118 Lite off-peak scenario, not a
+    // claim that the app read a receipt or measured the month's usable tokens.
+    public static string? ZCodeReferencePlanId(string? planName) =>
+        string.Equals(planName?.Trim(), "GLM Coding Lite", StringComparison.OrdinalIgnoreCase)
+            ? "glm_coding_lite_cn_new_offpeak" : null;
+
     public static RealPriceEstimate Estimate(TokenUsageBucket usage, UsageSource source,
         string? preferredPlanId = null, IEnumerable<RealPriceReference>? references = null)
     {
@@ -115,13 +127,13 @@ internal static class RealPriceCalculator
         foreach (var (model, bucket) in usage.ModelUsage.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
         {
             var matches = candidates.Where(p => ModelKey(p.Model) == ModelKey(model)).ToArray();
-            var exact = source == UsageSource.Codex && preferredPlanId is not null
+            var exact = preferredPlanId is not null
                 ? matches.FirstOrDefault(p => p.PlanId == preferredPlanId) : null;
             var reference = exact ?? matches.OrderByDescending(p => p.PricePerMillion)
                 .ThenBy(p => p.Id, StringComparer.Ordinal).FirstOrDefault();
             decimal? cost = reference is null ? null : bucket.TotalTokens / 1_000_000m * reference.PricePerMillion;
             lines.Add(new(model, bucket.TotalTokens, reference, cost,
-                source == UsageSource.Codex && reference is not null && preferredPlanId is not null && exact is null));
+                reference is not null && preferredPlanId is not null && exact is null));
             if (cost is null) continue;
             amount += cost.Value;
             coveredTokens = TokenCountMath.AddNonNegative(coveredTokens, bucket.TotalTokens);
@@ -129,7 +141,7 @@ internal static class RealPriceCalculator
         }
         return new(source, amount, coveredTokens,
             TokenCountMath.SubtractNonNegative(usage.TotalTokens, coveredTokens),
-            TokenCountMath.SubtractNonNegative(usage.Events, coveredEvents), lines);
+            TokenCountMath.SubtractNonNegative(usage.Events, coveredEvents), lines, preferredPlanId);
     }
 
     private static string ModelKey(string model) => Regex.Replace(CodexModelCost.NormalizeModelId(model), @"-\d{4}-\d{2}-\d{2}$", "");

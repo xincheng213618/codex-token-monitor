@@ -11,7 +11,8 @@ internal sealed record DshUsageEntry(
     long Cached,
     long CacheWrite,
     long Output,
-    long Reasoning)
+    long Reasoning,
+    string? ModelId)
 {
     public long Total => TokenCountMath.AddNonNegative(Input, Output);
     public decimal CompletenessScore =>
@@ -371,14 +372,7 @@ internal static class DshUsageReader
         foreach (var usageEvent in eventsResult.Events)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            summary.Add(
-                usageEvent.Timestamp,
-                usageEvent.InputTokens,
-                usageEvent.CachedInputTokens,
-                usageEvent.CacheWriteInputTokens,
-                usageEvent.OutputTokens,
-                usageEvent.ReasoningOutputTokens,
-                usageEvent.TotalTokens);
+            summary.Add(usageEvent);
 
             var dayKey = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
             if (!dailyBuckets.TryGetValue(dayKey, out var bucket))
@@ -390,14 +384,7 @@ internal static class DshUsageReader
                 dailyBuckets[dayKey] = bucket;
             }
 
-            bucket.Add(
-                usageEvent.Timestamp,
-                usageEvent.InputTokens,
-                usageEvent.CachedInputTokens,
-                usageEvent.CacheWriteInputTokens,
-                usageEvent.OutputTokens,
-                usageEvent.ReasoningOutputTokens,
-                usageEvent.TotalTokens);
+            bucket.Add(usageEvent);
         }
 
         summary.DailyBuckets.AddRange(
@@ -439,7 +426,8 @@ internal static class DshUsageReader
                 item.Reasoning,
                 item.Total,
                 $"dsh:{item.Key}",
-                item.CacheWrite))
+                item.CacheWrite,
+                ModelId: item.ModelId))
             .ToList();
         return new UsageEventScanResult(events, isComplete);
     }
@@ -500,6 +488,7 @@ internal static class DshUsageReader
             // once creates two avoidable large-object allocations.
             var sessionId = Path.GetFileName(Path.GetDirectoryName(file)) ?? file;
             var pendingLine = "";
+            var context = new DshTranscriptContext();
             var decodedCompletely = ReadDecodedTranscript(file, decoded =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -522,13 +511,14 @@ internal static class DshUsageReader
                     startLocal,
                     endLocal,
                     entries,
+                    context,
                     cancellationToken);
                 pendingLine = text[(lastNewLine + 1)..];
             }, cancellationToken);
 
             if (pendingLine.Length > 0)
             {
-                ConsumeLine(pendingLine, sessionId, startLocal, endLocal, entries, cancellationToken);
+                ConsumeLine(pendingLine, sessionId, startLocal, endLocal, entries, context, cancellationToken);
             }
 
             return decodedCompletely;
@@ -549,13 +539,14 @@ internal static class DshUsageReader
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         Dictionary<string, DshUsageEntry> entries,
+        DshTranscriptContext context,
         CancellationToken cancellationToken)
     {
         using var reader = new StringReader(text);
         while (reader.ReadLine() is { } line)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ConsumeLine(line, sessionId, startLocal, endLocal, entries, cancellationToken);
+            ConsumeLine(line, sessionId, startLocal, endLocal, entries, context, cancellationToken);
         }
     }
 
@@ -565,15 +556,18 @@ internal static class DshUsageReader
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
         Dictionary<string, DshUsageEntry> entries,
+        DshTranscriptContext context,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!line.Contains("\"usage\"", StringComparison.Ordinal))
+        if (!line.Contains("\"usage\"", StringComparison.Ordinal) &&
+            !line.Contains("\"request/context\"", StringComparison.Ordinal) &&
+            !line.Contains("\"request/header\"", StringComparison.Ordinal))
         {
             return;
         }
 
-        var entry = TryReadUsageLine(line, sessionId, startLocal, endLocal);
+        var entry = TryReadLine(line, sessionId, startLocal, endLocal, context);
         if (entry is null)
         {
             return;
@@ -748,16 +742,33 @@ internal static class DshUsageReader
         };
     }
 
-    private static DshUsageEntry? TryReadUsageLine(
+    private static DshUsageEntry? TryReadLine(
         string line,
         string sessionId,
         DateTimeOffset startLocal,
-        DateTimeOffset endLocal)
+        DateTimeOffset endLocal,
+        DshTranscriptContext context)
     {
         try
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
+
+            if (StringEquals(root, "type", "request/context"))
+            {
+                context.ModelId = root.TryGetProperty("data", out var requestContext)
+                    ? GetString(requestContext, "model") : null;
+                return null;
+            }
+
+            if (StringEquals(root, "type", "request/header"))
+            {
+                context.ModelId = root.TryGetProperty("data", out var headerData) &&
+                                  headerData.TryGetProperty("header", out var header) &&
+                                  header.TryGetProperty("config", out var config)
+                    ? GetString(config, "model") : null;
+                return null;
+            }
 
             if (!StringEquals(root, "type", "assistant/chunk") ||
                 !root.TryGetProperty("time", out var timeElement) ||
@@ -803,12 +814,28 @@ internal static class DshUsageReader
                 cacheRead,
                 cacheWrite,
                 output,
-                reasoning);
+                reasoning,
+                context.ModelId);
         }
         catch
         {
             return null;
         }
+    }
+
+    private static string? GetString(JsonElement element, string property)
+    {
+        return element.ValueKind == JsonValueKind.Object &&
+               element.TryGetProperty(property, out var value) &&
+               value.ValueKind == JsonValueKind.String &&
+               !string.IsNullOrWhiteSpace(value.GetString())
+            ? value.GetString()!.Trim()
+            : null;
+    }
+
+    private sealed class DshTranscriptContext
+    {
+        public string? ModelId { get; set; }
     }
 
     private static IReadOnlyList<TokenUsageBucket> ToDetailBuckets(IEnumerable<TokenUsageEvent> events)
@@ -817,14 +844,7 @@ internal static class DshUsageReader
             .Select(item =>
             {
                 var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
-                bucket.Add(
-                    item.Timestamp,
-                    item.InputTokens,
-                    item.CachedInputTokens,
-                    item.CacheWriteInputTokens,
-                    item.OutputTokens,
-                    item.ReasoningOutputTokens,
-                    item.TotalTokens);
+                bucket.Add(item);
                 return bucket;
             })
             .ToList();
@@ -837,14 +857,7 @@ internal static class DshUsageReader
         var bucket = new TokenUsageBucket { StartLocal = bucketStart };
         foreach (var item in UsageEventMerger.Merge(events))
         {
-            bucket.Add(
-                item.Timestamp,
-                item.InputTokens,
-                item.CachedInputTokens,
-                item.CacheWriteInputTokens,
-                item.OutputTokens,
-                item.ReasoningOutputTokens,
-                item.TotalTokens);
+            bucket.Add(item);
         }
 
         return bucket;

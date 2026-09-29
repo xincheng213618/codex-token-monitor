@@ -84,6 +84,67 @@ public sealed class DshUsageReaderTests : IDisposable
     }
 
     [Fact]
+    public void AttributesUsageToRequestModelAcrossFramesAndModelChanges()
+    {
+        var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
+        var timestamp = start.AddHours(10);
+        var header = "{\"type\":\"request/header\",\"seq\":2,\"data\":{\"header\":{\"config\":{\"model\":\"deepseek-v4-flash\"}}}}\n";
+        var context = "{\"type\":\"request/context\",\"seq\":4,\"data\":{\"model\":\"deepseek-v4-pro\"}}\n";
+        WriteTranscript("--C-work--", "session-models", Header(),
+            UsageLine(1, timestamp, 10, 0, 1, 0) + header + UsageLine(3, timestamp.AddMinutes(1), 100, 50, 10, 0),
+            context + UsageLine(5, timestamp.AddMinutes(2), 200, 0, 20, 0));
+
+        var rows = DshUsageReader.ReadTransientDetailRows(start, start.AddDays(1));
+
+        Assert.Empty(rows[0].ModelUsage);
+        Assert.Equal("deepseek-v4-flash", Assert.Single(rows[1].ModelUsage).Key);
+        Assert.Equal("deepseek-v4-pro", Assert.Single(rows[2].ModelUsage).Key);
+        Assert.Equal(3, rows.Sum(row => row.Events));
+    }
+
+    [Fact]
+    public void RangeAndCacheRetainDshModelUsage()
+    {
+        var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));
+        var timestamp = start.AddHours(10);
+        var context = "{\"type\":\"request/context\",\"seq\":1,\"data\":{\"provider\":\"deepseek-official\",\"model\":\"deepseek-v4-flash\"}}\n";
+        WriteTranscript("--C-work--", "session-model-cache", Header(),
+            context + UsageLine(2, timestamp, 100, 500, 20, 0));
+
+        var cacheRoot = Path.Combine(Path.GetTempPath(), $"DshModelCacheTests-{Guid.NewGuid():N}");
+        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(cacheRoot);
+        try
+        {
+            var summary = DshUsageReader.ReadRange(start, start.AddDays(1), includeLiveToday: false);
+            Assert.Equal("deepseek-v4-flash", Assert.Single(summary.ModelUsage).Key);
+            Assert.Equal(620, Assert.Single(summary.ModelUsage).Value.TotalTokens);
+
+            Assert.Equal("deepseek-v4-flash",
+                Assert.Single(Assert.Single(DshUsageReader.ReadDetailRows(start, start.AddDays(1), includeLiveToday: false))
+                    .ModelUsage).Key);
+            var cached = DshUsageReader.ReadCachedRange(start, start.AddDays(1));
+            Assert.Equal(620, Assert.Single(cached.ModelUsage).Value.TotalTokens);
+            Assert.Equal("deepseek-v4-flash",
+                Assert.Single(DshUsageReader.ReadCachedDetailRows(start, start.AddDays(1))
+                    .SelectMany(row => row.ModelUsage.Keys)));
+        }
+        finally
+        {
+            UsageCacheStore.Delete("DshTokenMonitor");
+            var cacheDirectory = Path.Combine(cacheRoot, "DshTokenMonitor");
+            if (Directory.Exists(cacheDirectory)) Directory.Delete(cacheDirectory);
+            if (Directory.Exists(cacheRoot)) Directory.Delete(cacheRoot);
+        }
+    }
+
+    [Fact]
+    public void DeepSeekCatalogIdsMatchDshRuntimeModels()
+    {
+        Assert.Equal("deepseek-v4-flash", CodexModelCost.DefaultModelId("DeepSeek", "V4.1 Flash"));
+        Assert.Equal("deepseek-v4-pro", CodexModelCost.DefaultModelId("DeepSeek", "V4 Pro"));
+    }
+
+    [Fact]
     public void RepeatedReadsDoNotDoubleCount()
     {
         var start = new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.FromHours(8));

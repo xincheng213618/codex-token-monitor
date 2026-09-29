@@ -207,6 +207,29 @@ public sealed class UsageCacheStoreMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Load_MarksLegacyDshDayIncompleteWithoutRemovingEvents()
+    {
+        SeedLegacyCache();
+        var path = UsageCacheStore.GetCachePath(folder);
+        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false
+        }.ToString()))
+        {
+            connection.Open();
+            Execute(connection, "UPDATE usage_events SET event_key = 'dsh:legacy'");
+        }
+
+        var day = new DateTimeOffset(2026, 9, 10, 0, 0, 0, TimeSpan.FromHours(8));
+        _ = UsageCacheStore.Load(folder);
+
+        Assert.Contains(day, UsageCacheStore.GetIncompleteDays(folder, day, day.AddDays(1)));
+        Assert.Equal(new[] { "dsh:legacy" }, ReadEventKeys(path));
+    }
+
+    [Fact]
     public void Load_LegacyZcodeMigrationNeverRemovesEventKeys()
     {
         SeedLegacyCache();

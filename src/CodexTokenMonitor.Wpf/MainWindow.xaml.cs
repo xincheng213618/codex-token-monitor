@@ -269,14 +269,15 @@ public partial class MainWindow : Window
 
     private async void CycleBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (suppressUiEvents.IsSuppressing || CurrentModule() is not CodexUsageModule codexModule)
+        if (suppressUiEvents.IsSuppressing || CurrentModule() is not UsageSourceModule module ||
+            !module.SupportsCycle)
         {
             return;
         }
 
         await RunUiActionAsync(async () =>
         {
-            codexModule.SelectedCycle = CycleBox.SelectedItem as CodexQuotaCycle;
+            module.SelectedCycle = CycleBox.SelectedItem as CodexQuotaCycle;
             ClearCustomStart();
             UpdateRangeControls();
             await RefreshUsageAsync();
@@ -290,27 +291,83 @@ public partial class MainWindow : Window
             return;
         }
 
-        var codexModule = CurrentCodexModule();
-        var previousPeriod = codexModule.QuotaCycles
-            .Where(item => item.PeriodStart < cycle.PeriodStart)
-            .OrderByDescending(item => item.PeriodStart)
-            .FirstOrDefault();
-        var window = new QuotaCycleAnalysisWindow(
-            cycle,
-            codexModule.CurrentQuotaEstimate?.Week,
-            previousPeriod,
-            runtime)
+        if (CurrentModule() is CodexUsageModule codexModule)
         {
-            Owner = this
-        };
-        window.Show();
+            var codexPrevious = codexModule.QuotaCycles
+                .Where(item => item.PeriodStart < cycle.PeriodStart)
+                .OrderByDescending(item => item.PeriodStart)
+                .FirstOrDefault();
+            var codexWindow = new QuotaCycleAnalysisWindow(
+                cycle,
+                codexModule.CurrentQuotaEstimate?.Week,
+                codexPrevious,
+                runtime)
+            {
+                Owner = this
+            };
+            codexWindow.Show();
+            return;
+        }
+
+        if (CurrentModule() is ZCodeUsageModule zcodeModule &&
+            zcodeModule.CurrentQuotaSnapshot is { } snapshot)
+        {
+            var plan = ResolveSelectedPlan(zcodeModule, snapshot);
+            var previousPeriod = zcodeModule.QuotaCycles
+                .Where(item => item.PeriodStart < cycle.PeriodStart)
+                .OrderByDescending(item => item.PeriodStart)
+                .FirstOrDefault();
+            var window = new QuotaCycleAnalysisWindow(
+                cycle,
+                currentWeek: null,
+                previousPeriod,
+                runtime,
+                analysisSource: new ZCodeQuotaAnalysisSource(ZCodeQuotaAnalysisSource.HistoryLimitPrefix(plan)),
+                cycleTitle: "ZCode 套餐",
+                priceGroup: PricePresetGroups.ZCode)
+            {
+                Owner = this
+            };
+            window.Show();
+        }
     }
 
     private void ZCodeQuotaAnalysisButton_Click(object sender, RoutedEventArgs e)
     {
         if (CurrentModule() is not ZCodeUsageModule zcodeModule ||
-            zcodeModule.CurrentQuotaSnapshot is not { } snapshot ||
-            ZCodeQuotaAnalysisSource.DescribeCurrent(snapshot) is not { } description)
+            zcodeModule.CurrentQuotaSnapshot is not { } snapshot)
+        {
+            SetStatus("暂无 ZCode 额度快照；先刷新额度，再打开消费分析。");
+            return;
+        }
+
+        var plan = ResolveSelectedPlan(zcodeModule, snapshot);
+        var analysisSource = new ZCodeQuotaAnalysisSource(ZCodeQuotaAnalysisSource.HistoryLimitPrefix(plan));
+
+        // 按周期 mode: analyze whichever period the dropdown selects (a past
+        // window or the running one); otherwise the live plan period.
+        if (zcodeModule.Mode == RangeMode.Cycle && SelectedCycle() is { } cycle)
+        {
+            var cyclePrevious = zcodeModule.QuotaCycles
+                .Where(item => item.PeriodStart < cycle.PeriodStart)
+                .OrderByDescending(item => item.PeriodStart)
+                .FirstOrDefault();
+            var cycleWindow = new QuotaCycleAnalysisWindow(
+                cycle,
+                currentWeek: null,
+                cyclePrevious,
+                runtime,
+                analysisSource: analysisSource,
+                cycleTitle: "ZCode 套餐",
+                priceGroup: PricePresetGroups.ZCode)
+            {
+                Owner = this
+            };
+            cycleWindow.Show();
+            return;
+        }
+
+        if (ZCodeQuotaAnalysisSource.DescribeCurrent(snapshot, plan) is not { } description)
         {
             SetStatus("暂无 ZCode 额度快照；先刷新额度，再打开消费分析。");
             return;
@@ -321,7 +378,7 @@ public partial class MainWindow : Window
             description.Estimate,
             previousPeriod: null,
             runtime,
-            analysisSource: new ZCodeQuotaAnalysisSource(),
+            analysisSource: analysisSource,
             cycleTitle: "ZCode 套餐",
             priceGroup: PricePresetGroups.ZCode)
         {
@@ -482,7 +539,7 @@ public partial class MainWindow : Window
     {
         ClearCustomStart();
         var module = CurrentModule();
-        if (module.Mode == RangeMode.Cycle && module is CodexUsageModule codexModule)
+        if (module.Mode == RangeMode.Cycle && module.SupportsCycle)
         {
             await RefreshCycleOptionsAsync(keepSelection: true);
             if (CycleBox.Items.Count == 0)
@@ -501,7 +558,7 @@ public partial class MainWindow : Window
                 CycleBox.SelectedIndex = targetIndex;
             }
 
-            codexModule.SelectedCycle = CycleBox.SelectedItem as CodexQuotaCycle;
+            module.SelectedCycle = CycleBox.SelectedItem as CodexQuotaCycle;
             UpdateRangeControls();
             await RefreshUsageAsync();
             return;
@@ -522,10 +579,10 @@ public partial class MainWindow : Window
     {
         ClearCustomStart();
         var module = CurrentModule();
-        if (module.Mode == RangeMode.Cycle && module is CodexUsageModule codexModule)
+        if (module.Mode == RangeMode.Cycle && module.SupportsCycle)
         {
             await RefreshCycleOptionsAsync(keepSelection: false);
-            codexModule.SelectedCycle = CycleBox.SelectedItem as CodexQuotaCycle;
+            module.SelectedCycle = CycleBox.SelectedItem as CodexQuotaCycle;
             UpdateRangeControls();
             await RefreshUsageAsync();
             return;
@@ -833,6 +890,11 @@ public partial class MainWindow : Window
                 zcodeModule.CurrentQuotaSnapshot = result.Snapshot;
                 zcodeModule.CurrentQuotaFailure = result.Failure;
                 ApplyZCodeQuotaSummary(zcodeModule);
+                RefreshZCodeRealPriceCard(zcodeModule);
+                if (zcodeModule.Mode == RangeMode.Cycle)
+                {
+                    _ = RefreshCycleOptionsAsync(keepSelection: true);
+                }
             }
         }
         catch (OperationCanceledException) when (runtime.IsStopping || isClosed)
@@ -981,7 +1043,7 @@ public partial class MainWindow : Window
         }
 
         ApplyQuotaSummary(module, result.Quota);
-        if (module.Source == UsageSource.Codex && range.Mode == RangeMode.Cycle)
+        if (module.SupportsCycle && range.Mode == RangeMode.Cycle)
         {
             _ = RefreshCycleOptionsAsync(keepSelection: true);
         }
@@ -1275,7 +1337,7 @@ public partial class MainWindow : Window
 
     private static bool SupportsModelCost(UsageSource source)
     {
-        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode or UsageSource.Kimi;
+        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode or UsageSource.Dsh or UsageSource.Kimi;
     }
 
     private static string FormatActualBucketCost(UsageSource source, TokenUsageBucket bucket)
@@ -1403,50 +1465,71 @@ public partial class MainWindow : Window
 
     private void ApplyZCodeQuotaSummary(ZCodeUsageModule module)
     {
-        var balance = module.CurrentQuotaSnapshot?.PrimaryBalance;
-        if (module.CurrentQuotaSnapshot is not { } snapshot || balance is null)
+        if (module.CurrentQuotaSnapshot is not { } snapshot || snapshot.Plans.Count == 0)
         {
+            suppressZCodePlanSelection = true;
+            ZCodeQuotaPlanBox.Items.Clear();
+            ZCodeQuotaPlanBox.IsEnabled = false;
+            suppressZCodePlanSelection = false;
             ZCodeQuotaRemainingValue.Text = "--";
             ZCodeQuotaRemainingDetail.Text = "等待 ZCode 额度";
             ZCodeQuotaUsedValue.Text = "--";
             ZCodeQuotaUsedDetail.Text = DescribeZCodeQuotaFailure(module.CurrentQuotaFailure);
-            ZCodeQuotaPlanValue.Text = "-";
             ZCodeQuotaPlanDetail.Text = null;
             ZCodeQuotaExpiryValue.Text = "-";
             ZCodeQuotaExpiryDetail.Text = null;
             return;
         }
 
-        var usedPercent = balance.UsedPercent;
+        var plan = ResolveSelectedPlan(module, snapshot);
+        UpdateZCodePlanSelector(snapshot, plan);
+
+        var balance = plan.PrimaryBalance;
+        var usedPercent = balance?.UsedPercent;
         var remainingPercent = usedPercent is null
             ? (decimal?)null
             : Math.Max(0m, 100m - usedPercent.Value);
         ZCodeQuotaRemainingValue.Text = remainingPercent is null ? "--" : $"{remainingPercent:N1}%";
-        var remainingDetail =
-            $"剩余 {FormatTokenMillions(balance.RemainingUnits)} / {FormatTokenMillions(balance.TotalUnits)}";
-        // A plan can meter several token buckets at once; keep the headline on
-        // the primary balance but surface the other live buckets inline.
-        var otherBalances = snapshot.Balances
-            .Where(item => !ReferenceEquals(item, balance) && item.RemainingUnits > 0)
-            .ToList();
-        if (otherBalances.Count > 0)
+        // BigModel coding plans meter percentage windows instead of token
+        // buckets, so the detail lists every window as a percent.
+        var isWindowPlan = balance is { IsWindowScaled: true };
+        string remainingDetail;
+        if (isWindowPlan)
         {
-            remainingDetail += " · " + string.Join(
-                " · ",
-                otherBalances.Select(item => $"{item.ModelName} 剩 {FormatTokenMillions(item.RemainingUnits)}"));
+            remainingDetail = string.Join(" · ", plan.Balances.Select(item =>
+                $"{item.ModelName} 剩 {item.RemainingPercent:N1}%"));
+        }
+        else
+        {
+            remainingDetail = balance is null
+                ? "该套餐暂无计量余额"
+                : $"剩余 {FormatTokenMillions(balance.RemainingUnits)} / {FormatTokenMillions(balance.TotalUnits)}";
+            // A plan can meter several token buckets at once; keep the headline
+            // on the primary balance but surface the other live buckets inline.
+            var otherBalances = plan.Balances
+                .Where(item => balance is not null && !ReferenceEquals(item, balance) && item.RemainingUnits > 0)
+                .ToList();
+            if (otherBalances.Count > 0)
+            {
+                remainingDetail += " · " + string.Join(
+                    " · ",
+                    otherBalances.Select(item => $"{item.ModelName} 剩 {FormatTokenMillions(item.RemainingUnits)}"));
+            }
         }
 
         ZCodeQuotaRemainingDetail.Text = remainingDetail;
         ZCodeQuotaUsedValue.Text = usedPercent is null ? "--" : $"{usedPercent:N1}%";
-        ZCodeQuotaUsedDetail.Text =
-            $"已用 {FormatTokenMillions(balance.UsedUnits)} · {balance.ModelName} · 数据 {snapshot.SnapshotLocal:HH:mm}";
+        ZCodeQuotaUsedDetail.Text = balance is null
+            ? plan.Name
+            : isWindowPlan
+                ? $"已用 {usedPercent:N1}% · {balance.ModelName} · 数据 {snapshot.SnapshotLocal:HH:mm}"
+                : $"已用 {FormatTokenMillions(balance.UsedUnits)} · {balance.ModelName} · 数据 {snapshot.SnapshotLocal:HH:mm}";
 
-        ZCodeQuotaPlanValue.Text = snapshot.PlanName;
-        ZCodeQuotaPlanDetail.Text = string.IsNullOrWhiteSpace(snapshot.PlanDescription)
-            ? snapshot.PlanStatus
-            : snapshot.PlanDescription;
+        ZCodeQuotaPlanDetail.Text = string.IsNullOrWhiteSpace(plan.Description)
+            ? plan.Status
+            : plan.Description;
 
-        var expiry = balance.ExpiresAtLocal ?? balance.PeriodEndLocal;
+        var expiry = balance?.ExpiresAtLocal ?? balance?.PeriodEndLocal ?? plan.EndsAtLocal;
         if (expiry is { } expiryLocal)
         {
             ZCodeQuotaExpiryValue.Text = expiryLocal.ToString("MM-dd HH:mm");
@@ -1461,6 +1544,100 @@ public partial class MainWindow : Window
         {
             ZCodeQuotaExpiryValue.Text = "-";
             ZCodeQuotaExpiryDetail.Text = null;
+        }
+    }
+
+    /// <summary>
+    /// The plan shown for this snapshot: the persisted user selection when that
+    /// plan is still present, else the snapshot default. The resolution is
+    /// stored back so 消费分析 opens on exactly what the panel displays.
+    /// </summary>
+    private static ZCodeQuotaPlan ResolveSelectedPlan(ZCodeUsageModule module, ZCodeQuotaSnapshot snapshot)
+    {
+        var selection = module.SelectedPlan ?? ZCodePlanSelectionStore.Load();
+        var plan = selection is null
+            ? null
+            : snapshot.FindPlan(selection.UserPlanId, selection.PlanId);
+        plan ??= snapshot.DefaultPlan;
+        module.SelectedPlan = new ZCodePlanSelection(plan.UserPlanId, plan.PlanId);
+        return plan;
+    }
+
+    private bool suppressZCodePlanSelection;
+
+    private void UpdateZCodePlanSelector(ZCodeQuotaSnapshot snapshot, ZCodeQuotaPlan selectedPlan)
+    {
+        var items = ZCodeQuotaPlanBox.Items;
+        var needsRebuild = items.Count != snapshot.Plans.Count ||
+                           items.Cast<ComboBoxItem>().Zip(snapshot.Plans, (item, plan) =>
+                               string.Equals(item.Tag as string, plan.SelectionKey, StringComparison.Ordinal))
+                               .Any(match => !match);
+        if (needsRebuild)
+        {
+            suppressZCodePlanSelection = true;
+            items.Clear();
+            foreach (var plan in snapshot.Plans)
+            {
+                var option = new ComboBoxItem
+                {
+                    Content = plan.Name,
+                    Tag = plan.SelectionKey,
+                    ToolTip = string.IsNullOrWhiteSpace(plan.Description) ? plan.Name : plan.Description
+                };
+                if (!plan.IsActive)
+                {
+                    option.Content += $"（{plan.Status}）";
+                }
+
+                items.Add(option);
+            }
+
+            ZCodeQuotaPlanBox.IsEnabled = true;
+            suppressZCodePlanSelection = false;
+        }
+
+        var selected = items.Cast<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag as string, selectedPlan.SelectionKey, StringComparison.Ordinal));
+        if (selected is not null && !ReferenceEquals(ZCodeQuotaPlanBox.SelectedItem, selected))
+        {
+            suppressZCodePlanSelection = true;
+            ZCodeQuotaPlanBox.SelectedItem = selected;
+            suppressZCodePlanSelection = false;
+        }
+    }
+
+    private async void ZCodeQuotaPlanBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressZCodePlanSelection ||
+            CurrentModule() is not ZCodeUsageModule zcodeModule ||
+            zcodeModule.CurrentQuotaSnapshot is not { } snapshot ||
+            ZCodeQuotaPlanBox.SelectedItem is not ComboBoxItem selected ||
+            selected.Tag is not string selectionKey)
+        {
+            return;
+        }
+
+        var plan = snapshot.Plans.FirstOrDefault(item =>
+            string.Equals(item.SelectionKey, selectionKey, StringComparison.Ordinal));
+        if (plan is null)
+        {
+            return;
+        }
+
+        zcodeModule.SelectedPlan = new ZCodePlanSelection(plan.UserPlanId, plan.PlanId);
+        ZCodePlanSelectionStore.Save(zcodeModule.SelectedPlan);
+        ApplyZCodeQuotaSummary(zcodeModule);
+        RefreshZCodeRealPriceCard(zcodeModule);
+        if (zcodeModule.Mode == RangeMode.Cycle)
+        {
+            await RefreshCycleOptionsAsync(keepSelection: false);
+            if (isClosed)
+            {
+                return;
+            }
+
+            UpdateRangeControls();
+            await RefreshUsageAsync();
         }
     }
 
@@ -1640,7 +1817,8 @@ public partial class MainWindow : Window
 
     private void UpdateCycleOptions(bool keepSelection)
     {
-        if (CurrentModule() is not CodexUsageModule codexModule)
+        var module = CurrentModule();
+        if (!module.SupportsCycle)
         {
             using (suppressUiEvents.Begin())
             {
@@ -1650,7 +1828,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        ApplyCycleOptions(codexModule, codexModule.QuotaCycles, keepSelection);
+        ApplyCycleOptions(module, module.QuotaCycles, keepSelection);
     }
 
     private Task RefreshCycleOptionsAsync(bool keepSelection)
@@ -1670,74 +1848,122 @@ public partial class MainWindow : Window
     private async Task RefreshCycleOptionsCoreAsync(bool keepSelection)
     {
         using var diagnostics = CacheOperationDiagnostics.Begin();
-        if (CurrentModule() is not CodexUsageModule codexModule)
+        var module = CurrentModule();
+        if (module is CodexUsageModule codexModule)
         {
-            return;
-        }
+            var quota = codexModule.CurrentQuotaEstimate;
+            if (quota is null)
+            {
+                codexModule.QuotaCycles = Array.Empty<CodexQuotaCycle>();
+                ApplyCycleOptions(codexModule, codexModule.QuotaCycles, keepSelection);
+                return;
+            }
 
-        var quota = codexModule.CurrentQuotaEstimate;
-        if (quota is null)
-        {
-            codexModule.QuotaCycles = Array.Empty<CodexQuotaCycle>();
-            ApplyCycleOptions(codexModule, codexModule.QuotaCycles, keepSelection);
-            return;
-        }
-
-        try
-        {
-            IReadOnlyList<CodexQuotaCycle> cycles;
-            await usageQueryGate.WaitAsync(runtime.LifetimeToken);
             try
             {
-                if (isClosed)
+                IReadOnlyList<CodexQuotaCycle> cycles;
+                await usageQueryGate.WaitAsync(runtime.LifetimeToken);
+                try
+                {
+                    if (isClosed)
+                    {
+                        return;
+                    }
+
+                    var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+                    cycles = await Task.Run(
+                        () => UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(quota, now, runtime.LifetimeToken),
+                        runtime.LifetimeToken);
+                }
+                finally
+                {
+                    usageQueryGate.Release();
+                }
+
+                if (isClosed || !ReferenceEquals(CurrentModule(), codexModule) ||
+                    !ReferenceEquals(codexModule.CurrentQuotaEstimate, quota))
                 {
                     return;
                 }
 
-                var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
-                cycles = await Task.Run(
-                    () => UsageSourceReaders.Codex.Cycles.ReadWeeklyCycles(quota, now, runtime.LifetimeToken),
-                    runtime.LifetimeToken);
+                if (diagnostics.Warnings.Count > 0)
+                {
+                    SetStatus("额度周期缓存读取失败；保留上次周期，下次刷新将重试。");
+                    return;
+                }
+
+                codexModule.QuotaCycles = cycles;
+                ApplyCycleOptions(codexModule, cycles, keepSelection);
+                if (codexModule.Mode == RangeMode.Cycle)
+                {
+                    UpdateRangeControls();
+                }
             }
-            finally
+            catch (OperationCanceledException) when (isClosed || runtime.IsStopping)
             {
-                usageQueryGate.Release();
+            }
+            catch (Exception ex)
+            {
+                if (!isClosed) SetStatus($"额度周期读取失败：{ex.Message}");
             }
 
-            if (isClosed || !ReferenceEquals(CurrentModule(), codexModule) ||
-                !ReferenceEquals(codexModule.CurrentQuotaEstimate, quota))
-            {
-                return;
-            }
-
-            if (diagnostics.Warnings.Count > 0)
-            {
-                SetStatus("额度周期缓存读取失败；保留上次周期，下次刷新将重试。");
-                return;
-            }
-
-            codexModule.QuotaCycles = cycles;
-            ApplyCycleOptions(codexModule, cycles, keepSelection);
-            if (codexModule.Mode == RangeMode.Cycle)
-            {
-                UpdateRangeControls();
-            }
+            return;
         }
-        catch (OperationCanceledException) when (isClosed || runtime.IsStopping)
+
+        if (module is ZCodeUsageModule zcodeModule)
         {
-        }
-        catch (Exception ex)
-        {
-            if (!isClosed) SetStatus($"额度周期读取失败：{ex.Message}");
+            try
+            {
+                IReadOnlyList<CodexQuotaCycle> cycles;
+                await usageQueryGate.WaitAsync(runtime.LifetimeToken);
+                try
+                {
+                    if (isClosed)
+                    {
+                        return;
+                    }
+
+                    var planPrefix = zcodeModule.CurrentQuotaSnapshot is { } snapshot
+                        ? ZCodeQuotaAnalysisSource.HistoryLimitPrefix(ResolveSelectedPlan(zcodeModule, snapshot))
+                        : null;
+                    var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+                    cycles = await Task.Run(
+                        () => ZCodeQuotaAnalysisSource.ReadPeriods(planPrefix, now, runtime.LifetimeToken),
+                        runtime.LifetimeToken);
+                }
+                finally
+                {
+                    usageQueryGate.Release();
+                }
+
+                if (isClosed || !ReferenceEquals(CurrentModule(), zcodeModule))
+                {
+                    return;
+                }
+
+                zcodeModule.QuotaCycles = cycles;
+                ApplyCycleOptions(zcodeModule, cycles, keepSelection);
+                if (zcodeModule.Mode == RangeMode.Cycle)
+                {
+                    UpdateRangeControls();
+                }
+            }
+            catch (OperationCanceledException) when (isClosed || runtime.IsStopping)
+            {
+            }
+            catch (Exception ex)
+            {
+                if (!isClosed) SetStatus($"ZCode 周期读取失败：{ex.Message}");
+            }
         }
     }
 
     private void ApplyCycleOptions(
-        CodexUsageModule codexModule,
+        UsageSourceModule module,
         IReadOnlyList<CodexQuotaCycle> cycles,
         bool keepSelection)
     {
-        var selected = keepSelection ? codexModule.SelectedCycle ?? SelectedCycle() : null;
+        var selected = keepSelection ? module.SelectedCycle ?? SelectedCycle() : null;
         using (suppressUiEvents.Begin())
         {
             CycleBox.ItemsSource = cycles;
@@ -1747,11 +1973,11 @@ public partial class MainWindow : Window
                     ? cycles[0]
                     : cycles.FirstOrDefault(item => SameCycle(item, selected)) ?? cycles[0];
                 CycleBox.SelectedItem = selectedItem;
-                codexModule.SelectedCycle = selectedItem;
+                module.SelectedCycle = selectedItem;
             }
             else
             {
-                codexModule.SelectedCycle = null;
+                module.SelectedCycle = null;
             }
         }
     }

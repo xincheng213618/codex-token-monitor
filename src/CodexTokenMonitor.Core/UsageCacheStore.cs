@@ -1134,6 +1134,32 @@ internal sealed class UsageCacheStore
               AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'claude-model-context-v1');
             INSERT OR IGNORE INTO cache_maintenance VALUES ('claude-model-context-v1');
             """);
+        // DSH records the active model before usage chunks. Re-scan old
+        // model-less days once, preserving imported and log events for merging.
+        ExecuteNonQuery(connection, """
+            CREATE TABLE IF NOT EXISTS cache_maintenance (name TEXT PRIMARY KEY);
+            UPDATE usage_days SET is_complete = 0, scanned_through_local = NULL
+            WHERE date IN (SELECT DISTINCT date FROM usage_events
+                           WHERE (model_id IS NULL OR model_id = '') AND event_key LIKE 'dsh:%')
+              AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'dsh-model-context-v1');
+            INSERT OR IGNORE INTO cache_maintenance VALUES ('dsh-model-context-v1');
+            """);
+        // The shared historical warmer used to build day buckets with the
+        // scalar Add overload, leaving model_usage_json empty while detail
+        // events carried model ids. One-shot: re-warm those days so the fixed
+        // warmer rebuilds model attribution from the retained events (works
+        // even when the source logs are gone, because the warmer merges the
+        // cached detail events first). Only recoverable days are reset.
+        ExecuteNonQuery(connection, """
+            CREATE TABLE IF NOT EXISTS cache_maintenance (name TEXT PRIMARY KEY);
+            UPDATE usage_days SET is_complete = 0, scanned_through_local = NULL
+            WHERE events > 0
+              AND (model_usage_json IS NULL OR model_usage_json = '' OR model_usage_json = '{}')
+              AND EXISTS (SELECT 1 FROM usage_events e
+                          WHERE e.date = usage_days.date AND e.model_id IS NOT NULL AND e.model_id <> '')
+              AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'warmer-model-context-v1');
+            INSERT OR IGNORE INTO cache_maintenance VALUES ('warmer-model-context-v1');
+            """);
         DeleteLegacyDerivedFiles(cachePath);
     }
 

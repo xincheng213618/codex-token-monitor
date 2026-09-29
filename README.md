@@ -15,6 +15,7 @@
 - 展示 input、cached input、cache write、uncached input、output、reasoning output、缓存命中率、事件数和 Coding Time（10 分钟空闲判定的活跃时长）。
   - Codex、ZCode 与 WorkBuddy 页均提供"实际模型 · 标准 API 等价"费用卡与明细"实际模型/模型费用"两列；ZCode 按智谱/Z.AI 价格组人民币计价，默认对比档为 GLM-5.3 Flash（输入 ¥0.80 / 缓存命中 ¥0.23 / 输出 ¥2.80 每百万 tokens，参考 bigmodel.cn，可编辑）；WorkBuddy 按 WorkBuddy 价格组计价（`hy3` 命中腾讯混元 hy3 档，端点 ID 等未知模型 0x 待填、可按模型 ID 补价）。
 - 以 ScottPlot 时间轴图表查看当天/周/月 token 峰值：总 Token 与缓存输入柱状图 + 累计总 Token 折线，可调节高度、带图例和轴标签。
+- ZCode 额度面板：读取 ZCode 桌面端同款 balance 接口，账户同时持有多个套餐（如 Trust Build / Start Plan）时全部列出，“当前套餐”可在下拉框中切换，剩余/已用/到期与消费分析均按所选套餐计算；BigModel 侧的 GLM Coding Lite（按 5 小时 / 每周百分比窗口计量，Codex 风格）通过其编码套餐监控接口一并纳入套餐列表，需要桌面端已连接该套餐。套餐选择会持久化，下次启动保持。ZCode 页签同样支持“按周期”模式：周期列表由已记录的余额历史按重置时间聚类推导（5 小时 / 每周窗口各自成段），可前后翻页、回当前周期，右键“分析所选周期”或“消费分析”按钮即可查看任一历史周期的分时段消耗与上一周期对比。
 - 用 SQLite 缓存历史统计，历史日期切换更快；启动后后台自动预热历史日缓存。
 - 支持导出/导入 Codex 统计数据包，把多台电脑的 token 事件和额度快照合并到一台主统计电脑；重复导入会自动去重。
 - 支持从主界面复制当前统计摘要，或将当前来源/范围的分桶明细、费用档和 Codex 额度快照导出为 UTF-8 CSV。

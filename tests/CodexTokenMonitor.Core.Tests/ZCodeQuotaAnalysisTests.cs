@@ -44,10 +44,13 @@ public sealed class ZCodeQuotaAnalysisTests
         long total,
         long used,
         DateTimeOffset? expiresAt = null) =>
-        new(modelName, modelId, total, used, total - used, total - used, expiresAt ?? PlanEnd, PlanStart, PlanEnd);
+        new(modelName, modelId, total, used, total - used, total - used, expiresAt ?? PlanEnd, PlanStart, PlanEnd,
+            PlanId: "plan-1", UserPlanId: "upl_1");
 
     private static ZCodeQuotaSnapshot Snapshot(DateTimeOffset local, params ZCodeQuotaBalance[] balances) =>
-        new(local, "plan-1", "GLM Coding Plan", null, "active", balances, local);
+        new(local,
+            new[] { new ZCodeQuotaPlan("plan-1", "upl_1", "GLM Coding Plan", null, "active", PlanStart, PlanEnd, balances) },
+            local);
 
     private static TokenUsageEvent Event(DateTimeOffset timestamp, long total, string key, string modelId) =>
         new(timestamp, InputTokens: total, CachedInputTokens: 0, OutputTokens: 0,
@@ -75,10 +78,37 @@ public sealed class ZCodeQuotaAnalysisTests
             Assert.Equal(PlanEnd, point.WeekResetAtLocal);
             Assert.Null(point.FiveHourUsedPercent);
         });
-        Assert.Equal(2, history.Count(point => point.LimitId == "GLM-5.3-Flash"));
-        Assert.Single(history, point => point.LimitId == "GLM-5.2");
+        Assert.Equal(2, history.Count(point => point.LimitId == "upl_1:GLM-5.3-Flash"));
+        Assert.Single(history, point => point.LimitId == "upl_1:GLM-5.2");
         Assert.Equal(94.9m, history.Single(point => point.SnapshotLocal == first.SnapshotLocal &&
-                                                    point.LimitId == "GLM-5.3-Flash").WeekUsedPercent);
+                                                    point.LimitId == "upl_1:GLM-5.3-Flash").WeekUsedPercent);
+    }
+
+    [Fact]
+    public void RecordSnapshot_SeparatesSameModelAcrossConcurrentPlans()
+    {
+        using var isolated = new IsolatedCache();
+        ZCodeQuotaBalance Bucket(string planId, string userPlanId, long used) =>
+            new("GLM-5.3-Flash", "GLM-5.3-Flash", 100, used, 100 - used, 100 - used, PlanEnd, PlanStart, PlanEnd,
+                planId, userPlanId);
+        var plans = new[]
+        {
+            new ZCodeQuotaPlan("plan-trust", "upl_trust", "Trust Build", null, "active", PlanStart, PlanEnd,
+                new[] { Bucket("plan-trust", "upl_trust", 100) }),
+            new ZCodeQuotaPlan("plan-start", "upl_start", "Start Plan", null, "active", PlanStart, PlanEnd,
+                new[] { Bucket("plan-start", "upl_start", 50) })
+        };
+        var snapshot = new ZCodeQuotaSnapshot(PlanStart.AddHours(2), plans, PlanStart.AddHours(2));
+
+        ZCodeQuotaAnalysisSource.RecordSnapshot(snapshot);
+
+        var history = ZCodeQuotaAnalysisSource.ReadHistory(PlanStart, PlanEnd);
+        Assert.Equal(2, history.Count);
+        Assert.Single(history, point => point.LimitId == "upl_trust:GLM-5.3-Flash");
+        Assert.Single(history, point => point.LimitId == "upl_start:GLM-5.3-Flash");
+
+        var scoped = new ZCodeQuotaAnalysisSource("upl_start:").ReadSnapshots(PlanStart, PlanEnd, default);
+        Assert.Single(scoped, point => point.LimitId == "upl_start:GLM-5.3-Flash" && point.WeekUsedPercent == 50m);
     }
 
     [Fact]
@@ -101,7 +131,7 @@ public sealed class ZCodeQuotaAnalysisTests
             Balance("GLM-5.3-Flash", "GLM-5.3-Flash", 1_000_000, 400_000));
         ZCodeQuotaAnalysisSource.RecordSnapshot(snapshot);
 
-        var description = ZCodeQuotaAnalysisSource.DescribeCurrent(snapshot);
+        var description = ZCodeQuotaAnalysisSource.DescribeCurrent(snapshot, snapshot.DefaultPlan);
 
         Assert.NotNull(description);
         var period = description!.Period;
@@ -124,7 +154,7 @@ public sealed class ZCodeQuotaAnalysisTests
         var snapshot = Snapshot(PlanStart.AddHours(2),
             new ZCodeQuotaBalance("GLM-5.3-Flash", "GLM-5.3-Flash", 0, 0, 0, null, null, null, null));
 
-        Assert.Null(ZCodeQuotaAnalysisSource.DescribeCurrent(snapshot));
+        Assert.Null(ZCodeQuotaAnalysisSource.DescribeCurrent(snapshot, snapshot.DefaultPlan));
     }
 
     [Fact]
@@ -225,5 +255,95 @@ public sealed class ZCodeQuotaAnalysisTests
         Assert.Equal(50m, result.Bands[9].UsedToPercent);
         Assert.Equal(80m, result.Bands[15].UsedToPercent);
         Assert.All(result.Bands, band => Assert.True(band.EstimatedFullQuotaCost > 0m));
+    }
+
+    [Fact]
+    public void ReadPeriods_ClustersByResetTilesStartsAndMarksCurrent()
+    {
+        using var isolated = new IsolatedCache();
+        var windowAEnd = PlanEnd; // 2026-09-03 08:00
+        var windowBEnd = PlanEnd.AddDays(1);
+        var windowCEnd = PlanEnd.AddDays(2);
+        ZCodeQuotaAnalysisSource.RecordSnapshot(Snapshot(PlanStart.AddHours(2),
+            Balance("GLM-5.3-Flash", "GLM-5.3-Flash", 1_000_000, 400_000, windowAEnd)));
+        ZCodeQuotaAnalysisSource.RecordSnapshot(Snapshot(PlanStart.AddDays(1).AddHours(1),
+            Balance("GLM-5.3-Flash", "GLM-5.3-Flash", 1_000_000, 800_000, windowAEnd)));
+        ZCodeQuotaAnalysisSource.RecordSnapshot(Snapshot(PlanEnd.AddHours(2),
+            Balance("GLM-5.3-Flash", "GLM-5.3-Flash", 1_000_000, 300_000, windowBEnd)));
+        ZCodeQuotaAnalysisSource.RecordSnapshot(Snapshot(windowBEnd.AddHours(2),
+            Balance("GLM-5.3-Flash", "GLM-5.3-Flash", 1_000_000, 600_000, windowCEnd)));
+
+        var now = windowBEnd.AddHours(4); // mid-flight through window C
+        var periods = ZCodeQuotaAnalysisSource.ReadPeriods("upl_1:", now);
+
+        Assert.Equal(3, periods.Count);
+        Assert.Equal(windowCEnd, periods[0].ResetAt);
+        Assert.Equal(windowBEnd.AddSeconds(1), periods[0].PeriodStart);
+        Assert.Equal(1, periods[0].SnapshotCount);
+        Assert.Equal(60m, periods[0].MaxWeekUsedPercent);
+        Assert.True(periods[0].IsCurrent);
+        Assert.Equal(windowBEnd, periods[1].ResetAt);
+        Assert.Equal(windowAEnd.AddSeconds(1), periods[1].PeriodStart);
+        Assert.Equal(30m, periods[1].MaxWeekUsedPercent);
+        Assert.False(periods[1].IsCurrent);
+        Assert.Equal(windowAEnd, periods[2].ResetAt);
+        // The oldest cluster has no predecessor, so its first observation
+        // stands in for the period start.
+        Assert.Equal(PlanStart.AddHours(2), periods[2].PeriodStart);
+        Assert.Equal(2, periods[2].SnapshotCount);
+        Assert.Equal(80m, periods[2].MaxWeekUsedPercent);
+    }
+
+    [Fact]
+    public void ReadPeriods_FiltersPeriodsByPlanPrefix()
+    {
+        using var isolated = new IsolatedCache();
+        ZCodeQuotaBalance Bucket(string planId, string userPlanId, long used) =>
+            new("GLM-5.3-Flash", "GLM-5.3-Flash", 100, used, 100 - used, 100 - used, PlanEnd, PlanStart, PlanEnd,
+                planId, userPlanId);
+        var plans = new[]
+        {
+            new ZCodeQuotaPlan("plan-trust", "upl_trust", "Trust Build", null, "active", PlanStart, PlanEnd,
+                new[] { Bucket("plan-trust", "upl_trust", 100) }),
+            new ZCodeQuotaPlan("plan-start", "upl_start", "Start Plan", null, "active", PlanStart, PlanEnd,
+                new[] { Bucket("plan-start", "upl_start", 50) })
+        };
+        ZCodeQuotaAnalysisSource.RecordSnapshot(
+            new ZCodeQuotaSnapshot(PlanStart.AddHours(2), plans, PlanStart.AddHours(2)));
+
+        var now = PlanStart.AddHours(6);
+        var merged = ZCodeQuotaAnalysisSource.ReadPeriods(null, now);
+        var trust = ZCodeQuotaAnalysisSource.ReadPeriods("upl_trust:", now);
+        var start = ZCodeQuotaAnalysisSource.ReadPeriods("upl_start:", now);
+
+        Assert.Single(merged);
+        Assert.Equal(2, merged[0].SnapshotCount);
+        Assert.Equal(100m, merged[0].MaxWeekUsedPercent);
+        Assert.Single(trust);
+        Assert.Equal(1, trust[0].SnapshotCount);
+        Assert.Equal(100m, trust[0].MaxWeekUsedPercent);
+        Assert.Single(start);
+        Assert.Equal(1, start[0].SnapshotCount);
+        Assert.Equal(50m, start[0].MaxWeekUsedPercent);
+    }
+
+    [Fact]
+    public void ReadPeriods_CapsAtThirtyMostRecentPeriods()
+    {
+        using var isolated = new IsolatedCache();
+        var baseTime = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.FromHours(8));
+        for (var index = 0; index < 33; index++)
+        {
+            var windowEnd = baseTime.AddHours(index + 1);
+            ZCodeQuotaAnalysisSource.RecordSnapshot(Snapshot(
+                baseTime.AddHours(index).AddMinutes(30),
+                Balance("GLM-5.3-Flash", "GLM-5.3-Flash", 1_000_000, (index + 1) * 10_000, windowEnd)));
+        }
+
+        var periods = ZCodeQuotaAnalysisSource.ReadPeriods("upl_1:", baseTime.AddHours(40));
+
+        Assert.Equal(30, periods.Count);
+        Assert.Equal(baseTime.AddHours(33), periods[0].ResetAt);
+        Assert.Equal(baseTime.AddHours(4), periods[^1].ResetAt);
     }
 }
