@@ -12,6 +12,7 @@ internal static class PricePresetGroups
     public const string WorkBuddy = "WorkBuddy";
     public const string Dsh = "DSH";
     public const string Kimi = "Kimi";
+    public const string Qoder = "Qoder";
 
     public static IReadOnlyList<string> All => UsageSourceRegistry.PriceGroups;
 
@@ -50,7 +51,7 @@ internal sealed class PriceSettings
             .Select(item => item!.Clone()).ToList();
     }
 
-    public int DisplayOrderVersion { get; set; } = 20;
+    public int DisplayOrderVersion { get; set; } = 21;
     public string GptName { get; set; } = "GPT-5.6 Sol";
     public decimal GptUncachedInputPerMillion { get; set; } = 4.00m;
     public decimal GptCachedInputPerMillion { get; set; } = 0.40m;
@@ -71,6 +72,7 @@ internal sealed class PriceSettings
     public List<PricePreset> WorkBuddyPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.WorkBuddy).ToList();
     public List<PricePreset> DshPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Dsh).ToList();
     public List<PricePreset> KimiPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Kimi).ToList();
+    public List<PricePreset> QoderPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Qoder).ToList();
 
     public PriceProfile ToGptProfile()
     {
@@ -130,7 +132,8 @@ internal sealed class PriceSettings
             ZCodePresets = ZCodePresets.Select(item => item.Clone()).ToList(),
             WorkBuddyPresets = WorkBuddyPresets.Select(item => item.Clone()).ToList(),
             DshPresets = DshPresets.Select(item => item.Clone()).ToList(),
-            KimiPresets = KimiPresets.Select(item => item.Clone()).ToList()
+            KimiPresets = KimiPresets.Select(item => item.Clone()).ToList(),
+            QoderPresets = QoderPresets.Select(item => item.Clone()).ToList()
         };
     }
 
@@ -143,6 +146,7 @@ internal sealed class PriceSettings
             PricePresetGroups.WorkBuddy => WorkBuddyPresets,
             PricePresetGroups.Dsh => DshPresets,
             PricePresetGroups.Kimi => KimiPresets,
+            PricePresetGroups.Qoder => QoderPresets,
             _ => CodexPresets
         };
     }
@@ -166,6 +170,9 @@ internal sealed class PriceSettings
             case PricePresetGroups.Kimi:
                 KimiPresets = presets;
                 break;
+            case PricePresetGroups.Qoder:
+                QoderPresets = presets;
+                break;
             default:
                 CodexPresets = presets;
                 break;
@@ -182,6 +189,7 @@ internal sealed class PricePreset
     public const string ClaudePriceSource = "Anthropic 标准价（2026-09-23；5 分钟缓存写入）：https://platform.claude.com/docs/en/about-claude/pricing";
     public const string DeepSeekPriceSource = "DeepSeek API 官方定价（2026-09-10；空闲价；北京时间工作日高峰 ×2）：https://api-docs.deepseek.com/zh-cn/quick_start/pricing";
     public const string HunyuanHy4PriceSource = "腾讯混元 Hy4 preview 官方价格（2026-08-28 发布；输入 6 元 / 输出 18 元 / 缓存命中 0.3 元 每百万 tokens）：https://hy.tencent.com/research/hy4-preview";
+    public const string QoderAutoPriceSource = "Qoder 会话日志只记录内部路由 id（auto / qfmodel），没有公开 API 单价；按订阅额度折算 ¥99 / 110亿 token = ¥0.009 每百万（可编辑）";
     public string Group { get; set; } = "";
     public string Provider { get; set; } = "";
     public string Model { get; set; } = "";
@@ -316,9 +324,9 @@ internal sealed class PricePreset
     {
         var normalizedGroup = PricePresetGroups.Normalize(group);
         var result = new List<PricePreset>();
-        if (normalizedGroup == PricePresetGroups.Kimi)
+        foreach (var extra in GroupExtraPresets(normalizedGroup))
         {
-            result.Add(KimiPreviewReference());
+            result.Add(extra.Clone());
         }
         foreach (var preset in Defaults())
         {
@@ -334,6 +342,42 @@ internal sealed class PricePreset
 
         return ApplyDefaultDisplayOrder(result, normalizedGroup);
     }
+
+    /// <summary>
+    /// Presets that belong to one source group only. Unlike the shared catalog
+    /// these are not published API rates: they price a model id the source
+    /// actually logs (Qoder's routed "auto", Kimi's preview endpoint id).
+    /// </summary>
+    public static IEnumerable<PricePreset> GroupExtraPresets(string group)
+    {
+        var normalizedGroup = PricePresetGroups.Normalize(group);
+        if (normalizedGroup == PricePresetGroups.Kimi)
+        {
+            yield return KimiPreviewReference();
+        }
+        if (normalizedGroup == PricePresetGroups.Qoder)
+        {
+            foreach (var route in QoderRoutedModelNames)
+            {
+                yield return QoderRouteReference(route);
+            }
+        }
+    }
+
+    // Qoder bills through its own subscription and logs opaque route ids instead
+    // of published model ids, so each id the session log reports needs a row.
+    internal static readonly string[] QoderRoutedModelNames = ["auto", "qfmodel"];
+
+    public static PricePreset QoderAutoReference() => QoderRouteReference("auto");
+
+    public static PricePreset QoderRouteReference(string model) => new()
+    {
+        Group = PricePresetGroups.Qoder, Provider = "Qoder",
+        Model = model, ModelId = model,
+        CurrencySymbol = "¥", UnitLabel = "CNY / 1M tokens",
+        UncachedInput = 0.0090m, CachedInput = 0.0090m, Output = 0.0090m,
+        Source = QoderAutoPriceSource
+    };
 
     // Keep the observed runtime ID while identifying the third-party tariff.
     public static PricePreset KimiPreviewReference() => new()
@@ -359,6 +403,7 @@ internal sealed class PricePreset
             PricePresetGroups.WorkBuddy => ("Kimi（月之暗面）", "K3"),
             PricePresetGroups.Dsh => ("DeepSeek", "V4.1 Flash"),
             PricePresetGroups.Kimi => ("Kimi（月之暗面）", "K2.8 Preview"),
+            PricePresetGroups.Qoder => ("通义千问", "Qwen3 Coder Plus <=32K"),
             _ => ("OpenAI", "GPT-6.1 Sol")
         };
         var ordered = new List<PricePreset>();
@@ -431,7 +476,7 @@ internal static class PriceSettingsStore
     {
         var settings = new PriceSettings
         {
-            DisplayOrderVersion = 20,
+            DisplayOrderVersion = 21,
             Presets = new(),
             CodexPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Codex), PricePresetGroups.Codex),
@@ -450,7 +495,10 @@ internal static class PriceSettingsStore
                 PricePresetGroups.Dsh),
             KimiPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Kimi), PricePresetGroups.Kimi),
-                PricePresetGroups.Kimi)
+                PricePresetGroups.Kimi),
+            QoderPresets = ApplyDefaultDisplayOrder(
+                NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Qoder), PricePresetGroups.Qoder),
+                PricePresetGroups.Qoder)
         };
         return settings;
     }
@@ -583,7 +631,8 @@ internal static class PriceSettingsStore
         var settings = JsonSerializer.Deserialize<PriceSettings>(json)
             ?? throw new JsonException("Price settings must contain a settings object.");
         List<PricePreset>?[] groups = [settings.Presets, settings.CodexPresets, settings.ClaudeCodePresets,
-            settings.ZCodePresets, settings.WorkBuddyPresets, settings.DshPresets, settings.KimiPresets];
+            settings.ZCodePresets, settings.WorkBuddyPresets, settings.DshPresets, settings.KimiPresets,
+            settings.QoderPresets];
         if (groups.Any(group => group is null || group.Any(preset => preset is null)))
             throw new JsonException("Price preset collections and their entries must not be null.");
         if (settings.DisplaySlots is null || settings.DisplaySlots.Values.Any(slots => slots is null || slots.Any(key => key is null)))
@@ -650,6 +699,7 @@ internal static class PriceSettingsStore
         var workBuddyPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.WorkBuddy), PricePresetGroups.WorkBuddy);
         var dshPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Dsh), PricePresetGroups.Dsh);
         var kimiPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Kimi), PricePresetGroups.Kimi);
+        var qoderPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Qoder), PricePresetGroups.Qoder);
         var shouldRefreshDefaults = settings.DisplayOrderVersion < defaults.DisplayOrderVersion;
         if (shouldRefreshDefaults)
         {
@@ -661,12 +711,14 @@ internal static class PriceSettingsStore
             MergeMissingDefaults(workBuddyPresets, PricePresetGroups.WorkBuddy);
             MergeMissingDefaults(dshPresets, PricePresetGroups.Dsh);
             MergeMissingDefaults(kimiPresets, PricePresetGroups.Kimi);
+            MergeMissingDefaults(qoderPresets, PricePresetGroups.Qoder);
             codexPresets = ApplyDefaultDisplayOrder(codexPresets, PricePresetGroups.Codex);
             claudePresets = ApplyDefaultDisplayOrder(claudePresets, PricePresetGroups.ClaudeCode);
             zCodePresets = ApplyDefaultDisplayOrder(zCodePresets, PricePresetGroups.ZCode);
             workBuddyPresets = ApplyDefaultDisplayOrder(workBuddyPresets, PricePresetGroups.WorkBuddy);
             dshPresets = ApplyDefaultDisplayOrder(dshPresets, PricePresetGroups.Dsh);
             kimiPresets = ApplyDefaultDisplayOrder(kimiPresets, PricePresetGroups.Kimi);
+            qoderPresets = ApplyDefaultDisplayOrder(qoderPresets, PricePresetGroups.Qoder);
         }
 
         // Hy4 preview shipped as an unfilled 0x row before Tencent published its
@@ -683,6 +735,7 @@ internal static class PriceSettingsStore
             FillPublishedRate(workBuddyPresets, hy4Official);
             FillPublishedRate(dshPresets, hy4Official);
             FillPublishedRate(kimiPresets, hy4Official);
+            FillPublishedRate(qoderPresets, hy4Official);
         }
 
         var gptName = string.IsNullOrWhiteSpace(settings.GptName)
@@ -726,7 +779,8 @@ internal static class PriceSettingsStore
             ZCodePresets = zCodePresets,
             WorkBuddyPresets = workBuddyPresets,
             DshPresets = dshPresets,
-            KimiPresets = kimiPresets
+            KimiPresets = kimiPresets,
+            QoderPresets = qoderPresets
         };
         foreach (var group in PricePresetGroups.All)
         {
@@ -807,7 +861,7 @@ internal static class PriceSettingsStore
     private static void MergeMissingDefaults(List<PricePreset> saved, string group)
     {
         var normalizedGroup = PricePresetGroups.Normalize(group);
-        foreach (var preset in PricePreset.Defaults())
+        foreach (var preset in PricePreset.GroupExtraPresets(normalizedGroup).Concat(PricePreset.Defaults()))
         {
             if (saved.Any(item => SameCatalogPreset(item, preset)))
             {
@@ -843,7 +897,10 @@ internal static class PriceSettingsStore
             ("DSH", "OpenAI", "GPT-5.6 Sol"),
             ("Kimi", "Kimi（月之暗面）", "K2.8 Preview"),
             ("Kimi", "DeepSeek", "V4.1 Flash"),
-            ("Kimi", "Xiaomi", "MiMo V2.5 Pro")
+            ("Kimi", "Xiaomi", "MiMo V2.5 Pro"),
+            ("Qoder", "通义千问", "Qwen3 Coder Plus <=32K"),
+            ("Qoder", "DeepSeek", "V4.1 Flash"),
+            ("Qoder", "OpenAI", "GPT-6.1 Sol")
         };
 
         var ordered = new List<PricePreset>();

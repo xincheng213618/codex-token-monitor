@@ -1388,7 +1388,7 @@ public partial class MainWindow : Window
 
     private static bool SupportsModelCost(UsageSource source)
     {
-        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode or UsageSource.Dsh or UsageSource.Kimi;
+        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode or UsageSource.Dsh or UsageSource.Kimi or UsageSource.Qoder;
     }
 
     private static string FormatActualBucketCost(UsageSource source, TokenUsageBucket bucket)
@@ -1396,7 +1396,7 @@ public partial class MainWindow : Window
         var estimate = source == UsageSource.Codex
             ? CodexModelCost.Estimate(bucket)
             : CodexModelCost.Estimate(bucket, PricePresetGroups.ForSource(source));
-        return source == UsageSource.Kimi && !estimate.IsComplete && estimate.Models.All(item => item.Cost is null)
+        return source is UsageSource.Kimi or UsageSource.Qoder && !estimate.IsComplete && estimate.Models.All(item => item.Cost is null)
             ? "待填价格"
             : estimate.Format("N4");
     }
@@ -1414,7 +1414,9 @@ public partial class MainWindow : Window
             ? CodexModelCost.Estimate(summary).Format()
             : priceGroup == PricePresetGroups.Kimi
                 ? FormatActualBucketCost(UsageSource.Kimi, summary)
-                : CodexModelCost.Estimate(summary, priceGroup).Format();
+                : priceGroup == PricePresetGroups.Qoder
+                    ? FormatActualBucketCost(UsageSource.Qoder, summary)
+                    : CodexModelCost.Estimate(summary, priceGroup).Format();
         return new CostCardControl(
             preset.Source == PricePreset.KimiPreviewPriceSource ? "B.AI 第三方参考价" : string.IsNullOrWhiteSpace(preset.Provider) ? preset.Model : preset.Provider,
             comparison ? $"换用 {preset.Model}" : preset.Model,

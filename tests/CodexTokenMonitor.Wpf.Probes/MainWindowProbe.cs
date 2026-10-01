@@ -122,6 +122,7 @@ internal static class MainWindowProbe
             }
             await CheckZCodeActualCostAsync(window, modules[UsageSource.ZCode]);
             await CheckKimiActualCostAsync(window, modules[UsageSource.Kimi]);
+            await CheckQoderActualCostAsync(window, modules[UsageSource.Qoder]);
 
             var codex = (CodexUsageModule)modules[UsageSource.Codex];
             await CheckRefresh(window, codex, RangeMode.Cycle, 770, 2);
@@ -263,7 +264,8 @@ internal static class MainWindowProbe
             [UsageSource.ZCode] = new(RangeMode.Month, SeedDay.AddDays(3).DateTime, null, null),
             [UsageSource.WorkBuddy] = new(RangeMode.Day, SeedDay.DateTime, SeedDay.AddHours(9.5), null),
             [UsageSource.Dsh] = new(RangeMode.Day, SeedDay.AddDays(1).DateTime, null, null),
-            [UsageSource.Kimi] = new(RangeMode.Week, SeedDay.AddDays(1).DateTime, null, null)
+            [UsageSource.Kimi] = new(RangeMode.Week, SeedDay.AddDays(1).DateTime, null, null),
+            [UsageSource.Qoder] = new(RangeMode.Day, SeedDay.AddDays(2).DateTime, null, null)
         };
         foreach (var (source, selection) in expected)
         {
@@ -282,7 +284,7 @@ internal static class MainWindowProbe
         {
             SetSuppressed(window, false);
             var visits = new[] { UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode, UsageSource.WorkBuddy,
-                UsageSource.Kimi, UsageSource.Dsh, UsageSource.WorkBuddy, UsageSource.ZCode, UsageSource.ClaudeCode, UsageSource.Codex, UsageSource.Dsh };
+                UsageSource.Kimi, UsageSource.Qoder, UsageSource.Dsh, UsageSource.WorkBuddy, UsageSource.ZCode, UsageSource.ClaudeCode, UsageSource.Codex, UsageSource.Dsh };
             foreach (var source in visits)
             {
                 tabs.SelectedItem = tabs.Items.Cast<TabItem>().Single(tab => Equals(tab.Tag, source));
@@ -648,6 +650,27 @@ internal static class MainWindowProbe
         Results.Add(new { check = "kimi-actual-model-cost", amount, model = "k2d8-preview", pricePending = false, thirdPartyReference = true });
     }
 
+    private static async Task CheckQoderActualCostAsync(MainWindow window, UsageSourceModule module)
+    {
+        Select(window, module, RangeMode.Day);
+        await RefreshAndDrainAsync(window);
+        var panel = Get<Panel>(window, "CostCardsPanel");
+        Require(panel.Children.Count > 0 && panel.Children[0] is CostCardControl, "Qoder actual-model card");
+        var card = (CostCardControl)panel.Children[0];
+        var amount = Get<TextBlock>(card, "AmountText").Text;
+        var detail = card.ToolTip?.ToString() ?? "";
+        Require(!amount.Contains("待填", StringComparison.Ordinal) && amount.StartsWith('¥'),
+            "Qoder routed models price through the plan rate instead of a pending label");
+        Require(detail.Contains("auto", StringComparison.Ordinal) && !detail.Contains("待填", StringComparison.Ordinal),
+            "Qoder cost tooltip keeps actual model identity without a pending price state");
+        Require(Get<TextBlock>(card, "ProviderText").Text == "Qoder", "Qoder card carries the source title");
+        Require(!module.SupportsQuota && !module.SupportsCycle, "Qoder does not fabricate quota percentages or cycles");
+        var grid = Get<DataGrid>(window, "BreakdownGrid");
+        Require(grid.Columns.Any(column => column.Header?.ToString() == "实际模型"), "Qoder model column visible");
+        await RenderContentAsync(window, Path.Combine(outputRoot, "qoder-usage.png"));
+        Results.Add(new { check = "qoder-actual-model-cost", amount, models = new[] { "auto", "qfmodel" }, pricePending = false });
+    }
+
     private static async Task CheckDisplayStateTransitionsAsync(MainWindow window, CodexUsageModule module)
     {
         Select(window, module, RangeMode.Day);
@@ -782,7 +805,7 @@ internal static class MainWindowProbe
 
     private static void SeedCaches()
     {
-        var folders = new[] { "CodexTokenMonitor", "ClaudeCodeTokenMonitor", "ZCodeTokenMonitor", "WorkBuddyTokenMonitor", "DshTokenMonitor", "KimiTokenMonitor" };
+        var folders = new[] { "CodexTokenMonitor", "ClaudeCodeTokenMonitor", "ZCodeTokenMonitor", "WorkBuddyTokenMonitor", "DshTokenMonitor", "KimiTokenMonitor", "QoderTokenMonitor" };
         foreach (var source in Enum.GetValues<UsageSource>())
         {
             var multiplier = (int)source + 1;
@@ -791,7 +814,8 @@ internal static class MainWindowProbe
                 0 => "GLM-5.3-Flash",
                 1 => "mimo-v2.5-pro",
                 _ => "GLM-5.2"
-            } : source == UsageSource.Kimi ? "k2d8-preview" : null;
+            } : source == UsageSource.Kimi ? "k2d8-preview"
+                : source == UsageSource.Qoder ? (index == 1 ? "qfmodel" : "auto") : null;
             var events = new[]
             {
                 new TokenUsageEvent(SeedDay.AddHours(9), 100 * multiplier, 20 * multiplier, 10 * multiplier, 0, 110 * multiplier, $"{source}:one", ModelId: Model(0)),

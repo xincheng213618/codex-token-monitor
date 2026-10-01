@@ -19,7 +19,11 @@ public sealed class HistoricalUsageBatchWarmerTests
     };
 
     public static IEnumerable<object[]> ModelReaders => Readers
-        .Concat(new[] { new object[] { "Kimi", "KimiTokenMonitor", "Kimi" } });
+        .Concat(new[]
+        {
+            new object[] { "Kimi", "KimiTokenMonitor", "Kimi" },
+            new object[] { "Qoder", "QoderTokenMonitor", "Qoder" }
+        });
 
     [Theory]
     [MemberData(nameof(Readers))]
@@ -209,6 +213,9 @@ public sealed class HistoricalUsageBatchWarmerTests
             case "Kimi":
                 new KimiUsageReader().WarmHistoricalDays(days, cancellationToken, dayCompleted, fileProgress);
                 break;
+            case "Qoder":
+                new QoderUsageReader().WarmHistoricalDays(days, cancellationToken, dayCompleted, fileProgress);
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(source));
         }
@@ -270,6 +277,10 @@ public sealed class HistoricalUsageBatchWarmerTests
         {
             root = Path.Combine(root, "batch");
         }
+        if (source == "Qoder")
+        {
+            root = Path.Combine(root, "workspace", "sample-session", "segments");
+        }
         Directory.CreateDirectory(root);
         var lines = new List<string>();
         if (source == "Dsh")
@@ -307,6 +318,12 @@ public sealed class HistoricalUsageBatchWarmerTests
                 type = "usage.record", usageScope = "turn", time = FirstDay.ToUnixTimeMilliseconds(), model,
                 usage = new { inputOther = 100, inputCacheRead = 40, inputCacheCreation = 20, output = 10 }
             },
+            "Qoder" => new
+            {
+                ts = FirstDay, type = "model.response.completed", request_id = "model-check",
+                data = new { model, input_tokens = 160, cache_read_input_tokens = 40,
+                    cache_creation_input_tokens = 20, output_tokens = 10 }
+            },
             _ => throw new ArgumentOutOfRangeException(nameof(source))
         }));
 
@@ -314,6 +331,7 @@ public sealed class HistoricalUsageBatchWarmerTests
         var path = Path.Combine(root,
             source == "Dsh" ? "session.jsonl.zstd" :
             source == "Kimi" ? "wire.jsonl" :
+            source == "Qoder" ? "segment.jsonl" :
             "model-io-batch.jsonl");
         if (source == "Dsh")
         {

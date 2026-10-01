@@ -25,6 +25,27 @@ public sealed class PriceSettingsTests
     }
 
     [Fact]
+    public void QoderGroup_MigratesMissingPropertyWithoutChangingExistingPricesOrOrder()
+    {
+        var original = PriceSettingsStore.Defaults();
+        original.CodexPresets.Reverse();
+        original.CodexPresets[0].UncachedInput = 123.45m;
+        var json = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(original))!.AsObject();
+        json.Remove(nameof(PriceSettings.QoderPresets));
+        var loaded = System.Text.Json.JsonSerializer.Deserialize<PriceSettings>(json.ToJsonString())!;
+        var normalized = PriceSettingsStore.Normalize(loaded);
+        Assert.Equal(original.CodexPresets.Select(item => item.Model), normalized.CodexPresets.Select(item => item.Model));
+        Assert.Equal(123.45m, normalized.CodexPresets[0].UncachedInput);
+        Assert.Equal(PricePreset.DefaultsForGroup(PricePresetGroups.Qoder).Select(item => item.Model),
+            normalized.QoderPresets.Select(item => item.Model));
+        Assert.All(normalized.QoderPresets, item => Assert.Equal(PricePresetGroups.Qoder, item.Group));
+        var clone = normalized.Clone();
+        clone.QoderPresets[0].UncachedInput = 42;
+        Assert.NotEqual(42, normalized.QoderPresets[0].UncachedInput);
+        Assert.Equal(42, PriceSettingsStore.Normalize(clone).QoderPresets[0].UncachedInput);
+    }
+
+    [Fact]
     public void KimiPreview_DefaultPriceIdentifiesThirdPartyReferenceAndCurrency()
     {
         var preset = Assert.Single(PriceSettingsStore.Defaults().KimiPresets, item => item.ModelId == "k2d8-preview");
@@ -69,6 +90,61 @@ public sealed class PriceSettingsTests
     }
 
     [Fact]
+    public void QoderAuto_DefaultPriceIsTheSubscriptionMarginalRate_AndStaysOutOfOtherGroups()
+    {
+        // Qoder logs only its internal route ids, so the group needs a price for
+        // each one; other groups must not gain rows they can never match.
+        var qoder = PriceSettingsStore.Defaults().QoderPresets;
+        var routed = qoder.Where(item => item.Provider == "Qoder").ToList();
+
+        Assert.Equal(PricePreset.QoderRoutedModelNames, routed.Select(item => item.Model).ToArray());
+        foreach (var preset in routed)
+        {
+            Assert.Equal(preset.Model, preset.ModelId);
+            Assert.Equal(PricePresetGroups.Qoder, preset.Group);
+            Assert.Equal("¥", preset.CurrencySymbol);
+            Assert.Equal("CNY / 1M tokens", preset.UnitLabel);
+            Assert.Equal(1_000_000m, preset.Divisor);
+            Assert.Equal(0.0090m, preset.UncachedInput);
+            Assert.Equal(0.0090m, preset.CachedInput);
+            Assert.Equal(0.0090m, preset.Output);
+            Assert.Contains("110亿", preset.Source);
+            Assert.False(CodexModelCost.IsPending(preset));
+        }
+        foreach (var group in new[] { "Codex", "Claude Code", "ZCode", "WorkBuddy", "DSH", "Kimi" })
+        {
+            Assert.DoesNotContain(PriceSettingsStore.Defaults().PresetsForGroup(group),
+                item => item.Provider == "Qoder");
+        }
+    }
+
+    [Fact]
+    public void Normalize_AddsMissingQoderAutoPreset_WithoutOverwritingAnEditedRate()
+    {
+        var settings = PriceSettingsStore.Defaults();
+        settings.DisplayOrderVersion = 20;
+        foreach (var group in PricePresetGroups.All)
+        {
+            settings.PresetsForGroup(group).RemoveAll(item => item.Provider == "Qoder");
+        }
+
+        var injected = PriceSettingsStore.Normalize(settings);
+        Assert.Equal(21, injected.DisplayOrderVersion);
+        Assert.Equal(PricePreset.QoderRoutedModelNames,
+            injected.QoderPresets.Where(item => item.Provider == "Qoder").Select(item => item.Model));
+        var auto = injected.QoderPresets.Single(item => item.Model == "auto");
+        Assert.Equal(0.0090m, auto.UncachedInput);
+        Assert.Equal(PricePresetGroups.Qoder, auto.Group);
+        Assert.DoesNotContain(injected.KimiPresets, item => item.Provider == "Qoder");
+
+        auto.UncachedInput = 5m;
+        auto.Source = "用户报价";
+        var kept = PriceSettingsStore.Normalize(injected).QoderPresets.Single(item => item.Model == "auto");
+        Assert.Equal(5m, kept.UncachedInput);
+        Assert.Equal("用户报价", kept.Source);
+    }
+
+    [Fact]
     public void Normalize_InjectsNewCatalogPresetsIntoSavedSettings()
     {
         // Simulate settings saved by an older build (version 18) whose preset
@@ -83,7 +159,7 @@ public sealed class PriceSettingsTests
 
         var normalized = PriceSettingsStore.Normalize(settings);
 
-        Assert.Equal(20, normalized.DisplayOrderVersion);
+        Assert.Equal(21, normalized.DisplayOrderVersion);
         var flash = Assert.Single(normalized.ZCodePresets, item => item.Model == "GLM-5.3 Flash");
         Assert.Equal(0.80m, flash.UncachedInput);
         Assert.Equal(0.23m, flash.CachedInput);
@@ -204,7 +280,7 @@ public sealed class PriceSettingsTests
 
         var normalized = PriceSettingsStore.Normalize(settings);
 
-        Assert.Equal(20, normalized.DisplayOrderVersion);
+        Assert.Equal(21, normalized.DisplayOrderVersion);
         Assert.Equal("GPT-6.1 Sol", normalized.CodexPresets[0].Model);
         Assert.Equal("Fable 5.1 API", normalized.ClaudeCodePresets[0].Model);
         Assert.Equal(3m, normalized.ClaudeCodePresets.Single(item => item.Model == "Fable 5 API").CachedInput);
@@ -399,7 +475,7 @@ public sealed class PriceSettingsTests
 
         var normalized = PriceSettingsStore.Normalize(settings);
 
-        Assert.Equal(20, normalized.DisplayOrderVersion);
+        Assert.Equal(21, normalized.DisplayOrderVersion);
         Assert.Equal("DeepSeek V4.1 Flash", normalized.ToDeepSeekProfile().Name);
         Assert.Equal(1.00m, normalized.DeepSeekUncachedInputPerMillion);
         Assert.Equal(0.02m, normalized.DeepSeekCachedInputPerMillion);

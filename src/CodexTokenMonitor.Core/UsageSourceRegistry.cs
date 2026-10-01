@@ -59,7 +59,10 @@ internal static class UsageSourceRegistry
             "deepseek harness", "deepseek-harness", "harness"),
         new UsageSourceDefinition(UsageSource.Kimi, "Kimi", PricePresetGroups.Kimi, false,
             UsageSourceReaders.CreateKimiReader,
-            "kimi code", "kimi work")
+            "kimi code", "kimi work"),
+        new UsageSourceDefinition(UsageSource.Qoder, "Qoder", PricePresetGroups.Qoder, false,
+            UsageSourceReaders.CreateQoderReader,
+            "qoder cli", "qoder ide")
     });
 
     private static readonly IReadOnlyDictionary<UsageSource, UsageSourceDefinition> BySource =

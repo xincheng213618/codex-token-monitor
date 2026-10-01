@@ -16,6 +16,7 @@ public sealed class UsageSourceCapabilitiesTests
     [InlineData((int)UsageSource.WorkBuddy, "WorkBuddyTokenMonitor")]
     [InlineData((int)UsageSource.Dsh, "DshTokenMonitor")]
     [InlineData((int)UsageSource.Kimi, "KimiTokenMonitor")]
+    [InlineData((int)UsageSource.Qoder, "QoderTokenMonitor")]
     public void CachedQueries_DoNotReplaceIncompleteCacheWithSourceLogs(int sourceValue, string cacheFolder)
     {
         var source = (UsageSource)sourceValue;
@@ -96,6 +97,7 @@ public sealed class UsageSourceCapabilitiesTests
             UsageSource.Codex => Path.Combine(root, "sessions"),
             UsageSource.ZCode => Path.Combine(root, "rollout"),
             UsageSource.Dsh => Path.Combine(root, "fixture"),
+            UsageSource.Qoder => Path.Combine(root, "workspace", "sample-session", "segments"),
             _ => root
         };
         Directory.CreateDirectory(root);
@@ -141,6 +143,12 @@ public sealed class UsageSourceCapabilitiesTests
                 model = "k2d8-preview",
                 usage = new { inputOther = 900, inputCacheRead = 40, inputCacheCreation = 20, output = 10 }
             },
+            UsageSource.Qoder => new
+            {
+                ts = timestamp, type = "model.response.completed", request_id = "source-only",
+                data = new { model = "auto", input_tokens = 960, cache_read_input_tokens = 40,
+                    cache_creation_input_tokens = 20, output_tokens = 10 }
+            },
             _ => throw new ArgumentOutOfRangeException(nameof(source))
         };
         var text = JsonSerializer.Serialize(entry) + "\n";
@@ -152,7 +160,8 @@ public sealed class UsageSourceCapabilitiesTests
         else
         {
             var name = source == UsageSource.Codex ? "rollout-capabilities.jsonl" :
-                source == UsageSource.Kimi ? "wire.jsonl" : "model-io-capabilities.jsonl";
+                source == UsageSource.Kimi ? "wire.jsonl" :
+                source == UsageSource.Qoder ? "segment.jsonl" : "model-io-capabilities.jsonl";
             File.WriteAllText(Path.Combine(root, name), text);
         }
     }

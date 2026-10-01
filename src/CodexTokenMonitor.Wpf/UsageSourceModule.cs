@@ -201,6 +201,11 @@ internal sealed class KimiUsageModule : UsageSourceModule
     public KimiUsageModule() : base(UsageSource.Kimi) { }
 }
 
+internal sealed class QoderUsageModule : UsageSourceModule
+{
+    public QoderUsageModule() : base(UsageSource.Qoder) { }
+}
+
 internal static class UsageSourceModules
 {
     public static IReadOnlyDictionary<UsageSource, UsageSourceModule> Create()
@@ -218,6 +223,7 @@ internal static class UsageSourceModules
         UsageSource.WorkBuddy => new WorkBuddyUsageModule(),
         UsageSource.Dsh => new DshUsageModule(),
         UsageSource.Kimi => new KimiUsageModule(),
+        UsageSource.Qoder => new QoderUsageModule(),
         _ => throw new InvalidOperationException($"No desktop page registered for source {source}.")
     };
 }
