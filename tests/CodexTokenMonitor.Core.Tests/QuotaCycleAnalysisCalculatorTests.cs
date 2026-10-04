@@ -656,6 +656,105 @@ public sealed class QuotaCycleAnalysisCalculatorTests
         Assert.Contains("至少需要两个", result.EmptyReason);
     }
 
+    [Fact]
+    public void ExhaustedTailIsKeptInTotalUsageButCannotInflateQuotaCapacity()
+    {
+        var result = QuotaCycleAnalysisCalculator.BuildFromSamples(Period(), new[]
+        {
+            Sample(0, 95m, Bucket("model-a", 0)),
+            Sample(1, 100m, Bucket("model-a", 10)),
+            Sample(2, 100m, Bucket("model-b", 20))
+        }, priceCatalog: Catalog());
+
+        var band = Assert.Single(result.Bands);
+        Assert.Equal(10m, band.EquivalentCost);
+        Assert.Equal(200m, result.EstimatedFullQuotaCost);
+        Assert.Equal(30m, result.EquivalentCost);
+        Assert.Equal(30, result.Tokens);
+        Assert.Equal(20, result.UnattributedTokens);
+        Assert.Equal(20m, result.UnattributedCost);
+        Assert.Equal(0m, result.Models.Single(model => model.ModelId == "model-b").QuotaDropPercent);
+        Assert.Equal(Start.AddMinutes(1), band.EndLocal);
+        Assert.Equal(20, result.UsageSamples[^1].TotalTokens);
+    }
+
+    [Fact]
+    public void VaryingMixedBandsEstablishCapacitiesWithoutHistoricalOrPureSamples()
+    {
+        var bands = new[]
+        {
+            RegressionBand(0, 5m, ("model-a", 40m), ("model-b", 20m)),
+            RegressionBand(1, 5m, ("model-a", 10m), ("model-b", 80m)),
+            RegressionBand(2, 5m, ("model-a", 25m), ("model-b", 50m))
+        };
+        var result = ResultWithBandsAndModels(bands, bands[0].Models.ToArray());
+        Assert.Empty(QuotaModelCapacityEstimator.EstimatePureModels(result));
+        var estimates = RobustQuotaModelCapacityEstimator.EstimateMixedBaselines(result);
+        Assert.Equal(1_000m, estimates.Single(item => item.ModelId == "model-a").AverageFullQuotaCost, 4);
+        Assert.Equal(2_000m, estimates.Single(item => item.ModelId == "model-b").AverageFullQuotaCost, 4);
+        Assert.All(bands, band => Assert.Equal(band.EstimatedFullQuotaCost!.Value,
+            QuotaModelCapacityEstimator.FitFullQuotaCost(band, estimates)!.Value, 4));
+    }
+
+    [Fact]
+    public void IdenticalMixturesCannotInventSeparateModelCapacities()
+    {
+        var result = ResultWithBands(Enumerable.Range(0, 4)
+            .Select(index => RegressionBand(index, 5m, ("model-a", 40m), ("model-b", 20m))).ToArray());
+        Assert.Empty(RobustQuotaModelCapacityEstimator.EstimateMixedBaselines(result));
+    }
+
+    [Fact]
+    public void TinyNewModelDoesNotPreventOtherMixedBandsFromEstablishingCapacities()
+    {
+        var result = ResultWithBands(
+            RegressionBand(0, 5m, ("model-a", 40m), ("model-b", 20m)),
+            RegressionBand(1, 5m, ("model-a", 10m), ("model-b", 80m)),
+            RegressionBand(2, 5m, ("model-a", 25m), ("model-b", 50m)),
+            RegressionBand(3, 5m, ("model-a", 40m), ("model-b", 20m), ("new-model", 0.1m)));
+        var estimates = RobustQuotaModelCapacityEstimator.EstimateMixedBaselines(result);
+        Assert.Equal(2, estimates.Count);
+        Assert.DoesNotContain(estimates, item => item.ModelId == "new-model");
+        Assert.NotNull(QuotaModelCapacityEstimator.FitFullQuotaCost(result.Bands[0], estimates));
+        Assert.Null(QuotaModelCapacityEstimator.FitFullQuotaCost(result.Bands[^1], estimates));
+    }
+
+    [Fact]
+    public void SavedFitSurvivesRebuildingAnUnidentifiableMixture()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "QuotaSavedFit-" + Guid.NewGuid().ToString("N"));
+        using var caches = MonitorCachePaths.PushLocalAppDataRoot(root);
+        using var logs = UsageLogPaths.PushRoot(Path.Combine(root, "logs"));
+        var band = RegressionBand(0, 5m, ("model-a", 40m), ("model-b", 20m));
+        var result = ResultWithBandsAndModels(new[] { band }, band.Models.ToArray());
+        SubscriptionPlanStore.Save(new[] { new SubscriptionPlanRecord
+        {
+            Id = "plan", StartLocal = Start, EndLocal = Start.AddDays(8), PlanName = "test plan", AmountCny = 1m
+        } });
+        QuotaModelCapacityCalibrationStore.Upsert("test plan", Period(), new[]
+        {
+            CapacityEstimate("model-a", 1_000m, Start), CapacityEstimate("model-b", 2_000m, Start)
+        });
+        var saved = QuotaModelCapacityCalibrationService.ReadSaved(Period(), result);
+        var rebuilt = QuotaModelCapacityCalibrationService.Build(Period(), result, null);
+        Assert.Equal(2, saved.Estimates.Count);
+        Assert.Equal(1_200m, QuotaModelCapacityEstimator.FitFullQuotaCost(band, saved.Estimates)!.Value, 4);
+        Assert.Equal(1_200m, QuotaModelCapacityEstimator.FitFullQuotaCost(band, rebuilt.Estimates)!.Value, 4);
+    }
+
+    [Fact]
+    public void CalibrationAndFitMatchDatedModelsWithTheirCanonicalIdentity()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "QuotaDatedFit-" + Guid.NewGuid().ToString("N"));
+        using var caches = MonitorCachePaths.PushLocalAppDataRoot(root);
+        var band = RegressionBand(0, 5m, ("gpt-6-sol-2026-09-30", 50m));
+        QuotaModelCapacityCalibrationStore.Upsert("plan", Period(), new[] { CapacityEstimate("gpt-6-sol", 1_000m, Start) });
+        var history = QuotaModelCapacityCalibrationStore.LoadHistoryBefore("plan", Start.AddDays(8),
+            new[] { "gpt-6-sol-2026-09-30" }, QuotaModelCapacitySource.PreviousPeriodApproved);
+        Assert.Equal("gpt-6-sol", Assert.Single(history).ModelId);
+        Assert.Equal(1_000m, QuotaModelCapacityEstimator.FitFullQuotaCost(band, history));
+    }
+
     private static CodexQuotaCycle Period() => new(
         Start,
         Start.AddDays(7),

@@ -76,7 +76,8 @@ public partial class QuotaCycleAnalysisWindow : Window
                 if (preview.CacheWarnings.Count == 0 && preview.Value.Analysis.HasData)
                 {
                     ApplyResult(preview.Value.Analysis, preview.Value.Capacities);
-                    ModelCapacityValue.Text = "缓存预览 · 模型动态估算将在数据补齐后更新";
+                    if (preview.Value.Capacities.Estimates.Count == 0)
+                        ModelCapacityValue.Text = "缓存预览 · 模型动态估算将在数据补齐后更新";
                     hasSuccessfulResult = true;
                 }
             }
@@ -194,10 +195,14 @@ public partial class QuotaCycleAnalysisWindow : Window
         QuotaDropNote.Text = $"{result.AlignedSampleCount:N0} 个模型/额度对齐点";
         EquivalentCostValue.Text = FormatMoney(result.EquivalentCost);
         EquivalentCostNote.Text = $"{result.Tokens / 1_000_000d:N3}M tokens";
+        EquivalentCostNote.ToolTip = result.UnattributedTokens > 0
+            ? $"包含额度已满后的 {result.UnattributedTokens / 1_000_000d:N3}M Token / {FormatMoney(result.UnattributedCost)}；这部分保留在总用量中，不参与额度分段和拟合。"
+            : null;
         FullEstimateValue.Text = FormatMoney(result.EstimatedFullQuotaCost);
         FullEstimateNote.Text = result.Period.IsCurrent
             ? "含当前未跳点用量 · 与顶部 7d 同步"
             : "全部分段按额度跌幅加权";
+        if (result.UnattributedTokens > 0) FullEstimateNote.Text = "满额后用量已排除 · 总用量仍保留";
         VolatilityValue.Text = $"{result.VolatilityPercent:N0}%";
         VolatilityNote.Text = $"{VolatilityLabel(result.VolatilityPercent)} · {FormatMoney(result.MinimumBandEstimate)}–{FormatMoney(result.MaximumBandEstimate)}";
         DominantModelValue.Text = QuotaCycleModelPalette.ShortName(result.CostDominantModel);
@@ -375,7 +380,7 @@ public partial class QuotaCycleAnalysisWindow : Window
             : "额度位置 × 局部换算代价 · 上方色带为主导模型 · 点击联动下方明细";
         BandDescriptionText.Text = showTimeline
             ? $"同一组 {displayedBandSizePercent:N0}% 分段 · 消耗时段按首次跨刻度对齐（含插值）· 段平均速度包含空闲"
-            : $"每行按 {displayedBandSizePercent:N0}% 额度带聚合；模型满额校准固定按 5% 分段；换算 100% 是实测外推";
+            : $"每行按 {displayedBandSizePercent:N0}% 额度带聚合；拟合按模型代价联合回归，偏离为相对拟合差值；满额后的用量不参与额度归因";
     }
 
     private static string BuildInsight(QuotaCycleAnalysisResult result)
@@ -439,6 +444,7 @@ internal sealed record QuotaCycleBandRow(
     public decimal? ConsumptionRateValue => Consumption?.RateValue;
     public DateTimeOffset? ConsumptionStart => Consumption?.Band.StartLocal;
     public TimeSpan? ConsumptionElapsed => Consumption?.Elapsed;
+    public string FitDetail { get; init; } = "";
 
     public static QuotaCycleBandRow From(
         QuotaCycleAnalysisBand band,
@@ -456,6 +462,16 @@ internal sealed record QuotaCycleBandRow(
             (item.IsPriced ? $"{item.CostSharePercent:N0}%" : "未计价")));
         var modelTokens = string.Join(" / ", band.Models.OrderByDescending(item => item.EquivalentCost).Select(item =>
             $"{QuotaCycleModelPalette.ShortName(item.ModelId)} {item.Tokens / 1_000_000d:N3}M"));
+        var capacityModels = capacities.Select(item => CodexModelCost.ModelKey(item.ModelId))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missingModels = band.Models.Where(item => item.EquivalentCost > 0m &&
+                !capacityModels.Contains(CodexModelCost.ModelKey(item.ModelId)))
+            .Select(item => QuotaCycleModelPalette.ShortName(item.ModelId));
+        var fitDetail = fitted is not null
+            ? "拟合满额 = 1 ÷ Σ（模型代价占比 ÷ 模型满额校准）；偏离 =（换算满额 ÷ 拟合满额 − 1）× 100%。这是拟合残差，当前分段也可参与回归。"
+            : band.Models.Any(item => !item.IsPriced && item.QuotaSharePercent > 0m)
+                ? "此分段包含未计价模型，无法计算完整拟合。"
+                : $"缺少模型校准：{string.Join("、", missingModels)}。占比外推参考值不作为拟合基准。";
         return new QuotaCycleBandRow(
             band,
             $"{band.RemainingFromPercent:N1} → {band.RemainingToPercent:N1}%",
@@ -465,10 +481,13 @@ internal sealed record QuotaCycleBandRow(
             $"{band.Tokens / 1_000_000d:N3}M",
             FormatMoney(band.EquivalentCost),
             FormatMoney(band.EstimatedFullQuotaCost),
-            FormatMoney(fitted),
-            fitDifference is null ? "-" : $"{fitDifference.Value:+0;-0;0}%",
+            fitted is null ? "待校准" : FormatMoney(fitted),
+            fitDifference is null ? "待校准" : $"{fitDifference.Value:+0;-0;0}%",
             $"{difference:+0;-0;0}%",
-            band.QuotaDropPercent >= 4m ? "较稳" : band.QuotaDropPercent >= 2m ? "参考" : "小样本");
+            band.QuotaDropPercent >= 4m ? "较稳" : band.QuotaDropPercent >= 2m ? "参考" : "小样本")
+        {
+            FitDetail = fitDetail
+        };
     }
 
     private static string FormatMoney(decimal? value)

@@ -52,6 +52,38 @@ public sealed class QuotaCachedQueryTests
         finally { runtime.SharedIoGate.Release(); }
     }
 
+    [Fact]
+    public void CachedCyclePreviewReadsSavedFitWithoutChangingSettingsOrTraining()
+    {
+        using var isolated = new IsolatedCache();
+        var period = new CodexQuotaCycle(Day, Day.AddDays(1), Day.AddDays(7), 2, 10m, false);
+        var events = new[]
+        {
+            new TokenUsageEvent(Day.AddHours(1), 100, 40, 10, 0, 110, ModelId: "gpt-5.6-sol"),
+            new TokenUsageEvent(Day.AddHours(2), 200, 80, 20, 0, 220, ModelId: "gpt-5.6-sol")
+        };
+        var bucket = new TokenUsageBucket { StartLocal = Day };
+        foreach (var item in events) bucket.Add(item);
+        UsageCacheStore.Load().Put(bucket, true, Day.AddDays(1), detailEvents: events);
+        QuotaSnapshotCacheStore.Load("CodexTokenMonitor").Put(DateOnly.FromDateTime(Day.DateTime),
+            events.Select((item, index) => new CodexQuotaSnapshot(item.Timestamp, "codex", "Codex", null, null,
+                (index + 1) * 5m, period.ResetAt)).ToArray(), true, Day.AddDays(1));
+        SubscriptionPlanStore.Save(new[] { new SubscriptionPlanRecord
+        {
+            Id = "plan", StartLocal = Day, EndLocal = Day.AddDays(8), PlanName = "test plan", AmountCny = 1m
+        } });
+        QuotaModelCapacityCalibrationStore.Upsert("test plan", period, new[]
+        {
+            new QuotaModelCapacityEstimate("gpt-5.6-sol", 3, 1_200m, 1_000m, 1_400m,
+                QuotaModelCapacitySource.CurrentPeriodBlended, Day)
+        });
+        var before = File.ReadAllBytes(MonitorSettingsDatabase.Path);
+        var result = new QuotaCycleAnalysisQueryService().ExecuteCached(new(period));
+        Assert.Equal(1_200m, Assert.Single(result.Capacities.Estimates).AverageFullQuotaCost);
+        Assert.NotNull(QuotaModelCapacityEstimator.FitFullQuotaCost(result.Analysis.Bands[0], result.Capacities.Estimates));
+        Assert.Equal(before, File.ReadAllBytes(MonitorSettingsDatabase.Path));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

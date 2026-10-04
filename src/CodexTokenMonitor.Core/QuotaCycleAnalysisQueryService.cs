@@ -94,7 +94,8 @@ internal sealed class QuotaCycleAnalysisQueryService(
             QuotaCycleAnalysisCalculator.BuildCached(period, currentWeek, bandSizePercent, token);
 
         public QuotaModelCapacityReport BuildCapacities(CodexQuotaCycle period, QuotaCycleAnalysisResult analysis,
-            CodexQuotaCycle? previousPeriod, CancellationToken token) => EmptyCapacities();
+            CodexQuotaCycle? previousPeriod, CancellationToken token) =>
+            QuotaModelCapacityCalibrationService.ReadSaved(period, analysis);
     }
 
     private sealed class DefaultSource : IQuotaCycleAnalysisSource

@@ -319,7 +319,7 @@ internal static class CodexModelCost
         return count;
     }
 
-    private static string ModelKey(string? model) => Regex.Replace(NormalizeModelId(model), @"-\d{4}-\d{2}-\d{2}$", "");
+    internal static string ModelKey(string? model) => Regex.Replace(NormalizeModelId(model), @"-\d{4}-\d{2}-\d{2}$", "");
 
     // "hy3-preview-20260421" -> "hy3-preview" (ModelKey drops the date) -> "hy3".
     private static string FamilyKey(string? model) => Regex.Replace(ModelKey(model), @"-preview(-.*)?$", "");

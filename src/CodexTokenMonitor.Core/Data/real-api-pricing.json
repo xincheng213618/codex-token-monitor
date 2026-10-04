@@ -797,6 +797,40 @@
       "Confidence": "low",
       "Evidence": "由同套餐 gpt-5.6-sol 30.8 亿 × 0.295458068516509",
       "Note": "9.53→9.10011亿：38.12×30.8/129.02（沿用Sol 20x→5x档间比例，基准随Sol 20x加权值联动4.19×）；round12 codex#45085 prolite同框2.31亿/周≈9.2亿/月量级接近但为多代理Astra High放大样本，不直接采；chatgpt-astra-sameframe-round13-2026-09-20.json"
+    },
+    {
+      "Id": "chatgpt_plus::gpt-6.1-sol",
+      "Source": "Codex",
+      "PlanId": "chatgpt_plus",
+      "Plan": "ChatGPT Plus",
+      "Model": "gpt-6.1-sol",
+      "Currency": "USD",
+      "MonthlyFee": 20,
+      "MonthlyTokens": 870000000,
+      "UsdPerMillion": 0.022988506,
+      "Workload": "standard",
+      "Confidence": "high",
+      "SnapshotDate": "2026-10-01",
+      "SourceUrl": "https://github.com/FeiZhuLulu/real-api-pricing/blob/35b06e01ea25dd0ee0d34cf43e4654042c286f84/data/research/chatgpt-gpt61sol-plus-round3-2026-09-30.json",
+      "Evidence": "Real API Pricing adopted.csv：Plus 周额度 81%→50%，55,532,850 Token，三段合并实测按标准负载折算",
+      "Note": "采用上游 8.70 亿 Token/月与 $20 月费；上游记录第三段额度代价比前两段低约 30%，原因未明。Pro 5x/20x 未按 Plus 倍率派生。"
+    },
+    {
+      "Id": "chatgpt_pro_20x::gpt-6.1-sol",
+      "Source": "Codex",
+      "PlanId": "chatgpt_pro_20x",
+      "Plan": "ChatGPT Pro 20x",
+      "Model": "gpt-6.1-sol",
+      "Currency": "USD",
+      "MonthlyFee": 200,
+      "MonthlyTokens": 22253600000,
+      "UsdPerMillion": 0.008987309918395226,
+      "Workload": "measured",
+      "Confidence": "medium",
+      "IsLocalMeasurement": true,
+      "SnapshotDate": "2026-10-02",
+      "Evidence": "CodexTokenMonitor 本地周期 2026-09-27 00:58→2026-10-02 15:31；10 段样本，6.1 Sol 满额折算代价 $1,029.819391，统一本周期 Token 构成估算每周满额 5,563.4M Token",
+      "Note": "$200 ÷（5,563.4M × 4 周）≈ $0.00898731/MTok；周容量取用户截图显示值。本周期尚未结束，满额代价样本范围约 $900–$1,063；Token 构成或速度模式改变会影响容量，历史用量也按该固定快照折算。"
     }
   ]
 }

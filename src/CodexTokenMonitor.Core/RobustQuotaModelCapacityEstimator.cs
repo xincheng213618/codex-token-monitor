@@ -19,13 +19,80 @@ internal static class RobustQuotaModelCapacityEstimator
     {
         return history
             .Where(item => item.AverageFullQuotaCost > 0m)
-            .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .Select(group => BuildHistoricalPrior(group.Key, group.ToList(), currentPeriodStart))
             .Where(item => item is not null)
             .Cast<QuotaModelCapacityEstimate>()
             .OrderByDescending(item => item.BandCount)
             .ThenBy(item => item.ModelId, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    // Establish a starting point from independently varying mixed bands. A
+    // proportional/singular mixture cannot identify separate model capacities.
+    internal static IReadOnlyList<QuotaModelCapacityEstimate> EstimateMixedBaselines(
+        QuotaCycleAnalysisResult result, CancellationToken cancellationToken = default)
+    {
+        var eligible = result.Bands.Where(band => band.QuotaDropPercent >= MinimumBandDropPercent &&
+            band.Models.All(model => model.IsPriced)).ToList();
+        var modelIds = eligible.SelectMany(band => band.Models)
+            .Where(model => model.EquivalentCost > 0m)
+            .GroupBy(model => CodexModelCost.ModelKey(model.ModelId), StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Sum(model => model.QuotaDropPercent) >
+                            QuotaModelCapacityEstimator.MinimumResidualDropPercent)
+            .Select(group => group.Key).OrderBy(model => model, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (modelIds.Length < 2) return Array.Empty<QuotaModelCapacityEstimate>();
+        var indexes = modelIds.Select((model, index) => (model, index))
+            .ToDictionary(item => item.model, item => item.index, StringComparer.OrdinalIgnoreCase);
+        eligible = eligible.Where(band => band.Models.Where(model => model.EquivalentCost > 0m)
+            .All(model => indexes.ContainsKey(CodexModelCost.ModelKey(model.ModelId)))).ToList();
+        if (eligible.Count < modelIds.Length + 1) return Array.Empty<QuotaModelCapacityEstimate>();
+        var scale = eligible.Sum(band => band.EquivalentCost) / eligible.Sum(band => band.QuotaDropPercent) * 100m;
+        if (scale <= 0m) return Array.Empty<QuotaModelCapacityEstimate>();
+        var observations = eligible.Select(band =>
+        {
+            var coefficients = new double[modelIds.Length];
+            foreach (var model in band.Models.Where(model => model.EquivalentCost > 0m))
+                coefficients[indexes[CodexModelCost.ModelKey(model.ModelId)]] += (double)(model.EquivalentCost / scale);
+            var target = (double)(band.QuotaDropPercent / 100m);
+            return new RegressionObservation(coefficients, target, Math.Max(0.004d, target * 0.10d),
+                Math.Clamp((double)(band.QuotaDropPercent / 5m), 0.5d, 4d), true);
+        }).ToList();
+        var weights = Enumerable.Repeat(1d, observations.Count).ToArray();
+        double[]? state = null;
+        for (var iteration = 0; iteration < MaximumIterations; iteration++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            state = Solve(observations, weights, new double[modelIds.Length]);
+            if (state is null || state.Any(value => value <= 0d || !double.IsFinite(value)))
+                return Array.Empty<QuotaModelCapacityEstimate>();
+            for (var index = 0; index < observations.Count; index++)
+                weights[index] = RobustWeight(observations[index], state);
+        }
+        var estimates = new List<QuotaModelCapacityEstimate>();
+        var sensitivity = observations.Select((_, omitted) => Solve(
+                observations.Where((_, index) => index != omitted).ToList(),
+                weights.Where((_, index) => index != omitted).ToArray(), new double[modelIds.Length]))
+            .Where(solution => solution is not null && solution.All(value => value > 0d && double.IsFinite(value)))
+            .ToList();
+        for (var index = 0; index < modelIds.Length; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var capacityValue = (double)scale / state![index];
+            if (!double.IsFinite(capacityValue) || capacityValue <= 0d || capacityValue > 100_000d)
+                return Array.Empty<QuotaModelCapacityEstimate>();
+            var capacity = (decimal)capacityValue;
+            var count = observations.Count(observation => observation.Coefficients[index] > 0d);
+            // The range reports sensitivity to omitting one observed band;
+            // it is not an invented percentage or a confidence interval.
+            var range = sensitivity.Select(solution => (double)scale / solution![index])
+                .Where(value => double.IsFinite(value) && value > 0d && value <= 100_000d)
+                .Select(value => (decimal)value).Append(capacity).ToArray();
+            estimates.Add(new(modelIds[index], count, capacity, range.Min(), range.Max(),
+                QuotaModelCapacitySource.CurrentPeriodBlended, result.Period.PeriodStart,
+                MixedBandCount: count, CurrentBandCount: count));
+        }
+        return estimates;
     }
 
     public static IReadOnlyList<QuotaModelCapacityEstimate> RegressCurrentPeriod(
@@ -35,7 +102,7 @@ internal static class RobustQuotaModelCapacityEstimator
     {
         var baselines = baselineEstimates
             .Where(item => item.AverageFullQuotaCost > 0m)
-            .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         if (baselines.Count == 0)
         {
@@ -224,7 +291,7 @@ internal static class RobustQuotaModelCapacityEstimator
 
             var costs = band.Models
                 .Where(item => item.IsPriced && item.EquivalentCost > 0m)
-                .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+                .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.Sum(item => item.EquivalentCost), StringComparer.OrdinalIgnoreCase);
             if (costs.Count == 0 || costs.Keys.Any(model => !baselines.ContainsKey(model)))
             {

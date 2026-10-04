@@ -41,6 +41,8 @@ public partial class MainWindow
             : "当前套餐 · 网站参考";
         if (source == UsageSource.ZCode && estimate.UsesOtherPlans)
             caption += " · 含跨套餐";
+        if (estimate.UsesLocalMeasurements)
+            caption = estimate.UsesOtherPlans ? "本地实测 · 含跨套餐参考" : "当前套餐 · 本地实测";
         if (!estimate.IsComplete) caption = "部分未覆盖 · " + caption;
         var card = new CostCardControl("真实价格（估算）", caption, estimate.Format(), estimate.Describe(), actual: false)
         {

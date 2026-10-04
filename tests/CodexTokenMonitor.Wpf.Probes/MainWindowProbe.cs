@@ -989,6 +989,9 @@ internal static class MainWindowProbe
                 var summary = new TokenUsageSummary { StartLocal = SeedDay, EndLocal = SeedDay.AddHours(12) };
                 summary.Add(new TokenUsageEvent(SeedDay.AddHours(11), 3_299_000, 3_001_000, 34_000,
                     6_520, 3_333_000, "real-price-fixture", ModelId: source == UsageSource.Codex ? "gpt-6-sol" : "GLM-5.3-Flash"));
+                if (source == UsageSource.Codex)
+                    summary.Add(new TokenUsageEvent(SeedDay.AddHours(11).AddMinutes(1), 990_000, 970_000, 10_000,
+                        3_000, 1_000_000, "real-price-61-sol-fixture", ModelId: "gpt-6.1-sol"));
                 var range = new SelectedRange(SeedDay, SeedDay.AddDays(1), "参考价界面样本", "样本明细", RangeMode.Day);
                 var result = new UsageQueryResult(summary, new[] { summary }, TimeSpan.FromMinutes(8), null, Array.Empty<CodexQuotaSnapshot>());
                 Invoke(window, "ApplySummary", range, result, module);
@@ -1020,6 +1023,13 @@ internal static class MainWindowProbe
                             detail.Contains("非高峰") && detail.Contains("GLM Coding Lite"), "source-specific pricing basis");
                         if (source == UsageSource.ZCode)
                             Require(Get<TextBlock>(card, "ModelText").Text.Contains("Lite ¥118"), "selected Lite plan is visible on card");
+                        if (source == UsageSource.Codex)
+                        {
+                            Require(detail.Contains("本地额度实测补充快照：2026-10-02") && detail.Contains("gpt-6.1-sol"),
+                                "61 Sol local measurement has distinct provenance");
+                            Require(Get<TextBlock>(card, "ModelText").Text.Contains("本地实测") &&
+                                !Get<TextBlock>(card, "AmountText").Text.Contains('*'), "61 Sol is priced with local measurement caption");
+                        }
                         Require(panel.Children.Cast<FrameworkElement>().Sum(child => child.Width + child.Margin.Left + child.Margin.Right)
                             <= Get<FrameworkElement>(window, "CostCardsViewport").ActualWidth + 1, "all cost cards fit viewport");
                         Results.Add(new { check = "real-price-card", source = source.ToString(), width,

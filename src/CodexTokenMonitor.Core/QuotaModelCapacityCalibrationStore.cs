@@ -43,7 +43,7 @@ internal static class QuotaModelCapacityCalibrationStore
                         updated_at = excluded.updated_at
                     """;
                 command.Parameters.AddWithValue("$plan_name", storedPlanName);
-                command.Parameters.AddWithValue("$model_id", CodexModelCost.NormalizeModelId(estimate.ModelId));
+                command.Parameters.AddWithValue("$model_id", CodexModelCost.ModelKey(estimate.ModelId));
                 command.Parameters.AddWithValue("$period_start", FormatDateTimeOffset(period.PeriodStart));
                 command.Parameters.AddWithValue("$period_end", FormatDateTimeOffset(period.PeriodEnd));
                 command.Parameters.AddWithValue("$average", FormatDecimal(estimate.AverageFullQuotaCost));
@@ -99,7 +99,7 @@ internal static class QuotaModelCapacityCalibrationStore
         QuotaModelCapacitySource source)
     {
         var requestedModels = modelIds
-            .Select(CodexModelCost.NormalizeModelId)
+            .Select(CodexModelCost.ModelKey)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (requestedModels.Count == 0)
         {
@@ -121,7 +121,7 @@ internal static class QuotaModelCapacityCalibrationStore
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                var modelId = CodexModelCost.NormalizeModelId(reader.GetString(0));
+                var modelId = CodexModelCost.ModelKey(reader.GetString(0));
                 var calibrationStart = ParseDateTimeOffset(reader.GetString(1));
                 if (!requestedModels.Contains(modelId) || calibrationStart >= periodStart ||
                     ParseDateTimeOffset(reader.GetString(6)) > periodStart ||
@@ -152,7 +152,7 @@ internal static class QuotaModelCapacityCalibrationStore
         QuotaModelCapacitySource source)
     {
         var requestedModels = modelIds
-            .Select(CodexModelCost.NormalizeModelId)
+            .Select(CodexModelCost.ModelKey)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (requestedModels.Count == 0)
         {
@@ -174,7 +174,7 @@ internal static class QuotaModelCapacityCalibrationStore
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                var modelId = CodexModelCost.NormalizeModelId(reader.GetString(0));
+                var modelId = CodexModelCost.ModelKey(reader.GetString(0));
                 var calibrationStart = ParseDateTimeOffset(reader.GetString(1));
                 var calibrationEnd = ParseDateTimeOffset(reader.GetString(6));
                 if (!requestedModels.Contains(modelId) || calibrationStart >= periodStart ||

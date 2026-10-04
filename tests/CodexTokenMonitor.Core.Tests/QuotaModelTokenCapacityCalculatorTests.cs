@@ -205,6 +205,24 @@ public sealed class QuotaModelTokenCapacityCalculatorTests
                 input + output, 1) }
         };
 
+    [Fact]
+    public void QuotaShareReferenceUsesOnlyMeteredCostWhenTotalsContainExhaustedUsage()
+    {
+        var models = new[] { new QuotaCycleModelShare("gpt-6-sol", 5m, 100m, 1_000_000, 120m, 100m, true) };
+        var metered = models[0] with { EquivalentCost = 20m };
+        var result = Result() with
+        {
+            Models = models,
+            UnattributedTokens = 100,
+            UnattributedCost = 100m,
+            Bands = new[] { new QuotaCycleAnalysisBand(0, 0m, 5m, Start, Start.AddHours(1),
+                5m, 100, 20m, 400m, "gpt-6-sol", new[] { metered }) }
+        };
+        var row = Assert.Single(QuotaModelTokenCapacityCalculator.Calculate(result, Capacities(), Presets()).Rows);
+        Assert.Equal(400m, row.FullQuotaCost);
+        Assert.True(row.IsShareExtrapolation);
+    }
+
     private static QuotaModelCapacityReport Capacities(params QuotaModelCapacityEstimate[] estimates) =>
         new("Pro 20X", estimates);
 

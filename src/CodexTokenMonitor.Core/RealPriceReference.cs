@@ -18,10 +18,13 @@ internal sealed record RealPriceReference
     public string Confidence { get; init; } = "";
     public string Evidence { get; init; } = "";
     public string Note { get; init; } = "";
+    public bool IsLocalMeasurement { get; init; }
+    public string SnapshotDate { get; init; } = "";
+    public string SourceUrl { get; init; } = "";
 
-    // Keep USD rows as published. For CNY rows use the original fee and quota,
-    // avoiding a round trip through the dataset's rounded USD exchange value.
-    public decimal PricePerMillion => Currency == "CNY"
+    // Keep published USD rows as-is. Local measurements and CNY rows use the
+    // original fee and quota rather than a rounded or currency-converted rate.
+    public decimal PricePerMillion => Currency == "CNY" || IsLocalMeasurement
         ? MonthlyFee * 1_000_000m / MonthlyTokens : UsdPerMillion;
 }
 
@@ -57,6 +60,7 @@ internal sealed record RealPriceEstimate(UsageSource Source, decimal KnownCost, 
 {
     public bool IsComplete => UnpricedTokens == 0 && UnpricedEvents == 0;
     public bool UsesOtherPlans => Lines.Any(line => line.UsedOtherPlan);
+    public bool UsesLocalMeasurements => Lines.Any(line => line.Reference is { IsLocalMeasurement: true });
     public string CurrencySymbol => Source == UsageSource.ZCode ? "¥" : "$";
     public string Format() => CoveredTokens == 0 && (UnpricedTokens > 0 || UnpricedEvents > 0)
         ? "暂无数据"
@@ -70,12 +74,14 @@ internal sealed record RealPriceEstimate(UsageSource Source, decimal KnownCost, 
             ? PreferredPlanId is null
                 ? "ZCode 套餐未匹配：逐模型取网站 GLM Coding Plan 表中的最高参考单价；不是实付金额。"
                 : "按当前所选 ZCode 套餐匹配网站的非高峰、标准负载参考价；不是实付金额，也不是按实际时段结算的账单。"
-            : "按当前 Codex 套餐优先匹配网站参考价；无对应样本时借用同模型最高参考价，并逐项标明。");
+            : "按当前 Codex 套餐优先匹配参考价（网站样本与本地额度实测补充）；无对应样本时借用同模型最高参考价，并逐项标明。");
         text.AppendLine("公式：各模型全口径 Total Token ÷ 1,000,000 × 参考单价，再求和。");
         text.AppendLine("综合单价沿用来源负载假设，不等同于逐项 API 计费；不追加 Fast 倍率，不计额外重置优惠。");
         if (Source == UsageSource.ZCode && PreferredPlanId is not null)
             text.AppendLine("当前套餐只用于参考价选择：历史用量可能早于开通时间；月底实际单位成本应以实付月费 ÷ 当月实际总用量计算。");
         text.AppendLine($"数据快照：{catalog.SnapshotDate} · 固定参考快照，历史区间也按此快照折算。");
+        if (UsesLocalMeasurements)
+            text.AppendLine("本地实测采用单独注明日期的固定补充快照：月费 ÷（估算每周满额 Token × 4）；不是实际账单，未随本期额度变化自动更新。");
         foreach (var line in Lines)
         {
             if (line.Reference is not { } reference)
@@ -85,6 +91,12 @@ internal sealed record RealPriceEstimate(UsageSource Source, decimal KnownCost, 
             }
             text.AppendLine($"{line.Model}：{CurrencySymbol}{reference.PricePerMillion:N6}/MTok × {line.Tokens:N0} token = {CurrencySymbol}{line.Cost:N4}");
             text.AppendLine($"  {reference.Plan}{(line.UsedOtherPlan ? "（跨套餐参考）" : "")} · 置信度 {reference.Confidence} · {(reference.Workload == "measured" ? "实测负载" : "来源标准负载")}");
+            if (!string.IsNullOrWhiteSpace(reference.SnapshotDate))
+            {
+                text.AppendLine($"  {(reference.IsLocalMeasurement ? "本地额度实测" : "网站参考")}补充快照：{reference.SnapshotDate} · {reference.Evidence}");
+                if (!string.IsNullOrWhiteSpace(reference.Note)) text.AppendLine($"  {reference.Note}");
+                if (!string.IsNullOrWhiteSpace(reference.SourceUrl)) text.AppendLine($"  {reference.SourceUrl}");
+            }
         }
         if (!IsComplete)
             text.AppendLine($"* 未覆盖 {UnpricedTokens:N0} token / {UnpricedEvents:N0} 条记录；金额只包含已匹配部分，未知不按免费处理。");

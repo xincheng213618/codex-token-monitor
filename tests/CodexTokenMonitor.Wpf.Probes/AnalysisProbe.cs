@@ -353,6 +353,17 @@ internal static class AnalysisProbe
         Require(capacityText.Contains("600.0M Token") && capacityText.Contains("140.0M Token") &&
                 !capacityText.Contains('×'), "full quota tokens render without a reference model or multiplier");
         var row = (QuotaCycleBandRow)Get<DataGrid>(window, "BandGrid").Items[0];
+        Require(row.FittedEstimate != "-" && row.FittedEstimate != "待校准" && row.FitDifference.Contains('%'),
+            "available model calibration renders both fitted capacity and residual");
+        Require(row.FitDetail.Contains("模型代价占比"), "fit explains its harmonic cost-share basis");
+        var datedBand = band with { Models = models.Select(model => model with
+            { ModelId = model.ModelId + "-2026-09-30" }).ToArray() };
+        var datedRow = QuotaCycleBandRow.From(datedBand, 800m, capacities.Estimates);
+        Require(datedRow.FittedEstimate == row.FittedEstimate && datedRow.FitDifference == row.FitDifference,
+            "dated model ids preserve fitted capacity and residual");
+        var missingRow = QuotaCycleBandRow.From(band, 800m, capacities.Estimates.Take(1).ToArray());
+        Require(missingRow.FittedEstimate == "待校准" && missingRow.FitDetail.Contains("astra"),
+            "an incomplete fit identifies the model whose calibration is missing");
         Require(row.ModelMix.Contains("astra 75%") && row.ModelMix.Contains("6 sol 25%"),
             "model composition renders cost shares rather than quota shares");
         Require(Get<TextBlock>(window, "DominantModelValue").Text == "astra",

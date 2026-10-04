@@ -137,8 +137,11 @@ internal static class QuotaModelTokenCapacityCalculator
         {
             if (calibratedModels.Contains(group.Key) || !catalog.TryGetValue(group.Key, out var preset) ||
                 group.Any(item => !item.IsPriced)) continue;
-            var attributedDrop = group.Sum(item => Math.Max(0m, item.QuotaDropPercent));
-            var fullCost = QuotaMath.EstimateLimit(group.Sum(item => Math.Max(0m, item.EquivalentCost)), attributedDrop);
+            var attributedModels = result.UnattributedTokens > 0
+                ? result.Bands.SelectMany(band => band.Models).Where(item => ModelKey(item.ModelId) == group.Key)
+                : group.AsEnumerable();
+            var attributedDrop = attributedModels.Sum(item => Math.Max(0m, item.QuotaDropPercent));
+            var fullCost = QuotaMath.EstimateLimit(attributedModels.Sum(item => Math.Max(0m, item.EquivalentCost)), attributedDrop);
             if (fullCost is not > 0m) continue;
             // The attributed percentage is an analytical allocation in a mixed
             // period, not an independently measured model quota. Display only.

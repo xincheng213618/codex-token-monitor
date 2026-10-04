@@ -40,7 +40,7 @@ internal static class QuotaModelCapacityEstimator
     {
         var visibleModels = result.Models
             .Where(item => Math.Round(item.QuotaSharePercent, 1, MidpointRounding.AwayFromZero) > 0m)
-            .Select(item => CodexModelCost.NormalizeModelId(item.ModelId))
+            .Select(item => CodexModelCost.ModelKey(item.ModelId))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var samples = new Dictionary<string, List<decimal>>(StringComparer.OrdinalIgnoreCase);
         foreach (var band in result.Bands)
@@ -58,7 +58,7 @@ internal static class QuotaModelCapacityEstimator
                 continue;
             }
 
-            var modelId = CodexModelCost.NormalizeModelId(dominant.ModelId);
+            var modelId = CodexModelCost.ModelKey(dominant.ModelId);
             if (result.Models.Count > 0 && !visibleModels.Contains(modelId))
             {
                 continue;
@@ -88,7 +88,7 @@ internal static class QuotaModelCapacityEstimator
         var approved = approvedEstimates
             .Where(item => item.Source != QuotaModelCapacitySource.CurrentPeriodInferred &&
                            item.AverageFullQuotaCost > 0m)
-            .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var samples = new Dictionary<string, List<InferredCapacitySample>>(StringComparer.OrdinalIgnoreCase);
 
@@ -102,7 +102,7 @@ internal static class QuotaModelCapacityEstimator
 
             var modelCosts = band.Models
                 .Where(item => item.IsPriced && item.EquivalentCost > 0m)
-                .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+                .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.Sum(item => item.EquivalentCost), StringComparer.OrdinalIgnoreCase);
             var unknownModels = modelCosts.Keys.Where(model => !approved.ContainsKey(model)).ToList();
             if (unknownModels.Count != 1)
@@ -167,15 +167,15 @@ internal static class QuotaModelCapacityEstimator
     {
         var baselines = baselineEstimates
             .Where(item => item.AverageFullQuotaCost > 0m)
-            .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var targets = targetModels
-            .Select(CodexModelCost.NormalizeModelId)
+            .Select(CodexModelCost.ModelKey)
             .Where(baselines.ContainsKey)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var visibleModels = result.Models
             .Where(item => Math.Round(item.QuotaSharePercent, 1, MidpointRounding.AwayFromZero) > 0m)
-            .Select(item => CodexModelCost.NormalizeModelId(item.ModelId))
+            .Select(item => CodexModelCost.ModelKey(item.ModelId))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var contributions = targets.ToDictionary(
             model => model,
@@ -196,7 +196,7 @@ internal static class QuotaModelCapacityEstimator
                 .Where(item => item.IsPriced && item.EquivalentCost > 0m)
                 .Select(item => new
                 {
-                    ModelId = CodexModelCost.NormalizeModelId(item.ModelId),
+                    ModelId = CodexModelCost.ModelKey(item.ModelId),
                     item.EquivalentCost
                 })
                 .Where(item => visibleModels.Count == 0 || visibleModels.Contains(item.ModelId))
@@ -267,11 +267,11 @@ internal static class QuotaModelCapacityEstimator
 
         var capacities = estimates
             .Where(item => item.AverageFullQuotaCost > 0m)
-            .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First().AverageFullQuotaCost, StringComparer.OrdinalIgnoreCase);
         var modelCosts = band.Models
             .Where(item => item.IsPriced && item.EquivalentCost > 0m)
-            .GroupBy(item => CodexModelCost.NormalizeModelId(item.ModelId), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.Sum(item => item.EquivalentCost), StringComparer.OrdinalIgnoreCase);
         if (modelCosts.Count == 0 || modelCosts.Keys.Any(model => !capacities.ContainsKey(model)))
         {
@@ -319,13 +319,16 @@ internal static class QuotaModelCapacityCalibrationService
         if (diagnostics.Warnings.Count > 0)
             return new QuotaModelCapacityReport(planName, Array.Empty<QuotaModelCapacityEstimate>());
         cancellationToken.ThrowIfCancellationRequested();
+        var saved = ReadSaved(period, result);
+        if (diagnostics.Warnings.Count > 0)
+            return new QuotaModelCapacityReport(planName, Array.Empty<QuotaModelCapacityEstimate>());
         var pureEstimates = QuotaModelCapacityEstimator.EstimatePureModels(result);
         QuotaModelCapacityCalibrationStore.Upsert(planName, period, pureEstimates);
 
         var currentModels = result.Models
             .Where(item => item.IsPriced && item.EquivalentCost > 0m &&
                            Math.Round(item.QuotaSharePercent, 1, MidpointRounding.AwayFromZero) > 0m)
-            .Select(item => CodexModelCost.NormalizeModelId(item.ModelId))
+            .Select(item => CodexModelCost.ModelKey(item.ModelId))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         var currentApproved = pureEstimates
@@ -384,6 +387,13 @@ internal static class QuotaModelCapacityCalibrationService
         var baselines = approved
             .Concat(inferred.Values)
             .ToList();
+        // A cycle consisting of mixed bands can still identify capacities when
+        // its model proportions vary. It does not require an older pure band.
+        var mixedBaselines = currentModels.Any(model => baselines.All(item => item.ModelId != model))
+            ? RobustQuotaModelCapacityEstimator.EstimateMixedBaselines(result, cancellationToken)
+            : Array.Empty<QuotaModelCapacityEstimate>();
+        baselines.AddRange(mixedBaselines.Where(item =>
+            baselines.All(existing => !string.Equals(existing.ModelId, item.ModelId, StringComparison.OrdinalIgnoreCase))));
         var regressed = RobustQuotaModelCapacityEstimator.RegressCurrentPeriod(
                 result,
                 baselines,
@@ -408,12 +418,31 @@ internal static class QuotaModelCapacityCalibrationService
             .Select(model => regressed.GetValueOrDefault(model) ??
                              currentApproved.GetValueOrDefault(model) ??
                              historicalPriors.GetValueOrDefault(model) ??
-                             inferred.GetValueOrDefault(model))
+                             inferred.GetValueOrDefault(model) ??
+                             saved.Estimates.FirstOrDefault(item => item.ModelId == model))
             .Where(item => item is not null)
             .Cast<QuotaModelCapacityEstimate>()
             .ToList();
         return new QuotaModelCapacityReport(planName, estimates);
     }
+
+    internal static QuotaModelCapacityReport ReadSaved(
+        CodexQuotaCycle period, QuotaCycleAnalysisResult result)
+    {
+        if (!File.Exists(MonitorSettingsDatabase.Path))
+            return new("-", Array.Empty<QuotaModelCapacityEstimate>());
+        var planName = ResolvePlanName(period);
+        var models = result.Models.Where(item => item.QuotaDropPercent > MinimumSavedExposure)
+            .Select(item => CodexModelCost.ModelKey(item.ModelId))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var estimates = QuotaModelCapacityCalibrationStore.LoadExact(
+                planName, period.PeriodStart, QuotaModelCapacitySource.CurrentPeriodBlended)
+            .Where(item => models.Contains(CodexModelCost.ModelKey(item.ModelId)))
+            .ToList();
+        return new(planName, estimates);
+    }
+
+    private const decimal MinimumSavedExposure = QuotaModelCapacityEstimator.MinimumResidualDropPercent;
 
     private static IReadOnlyList<QuotaModelCapacityEstimate> LoadHistoricalEvidence(
         string planName, DateTimeOffset periodStart, IReadOnlyCollection<string> models,
@@ -447,7 +476,7 @@ internal static class QuotaModelCapacityCalibrationService
             // precise historical priors. Validate their observed exposure before
             // reuse; an exhausted-quota tail provides no new quota evidence.
             return analysis.Models.Any(model =>
-                CodexModelCost.NormalizeModelId(model.ModelId) == estimate.ModelId &&
+                CodexModelCost.ModelKey(model.ModelId) == estimate.ModelId &&
                 model.QuotaDropPercent > QuotaModelCapacityEstimator.MinimumResidualDropPercent);
         }).ToList();
     }
