@@ -70,8 +70,8 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        var width = double.IsInfinity(availableSize.Width) ? 760 : Math.Max(420, availableSize.Width);
-        var height = double.IsInfinity(availableSize.Height) ? 360 : Math.Max(250, availableSize.Height);
+        var width = double.IsInfinity(availableSize.Width) ? 760 : Math.Max(0, availableSize.Width);
+        var height = double.IsInfinity(availableSize.Height) ? 360 : Math.Max(0, availableSize.Height);
         return new Size(width, height);
     }
 
@@ -89,10 +89,11 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
             return;
         }
 
+        var tailWidth = analysis.PostZeroUsage is null ? 0d : 146d;
         var plotRect = new Rect(
             PlotLeft,
             PlotTop,
-            RenderSize.Width - PlotLeft - PlotRight,
+            RenderSize.Width - PlotLeft - PlotRight - tailWidth,
             RenderSize.Height - PlotTop - PlotBottom);
         var gridPen = new Pen(new SolidColorBrush(Color.FromRgb(237, 241, 245)), 1);
         var axisPen = new Pen(new SolidColorBrush(Color.FromRgb(224, 232, 239)), 1);
@@ -130,7 +131,7 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
                 DashStyle = DashStyles.Dash
             };
             drawingContext.DrawLine(averagePen, new Point(plotRect.Left, averageY), new Point(plotRect.Right, averageY));
-            DrawText(drawingContext, $"全周期均值 {FormatMoney(average)}", 11,
+            DrawText(drawingContext, $"100%→0% 均值 {FormatMoney(average)}", 11,
                 new SolidColorBrush(Color.FromRgb(20, 125, 112)),
                 new Point(plotRect.Right - 4, averageY - 5), TextAlignment.Right);
         }
@@ -169,6 +170,26 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
         DrawText(drawingContext, "局部 100% 折算 ($)", 12,
             new SolidColorBrush(Color.FromRgb(23, 43, 58)),
             new Point(8, 18));
+        if (analysis.PostZeroUsage is { } tail)
+        {
+            var band = tail.ToDisplayBand(analysis.BandSizePercent);
+            var area = new Rect(plotRect.Right + 18, plotRect.Top - 28, tailWidth - 18, plotRect.Height + 28);
+            var accent = new SolidColorBrush(Color.FromRgb(13, 148, 136));
+            drawingContext.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(235, 247, 245)),
+                new Pen(accent, band.BandIndex == selectedBandIndex ? 2 : 1), area, 6, 6);
+            DrawText(drawingContext, $"第 {band.BandIndex + 1} 级", 12, accent, new Point(area.Left + 10, area.Top + 10));
+            DrawText(drawingContext, "0% → 结束", 13, accent, new Point(area.Left + 10, area.Top + 36));
+            DrawText(drawingContext, analysis.Period.IsCurrent ? "记录中" : "截至周期结束", 11, labelBrush,
+                new Point(area.Left + 10, area.Top + 62));
+            DrawText(drawingContext, $"{tail.Tokens / 1_000_000d:N3}M Token", 12, accent,
+                new Point(area.Left + 10, area.Top + 86));
+            DrawText(drawingContext, $"累计 {FormatMoney(tail.EquivalentCost)}", 12, accent,
+                new Point(area.Left + 10, area.Top + 112));
+            if (area.Height >= 170)
+                DrawText(drawingContext, "点击查看明细", 10, labelBrush,
+                    new Point(area.Left + 10, area.Bottom - 24));
+            hitAreas.Add((area, band));
+        }
     }
 
     private static void DrawModelRail(
@@ -222,6 +243,11 @@ internal sealed class QuotaCycleAnalysisChart : FrameworkElement
 
     private static string BuildToolTip(QuotaCycleAnalysisBand band)
     {
+        if (band.QuotaDropPercent == 0m)
+            return $"第 {band.BandIndex + 1} 级 · 0% → 结束\n" +
+                $"{band.StartLocal:MM-dd HH:mm} → 最后用量记录 {band.EndLocal:MM-dd HH:mm}\n" +
+                $"{band.Tokens / 1_000_000d:N3}M Token · 累计 {FormatMoney(band.EquivalentCost)}\n" +
+                "显示 0% 后继续累计；实际停止时间未知，不计算百分比折算。";
         var mix = string.Join(" / ", band.Models.OrderByDescending(item => item.EquivalentCost).Select(item =>
             $"{QuotaCycleModelPalette.ShortName(item.ModelId)} " +
             (item.IsPriced ? $"{item.CostSharePercent:N0}%" : "未计价")));

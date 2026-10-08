@@ -308,7 +308,7 @@ internal sealed class QuotaConsumptionTimelineChart : FrameworkElement
         var label = string.IsNullOrWhiteSpace(forecast.Source.Label) ? "固定速率" : forecast.Source.Label.Trim().Replace('\r', ' ').Replace('\n', ' ');
         if (label.Length > 22) label = label[..20] + "…";
         var outcome = forecast.ExhaustionLocal is { } exhausted
-            ? $"预计 {exhausted.ToOffset(CodexUsageReader.BeijingOffset):MM-dd HH:mm} 耗尽"
+            ? $"预计 {exhausted.ToOffset(CodexUsageReader.BeijingOffset):MM-dd HH:mm} 到 0%"
             : $"目标时预计剩余 {forecast.RemainingAt(forecast.Source.TargetResetLocal):N1}%";
         DrawBoundedLabel(drawingContext, $"预测 · {label} · {outcome}", ForecastBrush,
             new Point(forecastLeft, forecastTop), forecastWidth);
@@ -511,7 +511,7 @@ internal sealed class QuotaConsumptionTimelineChart : FrameworkElement
         {
             var label = string.IsNullOrWhiteSpace(forecast.Source.Label) ? "固定速率" : forecast.Source.Label;
             var outcome = forecast.ExhaustionLocal is { } exhausted
-                ? $"预计耗尽 {exhausted.ToOffset(CodexUsageReader.BeijingOffset):MM-dd HH:mm}"
+                ? $"预计到 0% {exhausted.ToOffset(CodexUsageReader.BeijingOffset):MM-dd HH:mm}"
                 : $"目标时预计剩余 {forecast.RemainingAt(forecast.Source.TargetResetLocal):N2}%";
             return $"{point.Timestamp:yyyy-MM-dd HH:mm:ss} · 北京时间\n" +
                    $"预测剩余 {Math.Clamp(100m - point.UsedPercent, 0m, 100m):N2}%\n\n" +
@@ -527,6 +527,10 @@ internal sealed class QuotaConsumptionTimelineChart : FrameworkElement
         if (band is not null)
         {
             var duration = band.EndLocal - band.StartLocal;
+            if (band.QuotaDropPercent == 0m)
+                return text + $"\n\n第 {band.BandIndex + 1} 级 · 0% → 结束" +
+                    $"\n经过 {FormatDuration(duration)}（含空闲） · 累计 {band.Tokens / 1_000_000d:N3}M Token" +
+                    "\n后续用量继续记录，实际停止时间未知。";
             var rate = duration > TimeSpan.Zero
                 ? $"{band.QuotaDropPercent / (decimal)duration.TotalHours:N2} 个百分点/小时"
                 : "暂无速率";

@@ -62,11 +62,15 @@
           <Grid Height="{Binding ViewportHeight, ElementName=AnalysisScrollViewer}" MinHeight="780">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="3*" MinHeight="400" />
+                <RowDefinition Height="3*" MinHeight="340" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="2*" MinHeight="140" />
             </Grid.RowDefinitions>
         <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="*" />
@@ -91,7 +95,7 @@
             </Border>
             <Border Grid.Column="2" Style="{StaticResource Card}" Margin="6,0">
                 <StackPanel>
-                    <TextBlock Style="{StaticResource MetricLabel}" Text="全周期 100% 折算" />
+                    <TextBlock Style="{StaticResource MetricLabel}" Text="100% → 0% 折算" />
                     <TextBlock x:Name="FullEstimateValue" Style="{StaticResource MetricValue}" Text="-" />
                     <TextBlock x:Name="FullEstimateNote" Style="{StaticResource MetricNote}" Text="按全部可归因区间加权" />
                 </StackPanel>
@@ -108,6 +112,15 @@
                     <TextBlock Style="{StaticResource MetricLabel}" Text="主导模型" />
                     <TextBlock x:Name="DominantModelValue" Style="{StaticResource MetricValue}" Text="-" FontFamily="Microsoft YaHei UI" FontSize="21" />
                     <TextBlock x:Name="DominantModelNote" Style="{StaticResource MetricNote}" Text="按归因额度跌幅" />
+                </StackPanel>
+            </Border>
+            <Border x:Name="PostZeroUsagePanel" Grid.Row="1" Grid.ColumnSpan="5" Visibility="Collapsed"
+                    Background="{StaticResource AccentSoftBrush}" CornerRadius="7" Padding="12,8" Margin="0,10,0,0">
+                <StackPanel>
+                    <TextBlock x:Name="PostZeroUsageValue" Foreground="{StaticResource AccentBrush}"
+                               FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    <TextBlock x:Name="PostZeroUsageNote" Style="{StaticResource SectionDescription}"
+                               Margin="0,3,0,0" TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
         </Grid>
@@ -196,7 +209,7 @@
             </Grid.RowDefinitions>
             <DockPanel Grid.Row="0">
                 <ComboBox x:Name="BandSizeSelector" DockPanel.Dock="Right" Width="94" Height="30"
-                          Margin="12,0,0,0" VerticalAlignment="Center" SelectedIndex="2"
+                          Margin="12,0,0,0" VerticalAlignment="Center" SelectedIndex="0"
                           SelectionChanged="BandSizeSelector_SelectionChanged"
                           ToolTip="切换额度分段宽度；细分不会增加额度快照，模型满额校准保持 5% 口径">
                     <ComboBoxItem Content="1% 分段" />
@@ -221,7 +234,7 @@
                 <StackPanel>
                     <TextBlock Foreground="{StaticResource AccentBrush}"
                                FontSize="11" FontWeight="SemiBold"
-                               Text="100% 额度预计可用 Token · 统一按本周期 Token 构成，普通短上下文" />
+                               Text="100% → 0% 预计 Token · 统一按本周期 Token 构成，普通短上下文" />
                     <TextBlock x:Name="ModelTokenCapacityValue" Foreground="{StaticResource TextBrush}"
                                FontSize="11" Text="等待模型校准" TextWrapping="Wrap" Margin="0,3,0,0" />
                 </StackPanel>
@@ -232,6 +245,7 @@
                   AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" CanUserDeleteRows="False"
                   HeadersVisibility="Column" SelectionMode="Single">
             <DataGrid.Columns>
+                <DataGridTextColumn Header="级" Binding="{Binding Level}" Width="52" />
                 <DataGridTextColumn Header="剩余额度" Binding="{Binding QuotaRange}" Width="116" />
                 <DataGridTextColumn x:Name="TimeRangeColumn" Header="发生时间" Binding="{Binding TimeRange}" Width="220" />
                 <DataGridTextColumn x:Name="ConsumptionTimeColumn" Header="消耗时段（北京时间）" Binding="{Binding ConsumptionTimeRange}" SortMemberPath="ConsumptionStart" Width="260" Visibility="Collapsed" />
@@ -259,7 +273,11 @@
                 <TextBlock Style="{StaticResource SectionDescription}"
                        Text="说明：模型与 Token 来自会话日志；额度位置会在服务端快照之间插值。分段归因适合比较模型代价和波动，不等同于官方逐请求计费。" />
             </StackPanel>
-            <Button Grid.Column="1" Style="{StaticResource CloseButton}" Content="关闭" Click="CloseButton_Click" VerticalAlignment="Bottom" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
+                <Button x:Name="RefreshAnalysisButton" Style="{StaticResource CloseButton}" Content="刷新数据"
+                        Margin="0,0,8,0" Click="RefreshAnalysisButton_Click" />
+                <Button Style="{StaticResource CloseButton}" Content="关闭" Click="CloseButton_Click" />
+            </StackPanel>
           </Grid>
         </Border>
     </Grid>

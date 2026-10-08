@@ -33,7 +33,13 @@ public partial class QuotaConsumptionTimelineView : UserControl
         if (ReferenceEquals(sourceAnalysis, result)) return;
 
         var previousRange = sourceAnalysis is null ? 0 : RangeBox.SelectedIndex;
-        var projected = result with { Bands = QuotaConsumptionTimelineCalculator.BuildBands(result) };
+        var projected = result with
+        {
+            Bands = QuotaConsumptionTimelineCalculator.BuildBands(result)
+                .Concat(result.PostZeroUsage is { } tail
+                    ? new[] { tail.ToDisplayBand(result.BandSizePercent) }
+                    : Array.Empty<QuotaCycleAnalysisBand>()).ToArray()
+        };
         sourceAnalysis = result;
         analysis = projected;
         speedRows = projected.Bands.Select(QuotaConsumptionSpeedRow.From).ToArray();
@@ -96,6 +102,8 @@ public partial class QuotaConsumptionTimelineView : UserControl
         SummaryText.Text = points.Count > 0
             ? $"最后剩余 {100m - points[^1].UsedPercent:N1}% · {points[^1].TimestampLocal:MM-dd HH:mm:ss}"
             : "等待可对齐的额度记录";
+        if (analysis.PostZeroUsage is { } tail)
+            SummaryText.Text += $" · 0% 后仍记录 {tail.Tokens / 1_000_000d:N3}M Token";
 
         var bandSize = analysis.BandSizePercent;
         var fastest = speedRows

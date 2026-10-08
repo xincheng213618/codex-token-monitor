@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Brush = System.Windows.Media.Brush;
 using MessageBox = System.Windows.MessageBox;
 
@@ -14,12 +15,13 @@ public partial class QuotaCycleAnalysisWindow : Window
     private readonly QuotaCycleAnalysisChart chart = new();
     private readonly AnalysisQuerySession querySession;
     private readonly QuotaCycleAnalysisQueryService queryService;
+    private readonly DispatcherTimer refreshTimer = new() { Interval = TimeSpan.FromMinutes(1) };
     private IReadOnlyList<QuotaCycleBandRow> bandRows = Array.Empty<QuotaCycleBandRow>();
     private bool analysisLoading;
     private bool hasSuccessfulResult;
     private bool bandSizeChangePending;
-    private decimal selectedBandSizePercent = QuotaCycleAnalysisCalculator.DefaultBandSizePercent;
-    private decimal displayedBandSizePercent = QuotaCycleAnalysisCalculator.DefaultBandSizePercent;
+    private decimal selectedBandSizePercent = 1m;
+    private decimal displayedBandSizePercent = 1m;
 
     internal QuotaCycleAnalysisWindow(
         CodexQuotaCycle period,
@@ -38,6 +40,10 @@ public partial class QuotaCycleAnalysisWindow : Window
             ? new QuotaCycleAnalysisQueryService()
             : new QuotaCycleAnalysisQueryService(analysisSource);
         InitializeComponent();
+        RefreshAnalysisButton.ToolTip = period.IsCurrent
+            ? "当前周期每分钟自动更新，也可立即刷新；显示 0% 后仍继续统计。"
+            : "重新读取此周期的用量记录";
+        refreshTimer.Tick += RefreshTimer_Tick;
         ForecastPanel.PriceGroup = priceGroup;
         ChartHost.Content = chart;
         chart.BandSelected += Chart_BandSelected;
@@ -49,14 +55,31 @@ public partial class QuotaCycleAnalysisWindow : Window
         CycleTitleText.Text = $"{cycleTitle ?? "7d 周期"} · {period.PeriodStart:MM-dd HH:mm} → {period.PeriodEnd:MM-dd HH:mm}";
         CycleMetaText.Text = $"重置 {period.ResetAt:yyyy-MM-dd HH:mm} · {period.SnapshotCount:N0} 个额度快照";
 
-        Loaded += async (_, _) => await LoadAnalysisAsync();
-        Closed += (_, _) => querySession.Dispose();
+        Loaded += async (_, _) =>
+        {
+            if (period.IsCurrent) refreshTimer.Start();
+            await LoadAnalysisAsync();
+        };
+        Closed += (_, _) =>
+        {
+            refreshTimer.Stop();
+            querySession.Dispose();
+        };
     }
 
-    private async Task LoadAnalysisAsync()
+    private Task LoadAnalysisAsync() => LoadAnalysisCoreAsync(showErrors: true);
+
+    private async void RefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        if (IsVisible && WindowState != WindowState.Minimized)
+            await LoadAnalysisCoreAsync(showErrors: false);
+    }
+
+    private async Task LoadAnalysisCoreAsync(bool showErrors)
     {
         if (analysisLoading || querySession.IsStopping) return;
         analysisLoading = true;
+        RefreshAnalysisButton.IsEnabled = false;
         ForecastPanel.SetLoading(true);
         try
         {
@@ -113,6 +136,8 @@ public partial class QuotaCycleAnalysisWindow : Window
             hasSuccessfulResult = true;
             StatusText.ToolTip = null;
             if (!string.IsNullOrWhiteSpace(loadResult.RefreshReason)) StatusText.Text = loadResult.RefreshReason;
+            StatusText.Text += $" · 已更新 {BeijingClock.Now:HH:mm:ss}" +
+                               (refreshTimer.IsEnabled ? " · 每分钟自动刷新" : "");
         }
         catch (OperationCanceledException)
         {
@@ -122,7 +147,7 @@ public partial class QuotaCycleAnalysisWindow : Window
         {
             if (querySession.IsStopping || !IsLoaded) return;
             StatusText.Text = hasSuccessfulResult ? "周期分析失败，保留上次成功结果" : "周期分析暂不可用";
-            MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            if (showErrors) MessageBox.Show(this, ex.Message, Title, MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -130,6 +155,7 @@ public partial class QuotaCycleAnalysisWindow : Window
             if (!querySession.IsStopping && IsLoaded)
             {
                 ForecastPanel.SetLoading(false);
+                RefreshAnalysisButton.IsEnabled = true;
                 if (bandSizeChangePending)
                 {
                     bandSizeChangePending = false;
@@ -165,6 +191,8 @@ public partial class QuotaCycleAnalysisWindow : Window
         QuotaModelCapacityReport capacities)
     {
         displayedBandSizePercent = result.BandSizePercent;
+        if (!result.Period.IsCurrent) refreshTimer.Stop();
+        ApplyPostZeroUsage(result);
         VolatilityCaptionText.Text = $"{displayedBandSizePercent:N0}% 分段波动";
         ApplyChartView();
         var selectedBand = (BandGrid.SelectedItem as QuotaCycleBandRow)?.Band;
@@ -188,6 +216,16 @@ public partial class QuotaCycleAnalysisWindow : Window
             InsightText.Text = "暂无可归因的分段";
             StatusText.Text = result.EmptyReason;
             QuotaDropNote.Text = result.EmptyReason;
+            EquivalentCostNote.ToolTip = null;
+            if (result.PostZeroUsage is not null)
+            {
+                EquivalentCostValue.Text = FormatMoney(result.EquivalentCost);
+                EquivalentCostNote.Text = $"{result.Tokens / 1_000_000d:N3}M tokens";
+                bandRows = new[] { QuotaCycleBandRow.FromPostZero(result.PostZeroUsage, result.BandSizePercent, result.Period.IsCurrent) };
+                BandGrid.ItemsSource = bandRows;
+                BandGrid.SelectedItem = bandRows[0];
+                StatusText.Text += " · 0% 后用量继续记录";
+            }
             return;
         }
 
@@ -196,13 +234,13 @@ public partial class QuotaCycleAnalysisWindow : Window
         EquivalentCostValue.Text = FormatMoney(result.EquivalentCost);
         EquivalentCostNote.Text = $"{result.Tokens / 1_000_000d:N3}M tokens";
         EquivalentCostNote.ToolTip = result.UnattributedTokens > 0
-            ? $"包含额度已满后的 {result.UnattributedTokens / 1_000_000d:N3}M Token / {FormatMoney(result.UnattributedCost)}；这部分保留在总用量中，不参与额度分段和拟合。"
+            ? $"包含显示 0% 后的 {result.UnattributedTokens / 1_000_000d:N3}M Token / {FormatMoney(result.UnattributedCost)}；总用量继续累计，这部分没有可观测的百分比变化，不参与额度分段和拟合。"
             : null;
         FullEstimateValue.Text = FormatMoney(result.EstimatedFullQuotaCost);
         FullEstimateNote.Text = result.Period.IsCurrent
             ? "含当前未跳点用量 · 与顶部 7d 同步"
             : "全部分段按额度跌幅加权";
-        if (result.UnattributedTokens > 0) FullEstimateNote.Text = "满额后用量已排除 · 总用量仍保留";
+        if (result.PostZeroUsage is not null) FullEstimateNote.Text = "按可见额度跌幅 · 0% 后单独统计";
         VolatilityValue.Text = $"{result.VolatilityPercent:N0}%";
         VolatilityNote.Text = $"{VolatilityLabel(result.VolatilityPercent)} · {FormatMoney(result.MinimumBandEstimate)}–{FormatMoney(result.MaximumBandEstimate)}";
         DominantModelValue.Text = QuotaCycleModelPalette.ShortName(result.CostDominantModel);
@@ -233,16 +271,37 @@ public partial class QuotaCycleAnalysisWindow : Window
         bandRows = result.Bands.Select(item => QuotaCycleBandRow.From(item, average, capacities.Estimates) with
         {
             Consumption = consumptionRows.GetValueOrDefault(item.BandIndex)
-        }).ToList();
+        }).Concat(result.PostZeroUsage is { } tail
+            ? new[] { QuotaCycleBandRow.FromPostZero(tail, result.BandSizePercent, result.Period.IsCurrent) }
+            : Array.Empty<QuotaCycleBandRow>()).ToList();
         BandGrid.ItemsSource = bandRows;
         if (bandRows.Count > 0)
         {
-            BandGrid.SelectedItem = bandRows.FirstOrDefault(item => selectedUsedMidpoint is { } used &&
+            BandGrid.SelectedItem = bandRows.FirstOrDefault(item => item.IsPostZero && selectedBand?.QuotaDropPercent == 0m) ??
+                bandRows.FirstOrDefault(item => selectedUsedMidpoint is { } used &&
                 item.Band.UsedFromPercent <= used && used < item.Band.UsedToPercent) ?? bandRows[0];
         }
 
         InsightText.Text = BuildInsight(result);
-        StatusText.Text = $"已形成 {result.Bands.Count:N0} 个 {displayedBandSizePercent:N0}% 额度分段";
+        StatusText.Text = $"已形成 {result.Bands.Count:N0} 个 {displayedBandSizePercent:N0}% 额度分段" +
+                          (result.PostZeroUsage is not null ? $" + 0% 后阶段，共 {bandRows.Count:N0} 级" : "");
+    }
+
+    private void ApplyPostZeroUsage(QuotaCycleAnalysisResult result)
+    {
+        var tail = result.PostZeroUsage;
+        PostZeroUsagePanel.Visibility = tail is null ? Visibility.Collapsed : Visibility.Visible;
+        if (tail is null) return;
+        PostZeroUsageValue.Text = $"第 {(int)Math.Ceiling(100m / result.BandSizePercent) + 1} 级 · 0% → 结束" +
+            (result.Period.IsCurrent ? "（记录中）" : "（截至周期结束）") +
+            $" · 继续使用 {tail.Tokens / 1_000_000d:N3}M Token · {FormatMoney(tail.EquivalentCost)}";
+        var models = string.Join(" / ", tail.Models.Select(item =>
+            $"{QuotaCycleModelPalette.ShortName(item.ModelId)} {item.Tokens / 1_000_000d:N3}M" +
+            (item.IsPriced ? "" : "（未计价）")));
+        PostZeroUsageNote.Text = $"{tail.StartLocal:MM-dd HH:mm} 显示 0% → 最后用量记录 {tail.EndLocal:MM-dd HH:mm}" +
+            $" · 经过 {QuotaConsumptionSpeedRow.FormatDuration(tail.EndLocal - tail.StartLocal)}（含空闲）" +
+            (models.Length > 0 ? $" · {models}" : " · 暂未记录到后续用量") +
+            "\n显示 0% 不代表实际已无法继续使用；后续用量计入总量，实际还可用多久暂不可估。";
     }
 
     private void ApplyModelCapacityEstimate(
@@ -380,7 +439,7 @@ public partial class QuotaCycleAnalysisWindow : Window
             : "额度位置 × 局部换算代价 · 上方色带为主导模型 · 点击联动下方明细";
         BandDescriptionText.Text = showTimeline
             ? $"同一组 {displayedBandSizePercent:N0}% 分段 · 消耗时段按首次跨刻度对齐（含插值）· 段平均速度包含空闲"
-            : $"每行按 {displayedBandSizePercent:N0}% 额度带聚合；拟合按模型代价联合回归，偏离为相对拟合差值；满额后的用量不参与额度归因";
+            : $"每行按 {displayedBandSizePercent:N0}% 额度带聚合；拟合按模型代价联合回归，偏离为相对拟合差值；0% 后用量单独统计";
     }
 
     private static string BuildInsight(QuotaCycleAnalysisResult result)
@@ -414,6 +473,7 @@ public partial class QuotaCycleAnalysisWindow : Window
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+    private async void RefreshAnalysisButton_Click(object sender, RoutedEventArgs e) => await LoadAnalysisAsync();
 }
 
 internal sealed record QuotaCycleModelRow(
@@ -437,6 +497,8 @@ internal sealed record QuotaCycleBandRow(
     string Difference,
     string Reliability)
 {
+    public int Level => Band.BandIndex + 1;
+    public bool IsPostZero { get; init; }
     public QuotaConsumptionSpeedRow? Consumption { get; init; }
     public string ConsumptionTimeRange => Consumption?.TimeRange ?? "未对齐";
     public string ConsumptionDuration => Consumption?.Duration ?? "—";
@@ -445,6 +507,21 @@ internal sealed record QuotaCycleBandRow(
     public DateTimeOffset? ConsumptionStart => Consumption?.Band.StartLocal;
     public TimeSpan? ConsumptionElapsed => Consumption?.Elapsed;
     public string FitDetail { get; init; } = "";
+
+    public static QuotaCycleBandRow FromPostZero(QuotaCyclePostZeroUsage tail, decimal bandSizePercent, bool isCurrent)
+    {
+        var band = tail.ToDisplayBand(bandSizePercent);
+        var row = From(band, 0m, Array.Empty<QuotaModelCapacityEstimate>());
+        return row with
+        {
+            IsPostZero = true,
+            QuotaRange = "0% → 结束",
+            FullEstimate = "—", FittedEstimate = "—", FitDifference = "—", Difference = "—",
+            Reliability = isCurrent ? "记录中" : "周期结束",
+            FitDetail = "这一阶段持续记录显示 0% 后的实际用量；截至最后用量记录，不代表已经无法使用。没有百分比变化，不计算 100% 折算或拟合。",
+            Consumption = QuotaConsumptionSpeedRow.From(band) with { Rate = "—", RateValue = null }
+        };
+    }
 
     public static QuotaCycleBandRow From(
         QuotaCycleAnalysisBand band,

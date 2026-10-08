@@ -83,6 +83,7 @@ internal static class AnalysisProbe
         await CheckCachedWindowsAndResolvedPeriodsAsync(runtime, quota, periods);
         await CheckWindowCancellationAsync(runtime, periods[1]);
         await CheckCycleFaultAndRecoveryAsync(runtime, periods[1], periods[0]);
+        await CheckPostZeroStageAndRefreshAsync(runtime);
         await CheckParentShutdownAsync(periods[1]);
 
         var stopped = await runtime.StopAsync(Budget);
@@ -407,6 +408,86 @@ internal static class AnalysisProbe
             "dated model ids share the reference identity without a duplicate insufficient-sample label");
     }
 
+    private static async Task CheckPostZeroStageAndRefreshAsync(MonitorRuntime runtime)
+    {
+        var start = BeijingClock.Now.AddHours(-5);
+        var period = new CodexQuotaCycle(start, start.AddHours(3), start.AddDays(7), 3, 100m, true);
+        TokenUsageBucket Usage(long tokens)
+        {
+            var bucket = new TokenUsageBucket { StartLocal = start };
+            bucket.Add(new TokenUsageEvent(start, tokens, 0, 0, 0, tokens,
+                ModelId: "gpt-6.1-sol", ServiceTier: "default"));
+            return bucket;
+        }
+        var samples = new[]
+        {
+            new QuotaCycleAnalysisSample(start, 0m, Usage(0)),
+            new QuotaCycleAnalysisSample(start.AddHours(1), 100m, Usage(100_000_000)),
+            new QuotaCycleAnalysisSample(start.AddHours(3), 100m, Usage(100_000_000))
+        };
+        var source = new PostZeroSource(QuotaCycleAnalysisCalculator.BuildFromSamples(period, samples, 1m));
+        var window = CreateWindow(typeof(QuotaCycleAnalysisWindow), period, null, null, runtime, source, null, null);
+        await ShowAsync(window);
+        await WaitUntilAsync(() => !Get<bool>(window, "analysisLoading"), "post-zero cycle completes");
+        var grid = Get<DataGrid>(window, "BandGrid");
+        Require(Get<ComboBox>(window, "BandSizeSelector").SelectedIndex == 0, "cycle defaults to one-percent stages");
+        Require(grid.Items.Count == 101 && source.Analysis.Bands.Count == 100, "101 displayed stages preserve 100 calibration bands");
+        var tailRow = (QuotaCycleBandRow)grid.Items[100];
+        Require(tailRow.Level == 101 && tailRow.IsPostZero && tailRow.QuotaRange == "0% → 结束" &&
+                tailRow.Reliability == "记录中" && tailRow.FittedEstimate == "—" && tailRow.ConsumptionRate == "—",
+            "101st stage tracks usage without inventing a percentage fit or rate");
+        Require(Get<Border>(window, "PostZeroUsagePanel").Visibility == Visibility.Visible &&
+                Get<TextBlock>(window, "PostZeroUsageValue").Text.Contains("100.000M"), "post-zero stage is visible without a tooltip");
+        var refreshTimer = Get<DispatcherTimer>(window, "refreshTimer");
+        Require(refreshTimer.IsEnabled, "current cycle keeps refreshing at zero");
+        grid.SelectedItem = tailRow;
+        grid.ScrollIntoView(tailRow);
+        await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+        Get<ScrollViewer>(window, "AnalysisScrollViewer").ScrollToEnd();
+        await RenderAsync(window, "cycle-post-zero-101-stages.png");
+
+        Get<TabControl>(window, "ChartViewTabs").SelectedIndex = 1;
+        var forecast = Get<QuotaForecastPanel>(window, "ForecastPanel");
+        Require(Get<TextBlock>(forecast, "ForecastValueText").Text == "实际停止时间未知" &&
+                Get<TextBlock>(forecast, "ForecastStatusText").Text.Contains("继续累计"),
+            "zero readout does not forecast actual service exhaustion");
+        var timeline = Get<QuotaConsumptionTimelineView>(window, "ConsumptionTimelineView");
+        Require(Get<QuotaCycleAnalysisResult>(timeline, "analysis").Bands.Count == 101 &&
+                Get<TextBlock>(timeline, "SummaryText").Text.Contains("0% 后仍记录"), "timeline includes the continuing 101st stage");
+        await RenderAsync(window, "cycle-post-zero-timeline.png");
+
+        var previousCalls = source.AnalysisCalls;
+        source.Analysis = QuotaCycleAnalysisCalculator.BuildFromSamples(period,
+            samples.Append(new QuotaCycleAnalysisSample(start.AddHours(4), 100m, Usage(50_000_000))).ToArray(), 1m);
+        Invoke(window, "RefreshTimer_Tick", window, EventArgs.Empty);
+        await WaitUntilAsync(() => source.AnalysisCalls > previousCalls && !Get<bool>(window, "analysisLoading"),
+            "automatic refresh publishes later post-zero usage");
+        tailRow = (QuotaCycleBandRow)grid.Items[100];
+        Require(grid.Items.Count == 101 && tailRow.Band.Tokens == 150_000_000 &&
+                tailRow.Band.EndLocal == start.AddHours(4) && ((QuotaCycleBandRow)grid.SelectedItem).IsPostZero,
+            "automatic refresh updates the 101st stage and preserves selection");
+        Require(Get<TextBlock>(window, "EquivalentCostNote").Text.Contains("250.000M") &&
+                Get<TextBlock>(window, "PostZeroUsageValue").Text.Contains("150.000M"), "all summaries retain new post-zero tokens");
+        Results.Add(new { check = "post-zero-101-stages-and-refresh", displayedStages = grid.Items.Count,
+            calibrationBands = source.Analysis.Bands.Count, postZeroTokens = tailRow.Band.Tokens,
+            updatedAfterZero = true, exhaustionNotAssumed = true });
+        await CloseAsync(window);
+        Require(!refreshTimer.IsEnabled, "closing the cycle stops automatic refresh");
+    }
+
+    private sealed class PostZeroSource(QuotaCycleAnalysisResult analysis) : IQuotaCycleAnalysisSource
+    {
+        public QuotaCycleAnalysisResult Analysis { get; set; } = analysis;
+        public int AnalysisCalls { get; private set; }
+        public bool ResolvesCurrentPeriod => false;
+        public IReadOnlyList<CodexQuotaSnapshot> ReadSnapshots(DateTimeOffset start, DateTimeOffset end, CancellationToken token) =>
+            Array.Empty<CodexQuotaSnapshot>();
+        public QuotaCycleAnalysisResult BuildAnalysis(CodexQuotaCycle period, CodexQuotaWindowEstimate? currentWeek,
+            decimal bandSizePercent, CancellationToken token) { AnalysisCalls++; return Analysis; }
+        public QuotaModelCapacityReport BuildCapacities(CodexQuotaCycle period, QuotaCycleAnalysisResult analysis,
+            CodexQuotaCycle? previousPeriod, CancellationToken token) => new("test", Array.Empty<QuotaModelCapacityEstimate>());
+    }
+
     private static async Task CheckParentShutdownAsync(CodexQuotaCycle period)
     {
         using var runtime = new MonitorRuntime();
@@ -416,7 +497,8 @@ internal static class AnalysisProbe
         try
         {
             await ShowAsync(window);
-            Require(LocalOperationCount(session) > 0, "child query admitted before parent shutdown");
+            await WaitUntilAsync(() => Get<bool>(window, "hasSuccessfulResult") && LocalOperationCount(session) > 0,
+                "child query admitted after cache preview and before parent shutdown");
             var chart = GetObject(window, "chart")!;
             var resultAtStop = GetObject(chart, "result");
             var stopped = await runtime.StopAsync(Budget);

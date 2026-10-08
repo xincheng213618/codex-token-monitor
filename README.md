@@ -1,12 +1,13 @@
 # Codex Token Monitor
 
-一个 Windows 桌面额度监控器，用来从本地日志统计 Codex、Claude Code、ZCode、WorkBuddy、DSH（DeepSeek Harness）、Kimi 的 token 用量、缓存命中、估算 API 等价费用，以及 Codex 5h / 7d 额度百分比变化。
+一个 Windows 桌面额度监控器，用来从本地日志统计 Codex、Claude Code、ZCode、WorkBuddy、DSH（DeepSeek Harness）、Kimi、Qoder 的 token 用量、缓存命中、估算 API 等价费用，以及 Codex 5h / 7d 额度百分比变化。
 
 > 数据只读取本机日志和本机缓存，不会上传到远端。价格、套餐和额度分析都只是本地辅助分析，最终以官方账单和产品页面为准。
 
 ## 功能
 
-- 统计 Codex / Claude Code / ZCode / WorkBuddy / DSH / Kimi 六种来源的 token 使用量。
+- 统计 Codex / Claude Code / ZCode / WorkBuddy / DSH / Kimi / Qoder 七种来源的 token 使用量。
+  - Qoder 读取本地会话分段日志中的调用结算记录，统计输入、缓存读取、缓存创建与输出。日志记录为 `auto` 或零 Token 时保留原始信息；已完成调用仍计入事件数，价格设置独立保存。
   - DSH（DeepSeek Harness）直接读取 `~/.dsh/sessions` 下 zstd 压缩的会话日志，统计每次模型调用的 input / 缓存读取 / 缓存创建 / output / reasoning；DSH 页另有账号余额面板，复用 dsh 自己的登录凭据直读 DeepSeek 平台的账号钱包（充值余额、赠金余额、累计消费），凭据只在内存中使用。
   - Kimi 读取桌面端及本地 Kimi Code 的 `wire.jsonl` 中 `usage.record`（已验证协议 1.4），分别统计普通输入、缓存读取、缓存创建、输出及真实模型名；失败任务已产生的用量仍计入。暂不提供账户剩余额度百分比，`k2d8-preview` 的 API 等价价格默认为待填写，不套用其他模型单价。详见 [Kimi 数据口径](docs/kimi-usage.md)。
 - 支持按天、近 7 天窗口、按月、按 Codex 额度周期（7d 周期）查看。
@@ -24,6 +25,7 @@
   - 优先通过 Codex 本地 app-server（`codex app-server --stdio`）实时读取 5h / 7d 剩余额度百分比，自动发现可运行的 Codex CLI（Desktop 插件副本、npm 安装、PATH 上的 `codex.exe/.cmd/.bat`），不可用时回退到本机会话日志捕获的额度记录。
   - 根据当前 7d 周期的额度变化和本地 token 消耗，按可选的 1% / 2% / 5% / 10% 额度分段分析模型构成、换算代价、消耗速度与用量预测。各模型独立显示“100% 额度预计可用多少 M Token”，统一按本周期输入、缓存和输出构成及普通短上下文价格计算；满额折算金额除以每百万 Token 折算代价即为估算用量，无需基准模型。图表和明细中的模型占比统一为各模型折算代价除以总折算代价。
   - 模型历史校准排除与本期重叠的记录，同一历史周期的重叠版本只取一次。单段历史需在缓存中有超过 0.5 个百分点的模型额度归因，避免将额度接近耗尽时的微小变化当成可靠基准；缺少可靠历史时显示“本期混用推算”，其范围同时考虑其他模型的估算范围和额度读数取整，不代表独立实测或统计置信区间。
+  - 周期分析默认使用 1% 分段；显示 0% 后新增“0% → 结束”阶段（默认第 101 级），继续累计 Token 和代价，不参与百分比拟合或模型校准。当前周期每分钟自动刷新，也可手动刷新；预测表示可见额度到 0% 的时间，实际停止时间未知。
   - 主界面额度面板保留“额度估算”入口；窗口内继续提供当前 5h / 7d、手动区间和历史周期，并可按需新开额度曲线或分析所选周期。
 - 价格设置：
   - Codex 默认展示 GPT-6 Sol、DeepSeek V4.1 Flash、小米 MiMo V2.5 Pro 三档（各来源价格独立成组）。DeepSeek V4.1 Flash / V4 Pro 会按北京时间自动合并峰谷计价：周一至周五 `09:00–12:00`、`14:00–18:00` 使用高峰价，其余使用空闲价。

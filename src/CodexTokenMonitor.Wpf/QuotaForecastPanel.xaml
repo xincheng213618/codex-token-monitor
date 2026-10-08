@@ -51,14 +51,14 @@
                           SelectionMode="Single" SelectionChanged="ScenarioGrid_SelectionChanged" MaxHeight="260">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="方案" Binding="{Binding Label}" Width="118" />
-                        <DataGridTextColumn Header="预计用尽" Binding="{Binding Runout}" Width="100" SortMemberPath="Scenario.RunoutAtLocal" />
+                        <DataGridTextColumn Header="预计到 0%" Binding="{Binding Runout}" Width="100" SortMemberPath="Scenario.RunoutAtLocal" />
                         <DataGridTextColumn Header="目标剩余" Binding="{Binding Remaining}" Width="70" SortMemberPath="Scenario.RemainingAtResetPercent" />
                     </DataGrid.Columns>
                 </DataGrid>
             </Expander>
             <Border Background="{StaticResource AccentSoftBrush}" CornerRadius="5" Padding="10,8" Margin="0,0,0,8">
                 <StackPanel>
-                    <TextBlock x:Name="ForecastCaptionText" Text="预计用尽" Style="{StaticResource SectionDescription}" />
+                    <TextBlock x:Name="ForecastCaptionText" Text="预计到 0%" Style="{StaticResource SectionDescription}" />
                     <TextBlock x:Name="ForecastValueText" Text="等待数据" FontSize="20" FontWeight="SemiBold" Margin="0,3,0,3"
                                TextWrapping="Wrap" />
                     <TextBlock x:Name="ForecastStatusText" Text="按近期工作量推算" FontSize="11" TextWrapping="Wrap" />
@@ -67,7 +67,7 @@
             <TextBlock x:Name="ForecastBasisText" Style="{StaticResource SectionDescription}" Margin="0,0,0,8" TextWrapping="Wrap" />
             <TextBlock x:Name="BudgetHintText" Foreground="{StaticResource AccentBrush}" FontSize="11"
                        TextWrapping="Wrap" Margin="0,0,0,8" Visibility="Collapsed" />
-            <TextBlock Style="{StaticResource SectionDescription}" Text="虚线为假设预测。换模型 / Fast 按相同 Token 工作量比较；实际任务、缓存和并发变化会影响结果。" />
+            <TextBlock Style="{StaticResource SectionDescription}" Text="虚线预测可见额度到 0% 的时间；0% 后仍可能继续使用。换模型 / Fast 按相同 Token 工作量比较。" />
         </StackPanel>
     </ScrollViewer>
 </UserControl>

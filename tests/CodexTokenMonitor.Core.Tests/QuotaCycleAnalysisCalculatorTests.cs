@@ -657,7 +657,7 @@ public sealed class QuotaCycleAnalysisCalculatorTests
     }
 
     [Fact]
-    public void ExhaustedTailIsKeptInTotalUsageButCannotInflateQuotaCapacity()
+    public void PostZeroUsageIsTrackedSeparatelyWithoutInflatingQuotaCapacity()
     {
         var result = QuotaCycleAnalysisCalculator.BuildFromSamples(Period(), new[]
         {
@@ -676,6 +676,74 @@ public sealed class QuotaCycleAnalysisCalculatorTests
         Assert.Equal(0m, result.Models.Single(model => model.ModelId == "model-b").QuotaDropPercent);
         Assert.Equal(Start.AddMinutes(1), band.EndLocal);
         Assert.Equal(20, result.UsageSamples[^1].TotalTokens);
+        var tail = Assert.IsType<QuotaCyclePostZeroUsage>(result.PostZeroUsage);
+        Assert.Equal(Start.AddMinutes(1), tail.StartLocal);
+        Assert.Equal(Start.AddMinutes(2), tail.EndLocal);
+        Assert.Equal(20, tail.Tokens);
+        Assert.Equal(20m, tail.EquivalentCost);
+        Assert.Equal("model-b", Assert.Single(tail.Models).ModelId);
+        Assert.Equal(100m, tail.Models[0].CostSharePercent);
+    }
+
+    [Fact]
+    public void MorePostZeroUsageUpdatesTotalsAndTimeWithoutChangingPercentageBands()
+    {
+        var samples = new[]
+        {
+            Sample(0, 95m, Bucket("model-a", 0)),
+            Sample(1, 100m, Bucket("model-a", 10)),
+            Sample(2, 100m, Bucket("model-b", 20)),
+            Sample(5, 99m, Bucket("model-a", 30)), // Readout jitter does not reopen the last band.
+            Sample(9, 100m, Bucket("model-b", 40))
+        };
+        var before = QuotaCycleAnalysisCalculator.BuildFromSamples(Period(), samples.Take(3).ToArray(), priceCatalog: Catalog());
+        var after = QuotaCycleAnalysisCalculator.BuildFromSamples(Period(), samples, priceCatalog: Catalog());
+
+        Assert.Equal(before.EstimatedFullQuotaCost, after.EstimatedFullQuotaCost);
+        Assert.Equal(before.Bands.Single().Tokens, after.Bands.Single().Tokens);
+        Assert.Equal(before.Bands.Single().EndLocal, after.Bands.Single().EndLocal);
+        Assert.Equal(100, after.Tokens);
+        Assert.Equal(100m, after.EquivalentCost);
+        var tail = Assert.IsType<QuotaCyclePostZeroUsage>(after.PostZeroUsage);
+        Assert.Equal(Start.AddMinutes(1), tail.StartLocal);
+        Assert.Equal(Start.AddMinutes(9), tail.EndLocal);
+        Assert.Equal(90, tail.Tokens);
+        Assert.Equal(2, tail.Models.Count);
+        Assert.Equal(60, tail.Models.Single(item => item.ModelId == "model-b").Tokens);
+        Assert.Equal(100m, after.Timeline[^1].UsedPercent);
+    }
+
+    [Fact]
+    public void ZeroOnlyObservationsStillRetainSubsequentUsageWithoutInventingBands()
+    {
+        var result = QuotaCycleAnalysisCalculator.BuildFromSamples(Period(), new[]
+        {
+            Sample(0, 100m, Bucket("model-a", 0)),
+            Sample(3, 100m, Bucket("model-b", 20))
+        }, priceCatalog: Catalog());
+
+        Assert.False(result.HasData);
+        Assert.Empty(result.Bands);
+        Assert.Null(result.EstimatedFullQuotaCost);
+        Assert.Equal(20, result.Tokens);
+        Assert.Equal(20m, result.EquivalentCost);
+        Assert.Equal(20, result.PostZeroUsage!.Tokens);
+        Assert.Equal(0m, Assert.Single(result.Models).QuotaDropPercent);
+    }
+
+    [Fact]
+    public void FirstZeroReadoutStartsTrackingWithoutClaimingSubsequentUsage()
+    {
+        var result = QuotaCycleAnalysisCalculator.BuildFromSamples(Period(), new[]
+        {
+            Sample(0, 95m, Bucket("model-a", 0)),
+            Sample(1, 100m, Bucket("model-a", 10))
+        }, priceCatalog: Catalog());
+
+        Assert.Equal(10, result.Tokens);
+        Assert.Equal(0, result.PostZeroUsage!.Tokens);
+        Assert.Equal(result.PostZeroUsage.StartLocal, result.PostZeroUsage.EndLocal);
+        Assert.Empty(result.PostZeroUsage.Models);
     }
 
     [Fact]

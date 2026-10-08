@@ -186,12 +186,31 @@ internal static class QuotaCycleAnalysisCalculator
         }
 
         var catalog = priceCatalog?.ToList();
-        var intervals = BuildIntervals(samples, cancellationToken, catalog, priceGroup, out var exhaustedUsage);
+        var intervals = BuildIntervals(samples, cancellationToken, catalog, priceGroup, out var postZeroUsage);
+        var postZeroCost = postZeroUsage is null ? 0m : EstimateCost(postZeroUsage, catalog, priceGroup).QuotaEquivalentCost;
+        var postZeroModels = new Dictionary<string, ModelAccumulator>(StringComparer.OrdinalIgnoreCase);
+        if (postZeroUsage is not null)
+        {
+            foreach (var model in BuildModelSlices(postZeroUsage, catalog, priceGroup))
+                GetModel(postZeroModels, model.ModelId).Add(0m, model.Tokens, model.EquivalentCost, model.IsPriced);
+        }
+        var zeroPoint = timeline.FirstOrDefault(item => item.UsedPercent >= 100m);
+        var postZero = zeroPoint is null ? null : new QuotaCyclePostZeroUsage(
+            zeroPoint.TimestampLocal,
+            samples[^1].TimestampLocal,
+            postZeroUsage?.TotalTokens ?? 0,
+            postZeroCost,
+            postZeroModels.Values.Select(item => item.Build(0m, postZeroCost))
+                .OrderByDescending(item => item.EquivalentCost).ThenByDescending(item => item.Tokens).ToArray());
         if (intervals.Count == 0)
         {
             return QuotaCycleAnalysisResult.Empty(period, "这个周期没有可归因的额度下降区间") with
             {
-                Timeline = timeline, UsageSamples = usageSamples, BandSizePercent = bandSizePercent
+                Timeline = timeline, UsageSamples = usageSamples, BandSizePercent = bandSizePercent,
+                PostZeroUsage = postZero,
+                Tokens = postZeroUsage?.TotalTokens ?? 0, EquivalentCost = postZeroCost,
+                UnattributedTokens = postZeroUsage?.TotalTokens ?? 0, UnattributedCost = postZeroCost,
+                Models = postZero?.Models ?? Array.Empty<QuotaCycleModelShare>()
             };
         }
 
@@ -219,7 +238,6 @@ internal static class QuotaCycleAnalysisCalculator
         var totalCost = bands.Sum(item => item.EquivalentCost);
         var totalTokens = bands.Aggregate(0L, (total, item) =>
             TokenCountMath.AddNonNegative(total, item.Tokens));
-        var exhaustedCost = exhaustedUsage is null ? 0m : EstimateCost(exhaustedUsage, catalog, priceGroup).QuotaEquivalentCost;
         var estimatedFullCost = QuotaMath.EstimateLimit(totalCost, totalDrop);
         var weightedMean = estimatedFullCost ?? 0m;
         var variance = weightedMean <= 0m || totalDrop <= 0m
@@ -242,14 +260,14 @@ internal static class QuotaCycleAnalysisCalculator
             }
         }
 
-        if (exhaustedUsage is not null)
+        if (postZeroUsage is not null)
         {
-            foreach (var model in BuildModelSlices(exhaustedUsage, catalog, priceGroup))
+            foreach (var model in BuildModelSlices(postZeroUsage, catalog, priceGroup))
                 GetModel(modelBuilders, model.ModelId).Add(0m, model.Tokens, model.EquivalentCost, model.IsPriced);
         }
 
         var models = modelBuilders.Values
-            .Select(item => item.Build(totalDrop, totalCost + exhaustedCost))
+            .Select(item => item.Build(totalDrop, totalCost + postZeroCost))
             .OrderByDescending(item => item.QuotaDropPercent)
             .ThenByDescending(item => item.Tokens)
             .ToList();
@@ -263,8 +281,8 @@ internal static class QuotaCycleAnalysisCalculator
             models,
             samples.Count,
             totalDrop,
-            TokenCountMath.AddNonNegative(totalTokens, exhaustedUsage?.TotalTokens ?? 0),
-            totalCost + exhaustedCost,
+            TokenCountMath.AddNonNegative(totalTokens, postZeroUsage?.TotalTokens ?? 0),
+            totalCost + postZeroCost,
             estimatedFullCost,
             min,
             max,
@@ -275,8 +293,9 @@ internal static class QuotaCycleAnalysisCalculator
             Timeline = timeline,
             UsageSamples = usageSamples,
             BandSizePercent = bandSizePercent,
-            UnattributedTokens = exhaustedUsage?.TotalTokens ?? 0,
-            UnattributedCost = exhaustedCost
+            UnattributedTokens = postZeroUsage?.TotalTokens ?? 0,
+            UnattributedCost = postZeroCost,
+            PostZeroUsage = postZero
         };
     }
 
@@ -341,7 +360,7 @@ internal static class QuotaCycleAnalysisCalculator
         CancellationToken cancellationToken,
         IReadOnlyList<PricePreset>? priceCatalog,
         string? priceGroup,
-        out TokenUsageBucket? exhaustedUsage)
+        out TokenUsageBucket? postZeroUsage)
     {
         var result = new List<RawInterval>();
         var previousTime = samples[0].TimestampLocal;
@@ -381,8 +400,9 @@ internal static class QuotaCycleAnalysisCalculator
         // The current quota percentage can stay unchanged for hours. Keep that
         // still-open usage in the latest observed quota interval so the current
         // cycle total uses the same cutoff as the outer 7d estimate.
-        // Once the readout is exhausted, later usage has no observed quota
-        // movement. It stays in UsageSamples, but cannot train the final band.
+        // A 0% remaining readout does not establish actual service exhaustion.
+        // Later usage has no observed quota movement. Keep tracking it separately
+        // without attributing it to the final percentage band.
         if (result.Count > 0 && previousUsed < 100m && (pending.Events > 0 || pending.TotalTokens > 0))
         {
             var trailingEstimate = EstimateCost(pending, priceCatalog, priceGroup);
@@ -396,7 +416,7 @@ internal static class QuotaCycleAnalysisCalculator
             };
         }
 
-        exhaustedUsage = previousUsed >= 100m && (pending.Events > 0 || pending.TotalTokens > 0) ? pending : null;
+        postZeroUsage = previousUsed >= 100m && (pending.Events > 0 || pending.TotalTokens > 0) ? pending : null;
         return result;
     }
 
@@ -647,6 +667,20 @@ internal sealed record QuotaCycleTimelinePoint(
     DateTimeOffset TimestampLocal,
     decimal UsedPercent);
 
+internal sealed record QuotaCyclePostZeroUsage(
+    DateTimeOffset StartLocal,
+    DateTimeOffset EndLocal,
+    long Tokens,
+    decimal EquivalentCost,
+    IReadOnlyList<QuotaCycleModelShare> Models)
+{
+    // Presentation-only stage after the percentage bands. Zero observed movement
+    // cannot form a capacity estimate or enter calibration.
+    public QuotaCycleAnalysisBand ToDisplayBand(decimal bandSizePercent) => new(
+        (int)Math.Ceiling(100m / bandSizePercent), 100m, 100m, StartLocal, EndLocal,
+        0m, Tokens, EquivalentCost, null, Models.FirstOrDefault()?.ModelId ?? "未识别", Models);
+}
+
 internal sealed record QuotaCycleAnalysisResult(
     CodexQuotaCycle Period,
     IReadOnlyList<QuotaCycleAnalysisBand> Bands,
@@ -668,6 +702,7 @@ internal sealed record QuotaCycleAnalysisResult(
     public QuotaCycleAnalysisResult? CalibrationAnalysis { get; init; }
     public long UnattributedTokens { get; init; }
     public decimal UnattributedCost { get; init; }
+    public QuotaCyclePostZeroUsage? PostZeroUsage { get; init; }
     public string CostDominantModel => Models.MaxBy(item => item.EquivalentCost)?.ModelId ?? DominantModel;
 
     public bool HasData => Bands.Count > 0;

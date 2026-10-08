@@ -130,9 +130,10 @@ public partial class QuotaForecastPanel : UserControl
             .Concat(capacities.Estimates.Select(item => ModelKey(item.ModelId)))
             .Concat(new[] { "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" })
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var rows = new[] { QuotaForecastScenarioRow.From(forecast.Current, current: true) }
+        var readoutZero = forecast.CurrentRemainingPercent is <= 0m;
+        var rows = new[] { QuotaForecastScenarioRow.From(forecast.Current, current: true, readoutZero: readoutZero) }
             .Concat(forecast.Models.Where(item => relevantModels.Contains(item.ModelId))
-                .Select(item => QuotaForecastScenarioRow.From(item))).ToArray();
+                .Select(item => QuotaForecastScenarioRow.From(item, readoutZero: readoutZero))).ToArray();
         changingSelection = true;
         ScenarioBox.ItemsSource = rows;
         ScenarioGrid.ItemsSource = rows;
@@ -142,10 +143,10 @@ public partial class QuotaForecastPanel : UserControl
         var comparable = rows.Skip(1).Where(item => item.Scenario.Status == QuotaForecastStatus.Ready).ToArray();
         var closest = comparable.Where(item => item.Scenario.EnoughUntilReset == true)
             .MinBy(item => item.Scenario.RemainingAtResetPercent);
-        BudgetHintText.Visibility = comparable.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        BudgetHintText.Visibility = comparable.Length > 0 && !readoutZero ? Visibility.Visible : Visibility.Collapsed;
         BudgetHintText.Text = closest is not null
             ? $"按额度预算，{closest.Label} 在可覆盖目标的方案中余量最小（预计 {closest.Remaining}）。"
-            : "已标定的模型方案均预计提前用尽，可降低未来工作量后再比较。";
+            : "已标定的模型方案均预计提前到 0%，可降低未来工作量后再比较。";
         ApplyScenario();
     }
 
@@ -170,13 +171,22 @@ public partial class QuotaForecastPanel : UserControl
     private void ApplyScenario()
     {
         if (forecast is null || ScenarioBox.SelectedItem is not QuotaForecastScenarioRow row) return;
+        if (forecast.CurrentRemainingPercent is <= 0m)
+        {
+            ForecastCaptionText.Text = "可见额度已到 0%";
+            ForecastValueText.Text = "实际停止时间未知";
+            ForecastStatusText.Text = "0% 后仍可能继续使用，后续 Token 与代价继续累计。";
+            ForecastBasisText.Text = "服务端百分比已不再下降，无法根据该读数估计隐藏余量或实际停止时间。";
+            ForecastChanged?.Invoke(null);
+            return;
+        }
         var scenario = row.Scenario;
-        ForecastCaptionText.Text = row.Label + " · 预计用尽（不计重置）";
+        ForecastCaptionText.Text = row.Label + " · 预计到 0%（不计重置）";
         ForecastValueText.Text = scenario.RunoutAtLocal is { } runout ? $"{runout:MM-dd HH:mm}" : "暂不可估";
         ForecastStatusText.Text = scenario.RemainingAtResetPercent is { } remaining
             ? scenario.EnoughUntilReset == true
                 ? $"到目标 {forecast.TargetResetLocal:MM-dd HH:mm} 预计剩余 {remaining:N1}%"
-                : $"早于目标用尽 · 目标 {forecast.TargetResetLocal:MM-dd HH:mm}"
+                : $"早于目标到 0% · 目标 {forecast.TargetResetLocal:MM-dd HH:mm}"
             : scenario.Reason;
         if (scenario.MaxActivityPercent is { } budget && scenario.EnoughUntilReset == false)
             ForecastStatusText.Text += $"\n要覆盖目标，工作量需降至近期的 {budget:N1}% 以下。";
@@ -199,14 +209,14 @@ public partial class QuotaForecastPanel : UserControl
 
 internal sealed record QuotaForecastScenarioRow(string Key, string Label, string Runout, string Remaining, QuotaForecastScenario Scenario)
 {
-    internal static QuotaForecastScenarioRow From(QuotaForecastScenario scenario, bool current = false)
+    internal static QuotaForecastScenarioRow From(QuotaForecastScenario scenario, bool current = false, bool readoutZero = false)
     {
         var mode = scenario.Mode == "Fast"
             ? scenario.FastMultiplier is > 1m ? $"Fast {scenario.FastMultiplier:0.##}×" : "Fast"
             : "普通";
         var label = current ? "近期实测节奏" : $"{QuotaCycleModelPalette.ShortName(scenario.ModelId)} · {mode}";
         return new(current ? "observed" : scenario.ModelId + ":" + scenario.Mode,
-            label, scenario.RunoutAtLocal is { } time ? time.ToString("MM-dd HH:mm") : "不可估",
+            label, readoutZero ? "已显示 0%" : scenario.RunoutAtLocal is { } time ? time.ToString("MM-dd HH:mm") : "不可估",
             scenario.RemainingAtResetPercent is { } remaining ? $"{remaining:N1}%" : "—", scenario);
     }
 }
