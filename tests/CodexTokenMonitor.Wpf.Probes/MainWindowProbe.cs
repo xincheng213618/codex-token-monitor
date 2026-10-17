@@ -1065,6 +1065,9 @@ internal static partial class MainWindowProbe
         var host = new Window
         {
             Content = content, Width = width, Height = 940, Left = -20000, Top = -20000,
+            // Headless CI desktops can be narrower than the requested render.
+            // Pin the minimum tracking size so Windows does not clamp the host.
+            MinWidth = width, MinHeight = 940,
             ShowActivated = false, ShowInTaskbar = false, WindowStyle = WindowStyle.None,
             Background = window.Background, Foreground = window.Foreground,
             FontFamily = window.FontFamily, FontSize = window.FontSize,
@@ -1079,6 +1082,8 @@ internal static partial class MainWindowProbe
                     Get<FrameworkElement>(window, "UsageSummaryPanel").Visibility == expectedContentVisibility,
                 "render host preserves bound display values");
             host.UpdateLayout();
+            Require(Math.Abs(host.ActualWidth - width) < 1 && Math.Abs(host.ActualHeight - 940) < 1,
+                $"render host uses requested dimensions: {host.ActualWidth} x {host.ActualHeight}");
             afterLayout?.Invoke();
             host.UpdateLayout();
             var bitmap = new RenderTargetBitmap(width, 940, 96, 96, PixelFormats.Pbgra32);
