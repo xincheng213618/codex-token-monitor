@@ -13,7 +13,7 @@ public sealed record GitHubReleaseUpdateResult(
 
 public sealed class GitHubReleaseUpdateChecker
 {
-    private const string Repository = "xincheng213618/codex-token-monitor";
+    internal const string Repository = "xincheng213618/codex-token-monitor";
     private static readonly Uri LatestReleasePage = new(
         $"https://github.com/{Repository}/releases/latest");
     private static readonly HttpClient SharedClient = new(

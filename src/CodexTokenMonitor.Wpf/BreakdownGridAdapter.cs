@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Media;
 using WpfBinding = System.Windows.Data.Binding;
 
@@ -41,7 +42,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
         }
 
         return grid.Items[index] is BreakdownRow row
-            ? new BreakdownScrollAnchor(index, row.Label)
+            ? new BreakdownScrollAnchor(index, row.Label, row)
             : null;
     }
 
@@ -62,6 +63,31 @@ internal sealed class BreakdownGridAdapter : IDisposable
         ApplyColumns(range, eventBreakdown, tablePresets, includeModels, includeQuota);
         grid.ItemsSource = rows;
         RestoreAnchor(anchor);
+    }
+
+    public bool TryUpdateQuotas(IReadOnlyList<BreakdownRow> rows, Func<int, string> formatQuota)
+    {
+        if (disposed || !ReferenceEquals(grid.ItemsSource, rows)) return false;
+
+        var changed = false;
+        // Items may be sorted; the source list retains the bucket-to-row mapping.
+        for (var index = 0; index < rows.Count; index++)
+        {
+            var quota = formatQuota(index);
+            if (rows[index].Quota == quota) continue;
+            rows[index].Quota = quota;
+            changed = true;
+        }
+
+        if (changed && grid.Items.SortDescriptions.Any(sort => sort.PropertyName == nameof(BreakdownRow.Quota)))
+        {
+            var anchor = CaptureAnchor();
+            // ItemCollection.Refresh can emit a reset without re-sorting its
+            // unchanged source view. Refresh that view to apply the new values.
+            CollectionViewSource.GetDefaultView(grid.ItemsSource).Refresh();
+            RestoreAnchor(anchor);
+        }
+        return true;
     }
 
     private void ApplyColumns(
@@ -195,6 +221,9 @@ internal sealed class BreakdownGridAdapter : IDisposable
             return -1;
         }
 
+        if (anchor.Row is not null && grid.Items.IndexOf(anchor.Row) is var existingIndex && existingIndex >= 0)
+            return existingIndex;
+
         var clampedIndex = Math.Clamp(anchor.Index, 0, count - 1);
         if (ItemLabel(clampedIndex) == anchor.Label)
         {
@@ -300,5 +329,5 @@ internal sealed class BreakdownGridAdapter : IDisposable
         double Width,
         bool RightAlign);
 
-    public sealed record BreakdownScrollAnchor(int Index, string Label);
+    public sealed record BreakdownScrollAnchor(int Index, string Label, BreakdownRow? Row = null);
 }

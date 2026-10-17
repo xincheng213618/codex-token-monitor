@@ -24,7 +24,8 @@ internal static class LastDisplayStore
                 return null;
             }
 
-            var state = JsonSerializer.Deserialize<LastDisplayState>(File.ReadAllText(path), JsonOptions);
+            using var stream = File.OpenRead(path);
+            var state = JsonSerializer.Deserialize<LastDisplayState>(stream, JsonOptions);
             return state is null ? null : ToSnapshot(state);
         }
         catch
@@ -160,7 +161,10 @@ internal static class LastDisplayStore
             var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
             try
             {
-                File.WriteAllText(temporaryPath, JsonSerializer.Serialize(state, JsonOptions));
+                using (var stream = File.Create(temporaryPath))
+                {
+                    JsonSerializer.Serialize(stream, state, JsonOptions);
+                }
                 File.Move(temporaryPath, path, overwrite: true);
             }
             finally
@@ -190,8 +194,8 @@ internal static class LastDisplayStore
         }
 
         var range = new SelectedRange(
-            Normalize(state.Range.Start),
-            Normalize(state.Range.End),
+            state.Range.Start,
+            state.Range.End,
             state.Range.Title ?? "",
             state.Range.BreakdownTitle ?? "",
             state.Range.Mode,
@@ -214,8 +218,8 @@ internal static class LastDisplayStore
             SavedAtLocal = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset),
             Range = new LastDisplayRangeState
             {
-                Start = Normalize(snapshot.Range.Start),
-                End = Normalize(snapshot.Range.End),
+                Start = snapshot.Range.Start,
+                End = snapshot.Range.End,
                 Title = snapshot.Range.Title,
                 BreakdownTitle = snapshot.Range.BreakdownTitle,
                 Mode = snapshot.Range.Mode,

@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private CacheDetailsWindow? cacheDetailsWindow;
     private readonly ResetOpportunitySynchronizer resetOpportunitySynchronizer = new();
     private readonly BreakdownGridAdapter breakdownGridAdapter;
+    private BreakdownDisplay? breakdownDisplay;
     private readonly UsageQueryService usageQueryService = new();
     private readonly LatestRequestRunner<UsageRefreshRequest> usageRefreshRunner;
     private readonly object cycleRefreshSync = new();
@@ -48,6 +49,7 @@ public partial class MainWindow : Window
         // initial values; hold one suppression scope across the whole setup.
         using var setupScope = suppressUiEvents.Begin();
         InitializeComponent();
+        InitializeDayTimeZone();
         DataContext = displayViewModel;
         foreach (var definition in UsageSourceRegistry.All)
             SourceTabs.Items.Add(new TabItem { Header = definition.Title, Tag = definition.Source });
@@ -64,7 +66,7 @@ public partial class MainWindow : Window
         ConfigureBreakdownGrid();
         SyncRangeModeItems(CurrentModule());
         RangeModeBox.SelectedIndex = 0;
-        DatePicker.SelectedDate = BeijingClock.Today;
+        DatePicker.SelectedDate = RangeNow(CurrentModule()).Date;
         refreshTimer.Interval = TimeSpan.FromSeconds(30);
         refreshTimer.Tick += async (_, _) => await RunUiActionAsync(async () =>
         {
@@ -517,18 +519,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void QuotaEstimateButton_Click(object sender, RoutedEventArgs e)
+    private void QuotaEstimateButton_Click(object sender, RoutedEventArgs e)
     {
         var codexModule = CurrentCodexModule();
         var quota = codexModule.CurrentQuotaEstimate;
-        if (quota is null)
-        {
-            return;
-        }
-
-        await RefreshCycleOptionsAsync(keepSelection: true);
-        if (isClosed) return;
-        quota = codexModule.CurrentQuotaEstimate;
         if (quota is null)
         {
             return;
@@ -594,7 +588,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        module.PickerValue = module.Mode == RangeMode.Week ? BeijingClock.DateTimeNow : BeijingClock.Today;
+        module.PickerValue = module.Mode == RangeMode.Week ? BeijingClock.DateTimeNow : RangeNow(module).Date;
         UpdateRangeControls();
         await RefreshUsageAsync();
     }
@@ -602,6 +596,9 @@ public partial class MainWindow : Window
     private async Task RangeModeChangedAsync()
     {
         var module = CurrentModule();
+        var wasCurrentDay = module.Mode == RangeMode.Day && module.CustomStartLocal is null &&
+            module.PickerValue.Date == RangeNow(module).Date;
+        var followedCurrent = wasCurrentDay || module.LastRange is { FollowsCurrent: true } previousRange && previousRange.Mode == module.Mode;
         var mode = CurrentMode();
         ClearCustomStart();
         if (mode == RangeMode.Cycle && !module.SupportsCycle)
@@ -614,6 +611,8 @@ public partial class MainWindow : Window
         }
 
         module.Mode = mode;
+        if (dayTimeZone.Offset != CodexUsageReader.BeijingOffset && followedCurrent)
+            module.PickerValue = mode == RangeMode.Week ? BeijingClock.DateTimeNow : RangeNow(module).Date;
         if (mode == RangeMode.Week && module.PickerValue.Date == BeijingClock.Today)
         {
             module.PickerValue = BeijingClock.DateTimeNow;
@@ -656,6 +655,10 @@ public partial class MainWindow : Window
         var module = CurrentModule();
         var maintenance = UsageSourceRegistry.For(module.Source).CacheMaintenance;
         var selectedDay = DateOnly.FromDateTime(module.PickerValue.Date);
+        var range = GetSelectedRange();
+        var firstStorageDay = range.Start.ToOffset(CodexUsageReader.BeijingOffset).Date;
+        var lastStorageDay = (range.End > range.Start ? range.End.AddTicks(-1) : range.Start)
+            .ToOffset(CodexUsageReader.BeijingOffset).Date;
         SetStatus($"清除 {module.Title} {selectedDay:yyyy-MM-dd} 缓存...");
 
         bool deleted;
@@ -663,7 +666,13 @@ public partial class MainWindow : Window
         try
         {
             deleted = await Task.Run(
-                () => maintenance.RefreshCachedDay(selectedDay, runtime.LifetimeToken),
+                () =>
+                {
+                    var changed = false;
+                    for (var day = firstStorageDay; day <= lastStorageDay; day = day.AddDays(1))
+                        changed |= maintenance.RefreshCachedDay(DateOnly.FromDateTime(day), runtime.LifetimeToken);
+                    return changed;
+                },
                 runtime.LifetimeToken);
         }
         finally
@@ -1023,11 +1032,10 @@ public partial class MainWindow : Window
             if (cachedQuota is not null)
             {
                 codexModule.CurrentQuotaEstimate = LatestFreshQuota(codexModule.CurrentQuotaEstimate, cachedQuota);
-                if (CurrentModule() is CodexUsageModule)
-                {
-                    ApplyQuotaSummary(codexModule, codexModule.CurrentQuotaEstimate);
-                    ApplyQuotaToCurrentBreakdown(codexModule, codexModule.CurrentQuotaEstimate);
-                }
+                // Retain this intermediate point for historical interpolation, but
+                // publish the table only once after selecting the latest quota.
+                if (CurrentModule() is CodexUsageModule && codexModule.TryGetDisplay(out var range, out var result))
+                    StoreQuotaDisplay(codexModule, range, result, codexModule.CurrentQuotaEstimate);
             }
 
             var freshQuota = FreshQuotaOrNull(quota);
@@ -1116,24 +1124,55 @@ public partial class MainWindow : Window
 
     private void ApplyQuotaToCurrentBreakdown(CodexUsageModule module, CodexQuotaEstimate? quota)
     {
-        if (!module.TryGetDisplay(out var range, out var result))
+        if (!ReferenceEquals(CurrentModule(), module) || !module.TryGetDisplay(out var range, out var result))
         {
             return;
         }
 
+        var updatedResult = StoreQuotaDisplay(module, range, result, quota);
+        if (!TryUpdateBreakdownQuota(range, result.BreakdownRows, updatedResult.QuotaSnapshots, module.Source))
+        {
+            var displayPresets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList();
+            ApplyBreakdownRows(range, result.BreakdownRows, updatedResult.QuotaSnapshots, module.Source, displayPresets);
+        }
+        LastDisplayStore.Save(module.Source, range, updatedResult);
+    }
+
+    private UsageQueryResult StoreQuotaDisplay(CodexUsageModule module, SelectedRange range,
+        UsageQueryResult result, CodexQuotaEstimate? quota)
+    {
         var snapshots = MergeQuotaSnapshot(result.QuotaSnapshots, range, quota);
         var updatedResult = result with { Quota = quota, QuotaSnapshots = snapshots };
         module.CurrentQuotaSnapshots = snapshots;
         module.StoreDisplay(range, updatedResult);
-        var displayPresets = PriceSettingsStore.DisplayPresetsForSource(module.Source, count: 0).ToList();
-        ApplyBreakdownRows(range, result.BreakdownRows, snapshots, module.Source, displayPresets);
-        LastDisplayStore.Save(module.Source, range, updatedResult);
+        return updatedResult;
+    }
+
+    private bool TryUpdateBreakdownQuota(SelectedRange range, IReadOnlyList<TokenUsageBucket> buckets,
+        IReadOnlyList<CodexQuotaSnapshot> snapshots, UsageSource source)
+    {
+        if (breakdownDisplay is not { } display || source != UsageSource.Codex || display.Source != source ||
+            display.Range != range || !ReferenceEquals(display.Buckets, buckets) || display.Rows.Count != buckets.Count ||
+            !ReferenceEquals(BreakdownGrid.ItemsSource, display.Rows) ||
+            !ReferenceEquals(display.Prices, PriceSettingsStore.Current))
+            return false;
+
+        if (display.QuotaSnapshots.SequenceEqual(snapshots)) return true;
+
+        var lookup = new QuotaSnapshotLookup(snapshots);
+        if (!breakdownGridAdapter.TryUpdateQuotas(display.Rows, index =>
+                FormatQuotaSnapshotForBucket(range, buckets[index], lookup, IsEventBucket(range, buckets[index]))))
+            return false;
+
+        breakdownDisplay = display with { QuotaSnapshots = snapshots };
+        return true;
     }
 
     private bool TryRestoreLastDisplay()
     {
         var snapshot = LastDisplayStore.Load();
-        if (snapshot is null || !usageModules.TryGetValue(snapshot.Source, out var module))
+        if (snapshot is null || !usageModules.TryGetValue(snapshot.Source, out var module) ||
+            snapshot.Range.Mode == RangeMode.Day && !snapshot.Range.IsCustomStart && snapshot.Range.Start.Offset != dayTimeZone.Offset)
         {
             return false;
         }
@@ -1160,7 +1199,7 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private static void AlignRestoredCurrentRange(UsageSourceModule module, SelectedRange range)
+    private void AlignRestoredCurrentRange(UsageSourceModule module, SelectedRange range)
     {
         if (!range.FollowsCurrent ||
             module.Mode is not (RangeMode.Day or RangeMode.Week or RangeMode.Month) ||
@@ -1169,7 +1208,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        module.PickerValue = module.Mode == RangeMode.Week ? BeijingClock.DateTimeNow : BeijingClock.Today;
+        module.PickerValue = module.Mode == RangeMode.Week ? BeijingClock.DateTimeNow : RangeNow(module).Date;
     }
 
     private static int SourceToTabIndex(UsageSource source)
@@ -1272,7 +1311,7 @@ public partial class MainWindow : Window
         var builder = new StringBuilder();
         builder.AppendLine($"Codex Token Monitor · {module.Title}");
         builder.AppendLine($"范围：{range.Title}");
-        builder.AppendLine($"时间：{summary.StartLocal:yyyy-MM-dd HH:mm:ss} - {summary.EndLocal:yyyy-MM-dd HH:mm:ss} GMT+8");
+        builder.AppendLine($"时间：{range.Start:yyyy-MM-dd HH:mm:ss} - {range.End:yyyy-MM-dd HH:mm:ss} {UsageDisplayFormatting.RangeTimeZone(range)}");
         builder.AppendLine();
         builder.AppendLine($"Total Tokens：{FormatTokenMillions(summary.TotalTokens)}");
         builder.AppendLine($"Input：{FormatTokenMillions(summary.InputTokens)}");
@@ -1437,6 +1476,7 @@ public partial class MainWindow : Window
         UsageSource source,
         IReadOnlyList<PricePreset> displayPresets)
     {
+        var priceSettings = PriceSettingsStore.Current;
         var tablePresets = displayPresets.Take(GetVisibleCostColumnCount(displayPresets.Count)).ToList();
         var quotaLookup = source == UsageSource.Codex
             ? new QuotaSnapshotLookup(quotaSnapshots)
@@ -1470,7 +1510,12 @@ public partial class MainWindow : Window
             includeModels: SupportsModelCost(source),
             includeQuota: source == UsageSource.Codex,
             rows);
+        breakdownDisplay = new BreakdownDisplay(range, source, buckets, rows, quotaSnapshots, priceSettings);
     }
+
+    private sealed record BreakdownDisplay(SelectedRange Range, UsageSource Source,
+        IReadOnlyList<TokenUsageBucket> Buckets, IReadOnlyList<BreakdownRow> Rows,
+        IReadOnlyList<CodexQuotaSnapshot> QuotaSnapshots, PriceSettings Prices);
 
     private void ApplyQuotaSummary(CodexQuotaEstimate? quota)
     {
@@ -1885,12 +1930,13 @@ public partial class MainWindow : Window
             module.PickerValue,
             module.CustomStartLocal,
             SelectedCycle(),
-            DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset));
+            DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset),
+            dayTimeZone.Offset);
     }
-    private static void MoveToCurrentPeriod(UsageSourceModule module)
+    private void MoveToCurrentPeriod(UsageSourceModule module)
     {
-        module.PickerValue = module.Mode == RangeMode.Week ? BeijingClock.DateTimeNow : BeijingClock.Today;
         module.CustomStartLocal = null;
+        module.PickerValue = module.Mode == RangeMode.Week ? BeijingClock.DateTimeNow : RangeNow(module).Date;
     }
 
     private static bool ShouldIncludeLiveToday(SelectedRange range)
@@ -1907,6 +1953,8 @@ public partial class MainWindow : Window
         // updated control set never enqueues its own refresh.
         using var mirrorScope = suppressUiEvents.Begin();
         RangeModeBox.SelectedIndex = ModeToIndex(module.Mode);
+        DayTimeZonePanel.Visibility = module.Mode == RangeMode.Day ? Visibility.Visible : Visibility.Collapsed;
+        DayTimeZoneBox.IsEnabled = !isRefreshing && module.CustomStartLocal is null;
 
         DatePicker.SelectedDate = module.PickerValue.Date;
 
@@ -1926,7 +1974,7 @@ public partial class MainWindow : Window
         };
         DatePicker.Visibility = module.Mode is RangeMode.Cycle or RangeMode.Week ? Visibility.Collapsed : Visibility.Visible;
         CycleBox.Visibility = module.Mode == RangeMode.Cycle ? Visibility.Visible : Visibility.Collapsed;
-        var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
+        var now = RangeNow(module);
         var range = GetSelectedRange();
         if (module.Mode == RangeMode.Cycle)
         {
@@ -1940,7 +1988,7 @@ public partial class MainWindow : Window
             {
                 RangeMode.Week => now.AddDays(-7),
                 RangeMode.Month => new DateTimeOffset(now.Year, now.Month, 1, 0, 0, 0, CodexUsageReader.BeijingOffset),
-                _ => new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, CodexUsageReader.BeijingOffset)
+                _ => new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset)
             };
             PreviousButton.IsEnabled = true;
             NextButton.IsEnabled = module.Mode == RangeMode.Week
@@ -2164,7 +2212,7 @@ public partial class MainWindow : Window
     {
         var module = CurrentModule();
         var customStart = module.CustomStartLocal;
-        var isCurrentDay = module.Mode == RangeMode.Day && module.PickerValue.Date == BeijingClock.Today;
+        var isCurrentDay = module.Mode == RangeMode.Day && module.PickerValue.Date == RangeNow(module).Date;
         var enabled = isCurrentDay || customStart is not null;
         StartNowButton.IsEnabled = enabled && !isRefreshing;
         StartNowButton.Content = customStart is null ? "从当前算" : "重设起点";
@@ -2198,6 +2246,7 @@ public partial class MainWindow : Window
         displayViewModel.SetBusy(busy);
         isRefreshing = busy;
         RangeModeBox.IsEnabled = !busy;
+        DayTimeZoneBox.IsEnabled = !busy && CurrentModule().CustomStartLocal is null;
         DatePicker.IsEnabled = !busy;
         WeekEndPicker.IsEnabled = !busy;
         CycleBox.IsEnabled = !busy;
@@ -2555,6 +2604,7 @@ public partial class MainWindow : Window
 
     private static string FormatBucketLabel(SelectedRange range, DateTimeOffset start, bool eventBreakdown)
     {
+        start = start.ToOffset(range.Start.Offset);
         if (range.IsCustomStart)
         {
             return start.ToString("yyyy-MM-dd HH:mm:ss");

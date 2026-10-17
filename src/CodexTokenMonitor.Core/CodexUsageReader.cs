@@ -1140,10 +1140,14 @@ internal sealed class CodexUsageReader
                     fiveHour = ToQuotaHistoryWindow(snapshot.FiveHour),
                     week = ToQuotaHistoryWindow(snapshot.Week)
                 });
+                var previousInfo = new FileInfo(path);
+                var previousLength = previousInfo.Exists ? previousInfo.Length : -1;
+                var previousTicks = previousInfo.Exists ? previousInfo.LastWriteTimeUtc.Ticks : 0;
                 File.AppendAllText(path, line + Environment.NewLine);
                 QuotaHistorySnapshotCache.Add(snapshot);
                 QuotaHistoryKeyCache.Add(historyKey);
                 UpdateQuotaHistoryCacheFileState(path);
+                QuotaEstimateHistoryStore.HistoryAppended(snapshot.TimestampLocal, previousLength, previousTicks);
             }
         }
         catch
@@ -1421,7 +1425,7 @@ internal sealed class CodexUsageReader
                 continue;
             }
 
-            var bucket = CreateBucketFromEvents(dayStart, events);
+            var bucket = CreateBucketFromMergedEvents(dayStart, events);
             cache.Put(bucket, isComplete, dayEnd.AddTicks(-1), events,
                 cancellationToken: cancellationToken, propagateErrors: true);
             cancellationToken.ThrowIfCancellationRequested();
@@ -1584,7 +1588,7 @@ internal sealed class CodexUsageReader
                     detailEvents = UsageEventMerger.Merge(cache.GetDetailEvents(date, cancellationToken)
                         .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1)));
-                    mergedBucket = CreateBucketFromEvents(dayStart, detailEvents);
+                    mergedBucket = CreateBucketFromMergedEvents(dayStart, detailEvents);
                     replaceDetailEvents = true;
                     isComplete &= newEventsResult.IsComplete;
                 }
@@ -1650,11 +1654,11 @@ internal sealed class CodexUsageReader
             ? Min(endLocal, now)
             : endLocal;
         var cache = UsageCacheStore.Load(CacheFolder);
-        var cachedEvents = cache.GetDetailEvents(date, cancellationToken).ToList();
+        var cachedEvents = cache.GetDetailEvents(date, cancellationToken);
 
         if (dayStart == todayStart && !includeLiveToday)
         {
-            return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
+            return ToDetailBucketsFromMergedEvents(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
         }
 
         if (cache.TryGetRecord(date, out var record) && (cachedEvents.Count > 0 || record.Events == 0))
@@ -1668,7 +1672,7 @@ internal sealed class CodexUsageReader
                                       effectiveScannedThrough.Value >= effectiveEndLocal.AddTicks(-1));
             if (hasCompleteCoverage)
             {
-                return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
+                return ToDetailBucketsFromMergedEvents(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
             }
 
             if (dayStart < todayStart || includeLiveToday)
@@ -1690,7 +1694,7 @@ internal sealed class CodexUsageReader
                     var mergedEvents = UsageEventMerger.Merge(cachedEvents
                         .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
-                    var mergedBucket = CreateBucketFromEvents(dayStart, mergedEvents);
+                    var mergedBucket = CreateBucketFromMergedEvents(dayStart, mergedEvents);
                     var isComplete = dayStart < todayStart && scanEnd >= dayEnd && newEventsResult.IsComplete;
                     cache.Put(
                         mergedBucket,
@@ -1701,16 +1705,16 @@ internal sealed class CodexUsageReader
                         cancellationToken: cancellationToken);
                     cancellationToken.ThrowIfCancellationRequested();
                     cache.Save();
-                    cachedEvents = mergedEvents.ToList();
+                    cachedEvents = mergedEvents;
                 }
             }
 
-            return ToDetailBuckets(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
+            return ToDetailBucketsFromMergedEvents(cachedEvents.Where(item => item.Timestamp >= startLocal && item.Timestamp < endLocal));
         }
 
         var fullEventsResult = ReadEventsUncached(startLocal, endLocal, cancellationToken: cancellationToken);
         var fullEvents = UsageEventMerger.Merge(cachedEvents.Concat(fullEventsResult.Events));
-        var fullBucket = CreateBucketFromEvents(dayStart, fullEvents);
+        var fullBucket = CreateBucketFromMergedEvents(dayStart, fullEvents);
         var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd && fullEventsResult.IsComplete;
         if (startLocal == dayStart)
         {
@@ -1724,7 +1728,7 @@ internal sealed class CodexUsageReader
             cache.Save();
         }
 
-        return ToDetailBuckets(fullEvents);
+        return ToDetailBucketsFromMergedEvents(fullEvents);
     }
 
     private static DateTimeOffset? GetEffectiveLiveScannedThrough(CachedDayRecord record, DateTimeOffset now)
@@ -1752,7 +1756,7 @@ internal sealed class CodexUsageReader
         cancellationToken.ThrowIfCancellationRequested();
         startLocal = startLocal.ToOffset(BeijingOffset);
         endLocal = endLocal.ToOffset(BeijingOffset);
-        return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal, cancellationToken: cancellationToken).Events);
+        return ToDetailBucketsFromMergedEvents(ReadEventsUncached(startLocal, endLocal, cancellationToken: cancellationToken).Events);
     }
 
     private UsageRangeScanResult ReadRangeUncached(
@@ -1829,7 +1833,7 @@ internal sealed class CodexUsageReader
             }
         }
 
-        return new UsageEventScanResult(UsageEventMerger.Merge(events).ToList(), isComplete);
+        return new UsageEventScanResult(UsageEventMerger.Merge(events), isComplete);
     }
 
     private bool ReadEventFile(
@@ -1902,10 +1906,12 @@ internal sealed class CodexUsageReader
         });
     }
 
-    private static IReadOnlyList<TokenUsageBucket> ToDetailBuckets(IEnumerable<TokenUsageEvent> events)
+    // Cache reads and source scans return normalized, unique events in time
+    // order. Callers merge again when combining those sources; filtering that
+    // result preserves the contract, so projection must not repeat the merge.
+    private static IReadOnlyList<TokenUsageBucket> ToDetailBucketsFromMergedEvents(IEnumerable<TokenUsageEvent> events)
     {
-        return UsageEventMerger.Merge(events)
-            .Select(item =>
+        return events.Select(item =>
             {
                 var bucket = new TokenUsageBucket { StartLocal = item.Timestamp };
                 bucket.Add(item);
@@ -1914,12 +1920,14 @@ internal sealed class CodexUsageReader
             .ToList();
     }
 
-    private static TokenUsageBucket CreateBucketFromEvents(
+    // Only accepts a merged event sequence, including the historical rebuild
+    // path. Keep duplicate selection and metadata enrichment at source joins.
+    private static TokenUsageBucket CreateBucketFromMergedEvents(
         DateTimeOffset bucketStart,
         IEnumerable<TokenUsageEvent> events)
     {
         var bucket = new TokenUsageBucket { StartLocal = bucketStart };
-        foreach (var item in UsageEventMerger.Merge(events))
+        foreach (var item in events)
         {
             bucket.Add(item);
         }

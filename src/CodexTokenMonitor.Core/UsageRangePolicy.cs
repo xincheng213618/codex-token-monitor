@@ -47,10 +47,15 @@ internal static class UsageRangePolicy
         DateTimeOffset pickerValue,
         DateTimeOffset? customStartLocal,
         CodexQuotaCycle? cycle,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        TimeSpan? dayOffset = null)
     {
+        var offset = mode == RangeMode.Day && customStartLocal is null
+            ? dayOffset ?? CodexUsageReader.BeijingOffset
+            : CodexUsageReader.BeijingOffset;
+        now = now.ToOffset(offset);
         var selected = pickerValue;
-        var selectedDay = new DateTimeOffset(selected.Year, selected.Month, selected.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
+        var selectedDay = new DateTimeOffset(selected.Year, selected.Month, selected.Day, 0, 0, 0, offset);
         var selectedDateTime = new DateTimeOffset(selected.Year, selected.Month, selected.Day, selected.Hour, selected.Minute, selected.Second, CodexUsageReader.BeijingOffset);
 
         if (customStartLocal is not null)

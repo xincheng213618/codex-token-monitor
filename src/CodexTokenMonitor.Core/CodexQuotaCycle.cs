@@ -72,6 +72,7 @@ internal sealed class CodexQuotaCycleReader
             }
         }
 
+        using var history = QuotaEstimateHistoryStore.Open();
         var snapshots = UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(
                 DefaultStart,
                 now.AddMinutes(1),
@@ -123,6 +124,7 @@ internal sealed class CodexQuotaCycleReader
         // apparently successful cache hit on the next query.
         if (cacheKey is not null && diagnostics.Warnings.Count == 0)
         {
+            history?.SavePeriods(result, cancellationToken);
             lock (CycleCacheSync)
             {
                 cachedKey = cacheKey;

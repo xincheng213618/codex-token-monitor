@@ -66,7 +66,9 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
             return;
         }
 
-        var bars = BuildBars(rows).Where(bar => bar.TotalTokens > 0).ToList();
+        // SetData has already aggregated fixed intervals. Reuse those buckets
+        // instead of allocating and filling a second copy of the same timeline.
+        var bars = rows.Where(row => row.TotalTokens > 0).ToList();
         if (bars.Count == 0)
         {
             plot.Axes.SetLimits(0, 1, 0, 1);
@@ -74,32 +76,41 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
             return;
         }
 
-        var xValues = bars.Select(bar => ToDateNumber(bar.StartLocal)).ToArray();
-        var barValues = bars.Select(bar => bar.TotalTokens / 1_000_000d).ToArray();
-        var cachedValues = bars.Select(bar => Math.Min(bar.CachedInputTokens, bar.TotalTokens) / 1_000_000d).ToArray();
+        var xValues = new double[bars.Count];
         var cumulativeValues = new double[bars.Count];
+        var totalBars = new Bar[bars.Count];
+        var cachedBars = new Bar[bars.Count];
+        var barWidthDays = GetBarWidthDays(bars);
         double cumulative = 0;
+        double maximum = 0;
         for (var i = 0; i < bars.Count; i++)
         {
-            cumulative += barValues[i];
+            var bar = bars[i];
+            // The former fixed-interval projection used the selected range's
+            // offset for X coordinates, even when the builder normalized rows.
+            var timestamp = fixedBucketInterval is not null
+                ? bar.StartLocal.ToOffset(startLocal.Offset)
+                : bar.StartLocal;
+            var x = xValues[i] = ToDateNumber(timestamp);
+            var value = bar.TotalTokens / 1_000_000d;
+            cumulative += value;
             cumulativeValues[i] = cumulative;
+            maximum = Math.Max(maximum, value);
+            totalBars[i] = new Bar
+            {
+                Position = x,
+                Value = value,
+                Size = barWidthDays,
+                LineWidth = 0,
+            };
+            cachedBars[i] = new Bar
+            {
+                Position = x,
+                Value = Math.Min(bar.CachedInputTokens, bar.TotalTokens) / 1_000_000d,
+                Size = barWidthDays,
+                LineWidth = 0,
+            };
         }
-
-        var barWidthDays = GetBarWidthDays(bars);
-        var totalBars = xValues.Select((x, i) => new Bar
-        {
-            Position = x,
-            Value = barValues[i],
-            Size = barWidthDays,
-            LineWidth = 0,
-        }).ToArray();
-        var cachedBars = xValues.Select((x, i) => new Bar
-        {
-            Position = x,
-            Value = cachedValues[i],
-            Size = barWidthDays,
-            LineWidth = 0,
-        }).ToArray();
 
         var totalPlot = plot.Add.Bars(totalBars);
         totalPlot.Color = PlotColor.FromSDColor(DrawingColor.FromArgb(201, 230, 222));
@@ -126,8 +137,8 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         bottom.TickLabelStyle.FontSize = 11;
         bottom.TickLabelStyle.ForeColor = PlotColor.FromSDColor(DrawingColor.FromArgb(100, 118, 135));
 
-        var leftMax = Math.Max(0.001, barValues.Max() * 1.12);
-        var rightMax = Math.Max(0.001, cumulativeValues.Last() * 1.08);
+        var leftMax = Math.Max(0.001, maximum * 1.12);
+        var rightMax = Math.Max(0.001, cumulative * 1.08);
         plot.Axes.Margins(0, 0);
         plot.Axes.SetLimitsX(ToDateNumber(startLocal), ToDateNumber(endLocal));
         plot.Axes.SetLimitsY(0, leftMax, plot.Axes.Left);
@@ -196,40 +207,7 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         plot.Legend.ShadowColor = PlotColor.FromSDColor(DrawingColor.Transparent);
     }
 
-    private IEnumerable<TimelineBar> BuildBars(IReadOnlyList<TokenUsageBucket> rows)
-    {
-        if (fixedBucketInterval is null)
-        {
-            return rows
-                .Select(row => new TimelineBar(row.StartLocal, row.TotalTokens, row.CachedInputTokens))
-                .ToList();
-        }
-
-        var interval = fixedBucketInterval.Value;
-        var spanTicks = Math.Max(interval.Ticks, (endLocal - startLocal).Ticks);
-        var bucketCount = Math.Max(1, (int)Math.Ceiling(spanTicks / (double)interval.Ticks));
-        var values = new TimelineBar[bucketCount];
-        for (var i = 0; i < bucketCount; i++)
-        {
-            values[i] = new TimelineBar(startLocal.AddTicks(interval.Ticks * i), 0, 0);
-        }
-
-        foreach (var row in rows)
-        {
-            var offsetTicks = Math.Clamp((row.StartLocal - startLocal).Ticks, 0, spanTicks - 1);
-            var index = (int)(offsetTicks / interval.Ticks);
-            index = Math.Clamp(index, 0, bucketCount - 1);
-            values[index] = values[index] with
-            {
-                TotalTokens = TokenCountMath.AddNonNegative(values[index].TotalTokens, row.TotalTokens),
-                CachedInputTokens = TokenCountMath.AddNonNegative(values[index].CachedInputTokens, row.CachedInputTokens)
-            };
-        }
-
-        return values;
-    }
-
-    private double GetBarWidthDays(IReadOnlyList<TimelineBar> bars)
+    private double GetBarWidthDays(IReadOnlyList<TokenUsageBucket> bars)
     {
         if (fixedBucketInterval is not null)
         {
@@ -249,13 +227,8 @@ internal sealed class WpfTokenTimelineControl : System.Windows.Controls.UserCont
         return Math.Max(TimeSpan.FromSeconds(8).TotalDays, minGap * 0.74);
     }
 
-    private static double ToDateNumber(DateTimeOffset value)
+    private double ToDateNumber(DateTimeOffset value)
     {
-        return value.DateTime.ToOADate();
+        return value.ToOffset(startLocal.Offset).DateTime.ToOADate();
     }
-
-    private sealed record TimelineBar(
-        DateTimeOffset StartLocal,
-        long TotalTokens,
-        long CachedInputTokens);
 }

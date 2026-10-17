@@ -115,18 +115,31 @@ internal sealed class UsageQueryService
 
         if (range.Mode == RangeMode.Day)
         {
-            var dayUsage = reader.ReadDay(range.Start, range.End, includeLiveToday, cancellationToken);
+            if (range.Start.Offset != CodexUsageReader.BeijingOffset)
+            {
+                // A reporting day can touch two storage days. Read each slice
+                // through the established repair path so neither side of the
+                // midnight boundary is dropped by single-day source readers.
+                var shiftedRows = new List<TokenUsageBucket>();
+                for (var day = StartOfDay(range.Start); day < range.End; day = day.AddDays(1))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var slice = range with
+                    {
+                        Start = (day > range.Start ? day : range.Start).ToOffset(CodexUsageReader.BeijingOffset),
+                        End = (day.AddDays(1) < range.End ? day.AddDays(1) : range.End).ToOffset(CodexUsageReader.BeijingOffset)
+                    };
+                    shiftedRows.AddRange(ReadDayUsage(reader, slice, includeLiveToday, now, cancellationToken).Rows);
+                }
+                // The source reads above update the shared cache. Its UTC-hour
+                // aggregates answer the shifted day without another log scan.
+                var shiftedSummary = reader.ReadCachedRange(range.Start, range.End, cancellationToken);
+                return CreateResult(reader, range, request.CachedQuota, shiftedSummary, shiftedRows, shiftedRows,
+                    UsageBreakdownBuilder.EstimateCodingTime(shiftedRows), now, cancellationToken);
+            }
+            var dayUsage = ReadDayUsage(reader, range, includeLiveToday, now, cancellationToken);
             var dayRows = dayUsage.Rows;
             var daySummary = dayUsage.Summary;
-            if ((!includeLiveToday &&
-                  (daySummary.Events > 0 || dayRows.Count > 0) &&
-                  HasIncompleteHistoricalCache(reader, range, now, cancellationToken)) ||
-                daySummary.Events > 0 && UsageBreakdownBuilder.CountEvents(dayRows) < daySummary.Events)
-            {
-                dayRows = reader.ReadDetailRows(range.Start, range.End,
-                    includeLiveToday: false, cancellationToken: cancellationToken);
-                daySummary = UsageSummaryBuilder.FromRows(range.Start, range.End, dayRows);
-            }
 
             return CreateResult(reader, range, request.CachedQuota, daySummary, dayRows, dayRows,
                 UsageBreakdownBuilder.EstimateCodingTime(dayRows), now, cancellationToken);
@@ -162,6 +175,21 @@ internal sealed class UsageQueryService
     private static UsageQueryResult EmptyResult(SelectedRange range) => new(
         UsageSummaryBuilder.FromRows(range.Start, range.End, Array.Empty<TokenUsageBucket>()),
         Array.Empty<TokenUsageBucket>(), TimeSpan.Zero, null, Array.Empty<CodexQuotaSnapshot>());
+
+    private static DailyUsageSnapshot ReadDayUsage(IUsageQuery reader, SelectedRange range,
+        bool includeLiveToday, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var usage = reader.ReadDay(range.Start, range.End, includeLiveToday, cancellationToken);
+        if ((!includeLiveToday && (usage.Summary.Events > 0 || usage.Rows.Count > 0) &&
+             HasIncompleteHistoricalCache(reader, range, now, cancellationToken)) ||
+            usage.Summary.Events > 0 && UsageBreakdownBuilder.CountEvents(usage.Rows) < usage.Summary.Events)
+        {
+            var rows = reader.ReadDetailRows(range.Start, range.End,
+                includeLiveToday: false, cancellationToken: cancellationToken);
+            return new(UsageSummaryBuilder.FromRows(range.Start, range.End, rows), rows);
+        }
+        return usage;
+    }
 
     public bool CanCacheCycleResult(
         IUsageCacheQuery reader,

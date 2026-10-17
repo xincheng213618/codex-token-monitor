@@ -53,7 +53,7 @@ internal sealed class UsageDisplayViewModel : INotifyPropertyChanged
             throw new ArgumentException("A failed query result cannot replace the display.", nameof(result));
         var summary = result.Summary;
         var hasUsage = ContainsUsage(result);
-        var now = clock.GetUtcNow().ToOffset(CodexUsageReader.BeijingOffset);
+        var now = clock.GetUtcNow().ToOffset(range.Start.Offset);
         var isToday = range.Mode == RangeMode.Day && range.Start.Date == now.Date;
         sourceTitle = title;
         hasSuccessfulResult = true;
@@ -64,7 +64,7 @@ internal sealed class UsageDisplayViewModel : INotifyPropertyChanged
             HasUsage = hasUsage,
             WindowTitle = $"{title} Token 额度监控器 - {range.Title}",
             Total = UsageDisplayFormatting.TokenMillions(summary.TotalTokens),
-            Period = $"{summary.StartLocal:yyyy-MM-dd HH:mm} - {summary.EndLocal:yyyy-MM-dd HH:mm:ss}  GMT+8",
+            Period = $"{range.Start:yyyy-MM-dd HH:mm} - {range.End:yyyy-MM-dd HH:mm:ss}  {UsageDisplayFormatting.RangeTimeZone(range)}",
             Input = UsageDisplayFormatting.TokenMillions(summary.InputTokens),
             Cached = UsageDisplayFormatting.TokenMillions(summary.CachedInputTokens),
             CacheWrite = UsageDisplayFormatting.TokenMillions(summary.CacheWriteInputTokens),
@@ -75,7 +75,7 @@ internal sealed class UsageDisplayViewModel : INotifyPropertyChanged
             Events = summary.Events.ToString("N0"),
             CodingTime = UsageDisplayFormatting.Duration(result.CodingTime),
             EmptyTitle = hasUsage ? "" : isToday ? $"今天还没有 {title} 用量" : $"{range.Title}暂无 {title} 用量",
-            EmptyPeriod = hasUsage ? "" : $"{range.Start:yyyy-MM-dd HH:mm} — {range.End:yyyy-MM-dd HH:mm:ss}  GMT+8",
+            EmptyPeriod = hasUsage ? "" : $"{range.Start:yyyy-MM-dd HH:mm} — {range.End:yyyy-MM-dd HH:mm:ss}  {UsageDisplayFormatting.RangeTimeZone(range)}",
             EmptyHint = hasUsage ? "" : source == UsageSource.Codex
                 ? "额度会继续独立刷新；产生首条 Codex 用量后，这里会自动恢复统计卡和明细表。"
                 : $"产生首条 {title} 用量后，这里会自动恢复统计卡和明细表。"
@@ -192,6 +192,9 @@ internal sealed record UsageDisplaySnapshot
 
 internal static class UsageDisplayFormatting
 {
+    internal static string RangeTimeZone(SelectedRange range) => range.Mode == RangeMode.Day && !range.IsCustomStart
+        ? DayTimeZoneSettings.Format(range.Start.Offset) : "GMT+8";
+
     internal static string TokenMillions(long value) => $"{value / 1_000_000d:N3}M";
     internal static string TokenAdaptive(long value) => value switch
     {

@@ -111,7 +111,7 @@ public partial class MainWindow
         {
             "来源",
             "范围",
-            "分桶开始(GMT+8)",
+            $"分桶开始({UsageDisplayFormatting.RangeTimeZone(range)})",
             "分桶类型",
             "Events",
             "Total Tokens",
@@ -149,7 +149,7 @@ public partial class MainWindow
             {
                 module.Title,
                 range.Title,
-                FormatCsvDate(bucket.StartLocal),
+                FormatCsvDate(bucket.StartLocal, range.Start.Offset),
                 rowIsEvent ? "event" : "bucket",
                 FormatCsvNumber(bucket.Events),
                 FormatCsvNumber(bucket.TotalTokens),
@@ -164,7 +164,7 @@ public partial class MainWindow
                 FormatCsvNumber(bucket.LongContextCachedInputTokens),
                 FormatCsvNumber(bucket.LongContextCacheWriteInputTokens),
                 FormatCsvNumber(bucket.LongContextOutputTokens),
-                bucket.LastTokenEventLocal is { } lastEvent ? FormatCsvDate(lastEvent) : ""
+                bucket.LastTokenEventLocal is { } lastEvent ? FormatCsvDate(lastEvent, range.Start.Offset) : ""
             };
             if (module.Source == UsageSource.Codex)
             {
@@ -227,9 +227,9 @@ public partial class MainWindow
         return string.Concat(value.Select(character => invalid.Contains(character) ? '_' : character));
     }
 
-    private static string FormatCsvDate(DateTimeOffset value)
+    private static string FormatCsvDate(DateTimeOffset value, TimeSpan? offset = null)
     {
-        return value.ToOffset(CodexUsageReader.BeijingOffset).ToString("yyyy-MM-dd HH:mm:sszzz", CultureInfo.InvariantCulture);
+        return value.ToOffset(offset ?? CodexUsageReader.BeijingOffset).ToString("yyyy-MM-dd HH:mm:sszzz", CultureInfo.InvariantCulture);
     }
 
     private static string FormatCsvNumber(long value)

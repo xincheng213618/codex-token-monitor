@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net.Http;
 using System.Windows;
 
@@ -10,21 +9,14 @@ public partial class MainWindow
     private GitHubReleaseUpdateResult? availableRelease;
     private bool startupUpdateCheckStarted;
     private bool updateCheckInProgress;
+    private bool updateDownloadInProgress;
 
     private async void CheckForUpdatesButton_Click(object sender, RoutedEventArgs e)
     {
-        if (isClosed || runtime.IsStopping) return;
+        if (isClosed || runtime.IsStopping || updateDownloadInProgress) return;
         if (availableRelease is { } release)
         {
-            try
-            {
-                OpenReleasePage(release);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(this, $"无法打开发布页：{ex.Message}", "检查更新",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
+            await DownloadAndInstallUpdateAsync(release);
             return;
         }
         await CheckForUpdatesAsync(isAutomatic: false);
@@ -63,16 +55,15 @@ public partial class MainWindow
             }
 
             availableRelease = result;
-            CheckForUpdatesButton.Content = $"新版 {result.ReleaseTag} →";
-            CheckForUpdatesButton.ToolTip = $"当前版本：{result.CurrentVersion}\n最新正式版：{result.ReleaseTag}\n点击打开 GitHub 发布页下载。";
+            ShowAvailableUpdate(result);
             if (isAutomatic) return;
             SetStatus($"发现新版本：{result.ReleaseTag}");
-            var openRelease = MessageBox.Show(this,
-                $"当前版本：{result.CurrentVersion}\n最新发布：{result.ReleaseTag}\n\n打开 GitHub 发布页下载吗？",
+            var installRelease = MessageBox.Show(this,
+                $"当前版本：{result.CurrentVersion}\n最新发布：{result.ReleaseTag}\n\n立即下载并更新吗？下载完成后将自动替换并重启，保留配置和用量数据。",
                 "发现新版本", MessageBoxButton.YesNo, MessageBoxImage.Information);
-            if (openRelease == MessageBoxResult.Yes)
+            if (installRelease == MessageBoxResult.Yes)
             {
-                OpenReleasePage(result);
+                await DownloadAndInstallUpdateAsync(result);
             }
         }
         catch (OperationCanceledException) when (isClosed || runtime.IsStopping)
@@ -98,10 +89,57 @@ public partial class MainWindow
         finally
         {
             updateCheckInProgress = false;
-            if (!isClosed) CheckForUpdatesButton.IsEnabled = true;
+            if (!isClosed) CheckForUpdatesButton.IsEnabled = !updateDownloadInProgress;
         }
     }
 
-    private static void OpenReleasePage(GitHubReleaseUpdateResult release) =>
-        Process.Start(new ProcessStartInfo(release.ReleaseUrl.AbsoluteUri) { UseShellExecute = true });
+    private void ShowAvailableUpdate(GitHubReleaseUpdateResult release)
+    {
+        CheckForUpdatesButton.Content = $"更新 {release.ReleaseTag}";
+        CheckForUpdatesButton.ToolTip = $"当前版本：{release.CurrentVersion}\n最新正式版：{release.ReleaseTag}\n点击下载并更新，完成后自动替换并重启。配置和用量数据将保留。";
+    }
+
+    private async Task DownloadAndInstallUpdateAsync(GitHubReleaseUpdateResult release)
+    {
+        if (updateDownloadInProgress || isClosed || runtime.IsStopping) return;
+        updateDownloadInProgress = true;
+        CheckForUpdatesButton.IsEnabled = false;
+        CheckForUpdatesButton.Content = "准备下载…";
+        SetStatus($"正在获取 {release.ReleaseTag} 更新包…");
+        try
+        {
+            var progress = new Progress<ReleaseDownloadProgress>(value =>
+            {
+                if (isClosed || runtime.IsStopping || !updateDownloadInProgress) return;
+                CheckForUpdatesButton.Content = $"下载更新 {value.Percent}%";
+                CheckForUpdatesButton.ToolTip = $"{value.BytesReceived / 1048576d:N1} / {value.TotalBytes / 1048576d:N1} MB\n下载并校验完成后自动替换并重启。";
+            });
+            using var prepared = await runtime.Run("下载更新", token =>
+                new GitHubReleaseDownloader().DownloadAsync(release, progress, token));
+            if (isClosed || runtime.IsStopping) return;
+            CheckForUpdatesButton.Content = "正在安装…";
+            SetStatus("更新包已校验，正在准备替换并重启…");
+            await runtime.Run("准备更新安装", token => Task.Run(() => SelfUpdateInstaller.StartAsync(prepared, token), token));
+            // Close through the normal shutdown path so pending settings and cache writes drain.
+            if (!isClosed && !runtime.IsStopping) Close();
+        }
+        catch (OperationCanceledException) when (isClosed || runtime.IsStopping) { }
+        catch (Exception ex)
+        {
+            if (isClosed || runtime.IsStopping) return;
+            var message = ex is OperationCanceledException ? "下载更新超时，请稍后重试。" : $"更新失败：{ex.Message}";
+            SetStatus(message);
+            MessageBox.Show(this, message + "\n原程序未替换，可点击更新重试。", "下载更新",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            updateDownloadInProgress = false;
+            if (!isClosed)
+            {
+                ShowAvailableUpdate(release);
+                CheckForUpdatesButton.IsEnabled = !updateCheckInProgress;
+            }
+        }
+    }
 }

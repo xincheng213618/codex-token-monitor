@@ -1,6 +1,6 @@
 namespace CodexTokenMonitor;
 
-internal sealed class UsageCacheStore
+internal sealed partial class UsageCacheStore
 {
     private const string CacheFileName = "token-cache-v3.sqlite3";
     private const string CurrentQuotaHistoryFileName = "quota-history-v2.jsonl";
@@ -327,11 +327,8 @@ internal sealed class UsageCacheStore
                     }
                 }
 
-                foreach (var usageEvent in ReadDetailEvents(connection, clippedStart, clippedEnd, cancellationToken))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    AddEventToSummary(summary, dailyBuckets, usageEvent);
-                }
+                AddBucketToSummary(summary, dailyBuckets,
+                    ReadHourlySlice(connection, clippedStart, clippedEnd, cancellationToken));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1086,6 +1083,8 @@ internal sealed class UsageCacheStore
         EnsurePeakPricingColumns(connection);
         EnsureCacheWriteColumns(connection);
         EnsureModelColumns(connection);
+        EnsureHourlySchema(connection);
+        QuotaEstimateHistoryStore.EnsureTrackingSchema(connection, "usage_days", "usage");
         if (Path.GetFileName(cachePath) == "token-cache-v4.sqlite3")
         {
             // Re-read only affected days once after fixing repeated session_meta.

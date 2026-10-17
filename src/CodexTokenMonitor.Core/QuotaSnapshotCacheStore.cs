@@ -945,6 +945,7 @@ internal sealed class QuotaSnapshotCacheStore
             )
             """);
         ExecuteNonQuery(connection, "CREATE INDEX IF NOT EXISTS idx_quota_snapshots_time ON quota_snapshots(snapshot_local)");
+        QuotaEstimateHistoryStore.EnsureTrackingSchema(connection, "quota_days", "quota");
         ExecuteNonQuery(connection, """
             CREATE TABLE IF NOT EXISTS imported_quota_snapshot_keys (
                 snapshot_key TEXT PRIMARY KEY

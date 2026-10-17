@@ -172,6 +172,10 @@
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="统计范围" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,12,0" />
                 <ComboBox x:Name="RangeModeBox" Width="108" Margin="0,2,8,2" SelectionChanged="RangeModeBox_SelectionChanged" />
+                <StackPanel x:Name="DayTimeZonePanel" Orientation="Horizontal" ToolTip="仅按天统计生效；按所选时区的零点划分一天，其他统计范围保持不变">
+                    <TextBlock Text="时区" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="2,0,8,0" />
+                    <ComboBox x:Name="DayTimeZoneBox" Width="116" Margin="0,2,8,2" SelectionChanged="DayTimeZoneBox_SelectionChanged" />
+                </StackPanel>
                 <Button x:Name="PreviousButton" Style="{StaticResource ToolbarButton}" Width="34" Content="&#xE76B;" FontFamily="Segoe MDL2 Assets" ToolTip="上一时段" Click="PreviousButton_Click" />
                 <DatePicker x:Name="DatePicker" Width="146" Margin="0,2,8,2" SelectedDateChanged="DatePicker_SelectedDateChanged" />
                 <xctk:DateTimePicker x:Name="WeekEndPicker" Width="188" Format="Custom" FormatString="yyyy-MM-dd HH:mm" Margin="0,2,8,2" Visibility="Collapsed" ValueChanged="WeekEndPicker_ValueChanged" />

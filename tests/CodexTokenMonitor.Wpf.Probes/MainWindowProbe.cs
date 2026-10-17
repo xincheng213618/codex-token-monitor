@@ -13,7 +13,7 @@ using Microsoft.Data.Sqlite;
 
 namespace CodexTokenMonitor.Wpf.Probes;
 
-internal static class MainWindowProbe
+internal static partial class MainWindowProbe
 {
     private static readonly DateTimeOffset SeedDay = new(2000, 1, 18, 0, 0, 0, TimeSpan.FromHours(8));
     private static readonly List<object> Results = new();
@@ -152,6 +152,9 @@ internal static class MainWindowProbe
             Results.Add(new { check = "materialized-cycle-display", bypassesGate = true });
 
             await CheckSourceSelectionRoundTripAsync(window, modules);
+            await CheckBreakdownQuotaRefreshAsync(window, codex, modules[UsageSource.ClaudeCode]);
+            await CheckQuotaEstimateOpeningAsync(window, codex);
+            CheckTimelinePlotValues(window);
 
             foreach (var module in modules.Values) module.ClearDisplay();
             Select(window, codex, RangeMode.Day);
@@ -185,6 +188,7 @@ internal static class MainWindowProbe
             await RefreshAndDrainAsync(window);
             await RenderContentAsync(window, Path.Combine(outputRoot, "wpf-architecture-probe.png"));
             await CheckRealPriceCardsAsync(window, modules);
+            await CheckDayTimeZoneAsync(window, modules[UsageSource.ClaudeCode]);
             Require(!mainWasLoaded, "main Loaded lifecycle never entered");
 
             // Closing must keep the dispatcher alive while registered work
@@ -854,7 +858,8 @@ internal static class MainWindowProbe
                 "pending startup request preserves usage status and dispatcher responsiveness");
             newerHandler.Respond("v2099.01.01");
             await pending.WaitAsync(TimeSpan.FromSeconds(5));
-            Require(Get<Button>(newer, "CheckForUpdatesButton").Content.ToString() == "新版 v2099.01.01 →",
+            Require(Get<Button>(newer, "CheckForUpdatesButton").Content.ToString() == "更新 v2099.01.01" &&
+                    Get<Button>(newer, "CheckForUpdatesButton").ToolTip.ToString()!.Contains("下载并更新"),
                 "new version has a nonmodal toolbar entry");
             Require(Get<GitHubReleaseUpdateResult>(newer, "availableRelease").ReleaseTag == "v2099.01.01" &&
                     Get<Button>(newer, "CheckForUpdatesButton").IsEnabled,

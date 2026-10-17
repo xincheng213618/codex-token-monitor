@@ -31,11 +31,23 @@ internal static class QuotaEstimateCalculator
         IReadOnlyList<CodexQuotaCycle>? knownWeeklyPeriods = null,
         CancellationToken cancellationToken = default)
     {
+        using var diagnostics = CacheOperationDiagnostics.Begin(propagateToParent: true);
         var currentRows = BuildCurrentRows(currentQuota, cancellationToken);
-
-        var periods = HasCurrentPeriod(knownWeeklyPeriods, currentQuota)
-            ? knownWeeklyPeriods!
-            : BuildWeeklyPeriods(currentQuota, now, cancellationToken);
+        using var history = QuotaEstimateHistoryStore.Open();
+        var savedPeriods = history?.ReadPeriods(currentQuota);
+        var periods = savedPeriods is not null
+            ? RefreshCurrentPeriod(savedPeriods, currentQuota, now, cancellationToken)
+            : null;
+        var usedSavedPeriods = periods is not null;
+        if (periods is null)
+        {
+            // A changed historical source can change cycle boundaries as well
+            // as costs. Do not reuse the reader's short-lived in-memory list.
+            if (history?.HasSavedPeriods == true) UsageSourceReaders.Codex.Cycles.InvalidateCache();
+            periods = history?.HasSavedPeriods != true && HasCurrentPeriod(knownWeeklyPeriods, currentQuota)
+                ? knownWeeklyPeriods!
+                : BuildWeeklyPeriods(currentQuota, now, cancellationToken);
+        }
         var usageCache = UsageCacheStore.Load();
         var weeklyRows = new List<QuotaWeeklyCycleRow>(periods.Count);
         foreach (var period in periods)
@@ -46,17 +58,61 @@ internal static class QuotaEstimateCalculator
                 currentQuota.Week,
                 usageCache,
                 now,
-                cancellationToken);
+                cancellationToken,
+                history);
             if (row is not null)
             {
                 weeklyRows.Add(row);
             }
         }
 
+        if (diagnostics.Warnings.Count == 0)
+        {
+            if (!usedSavedPeriods) history?.SavePeriods(periods, cancellationToken);
+            history?.Flush(cancellationToken);
+        }
+
         return new QuotaEstimateLoadResult(currentRows, weeklyRows, periods.Count)
         {
-            Periods = periods.ToArray()
+            Periods = periods.ToArray(),
+            CachedHistoricalPeriodCount = history?.UsageCacheHits ?? 0,
+            UsedSavedPeriods = usedSavedPeriods
         };
+    }
+
+    private static IReadOnlyList<CodexQuotaCycle>? RefreshCurrentPeriod(
+        IReadOnlyList<CodexQuotaCycle> periods, CodexQuotaEstimate quota, DateTimeOffset now, CancellationToken token)
+    {
+        var current = periods.Single(item => item.IsCurrent);
+        var week = quota.Week!;
+        var snapshots = UsageSourceReaders.Codex.ReadCachedAndHistoricalQuotaSnapshots(
+                current.PeriodStart.AddMinutes(-10), now.AddMinutes(1), token)
+            .Where(CodexUsageReader.IsGeneralCodexQuotaSnapshot)
+            .Where(item => item.WeekUsedPercent is not null && item.WeekResetAtLocal is not null)
+            .Append(new CodexQuotaSnapshot(quota.SnapshotLocal, quota.LimitId, quota.LimitName,
+                null, null, week.UsedPercent, week.ResetAtLocal))
+            .GroupBy(item => item.SnapshotLocal)
+            .Select(group => group.OrderByDescending(item => item.WeekUsedPercent).First())
+            .OrderBy(item => item.SnapshotLocal).ToArray();
+        // A new/replayed reset or a fresh hard quota drop needs the complete
+        // boundary inference; the usual ongoing cycle reads only its own data.
+        var filtered = CodexQuotaCycleReader.RemoveTransientResetOutliers(snapshots, token);
+        if (filtered.Any(item => item.SnapshotLocal >= current.PeriodStart &&
+                item.WeekResetAtLocal > current.ResetAt.AddMinutes(10))) return null;
+        // An older reset may be replayed alongside the established live reset.
+        // The saved complete inference already established this window; such
+        // old streams must not repeatedly force every historical cycle to load.
+        var matching = filtered.Where(item =>
+            CodexQuotaCycleReader.IsSameQuotaReset(item.WeekResetAtLocal, current.ResetAt)).ToArray();
+        if (CodexQuotaCycleReader.BuildActualWeeklyPeriods(matching, now, token).Count != 1) return null;
+        var updated = current with
+        {
+            PeriodEnd = new[] { now, week.WindowEndLocal, current.PeriodEnd }.Max(),
+            SnapshotCount = matching.Length,
+            MaxWeekUsedPercent = matching.Max(item => item.WeekUsedPercent),
+            ResetAt = week.ResetAtLocal!.Value
+        };
+        return periods.Select(item => item.IsCurrent ? updated : item).ToArray();
     }
 
     private static bool HasCurrentPeriod(
@@ -83,7 +139,8 @@ internal static class QuotaEstimateCalculator
         CodexQuotaWindowEstimate? currentWeek,
         UsageCacheStore? usageCache,
         DateTimeOffset now,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        QuotaEstimateHistoryStore? history = null)
     {
         if (period.PeriodEnd <= period.PeriodStart)
         {
@@ -92,7 +149,8 @@ internal static class QuotaEstimateCalculator
 
         var usage = period.IsCurrent && currentWeek is not null
             ? currentWeek.Usage
-            : (usageCache ?? UsageCacheStore.Load()).ReadRange(
+            : history?.ReadUsage(period, usageCache ?? UsageCacheStore.Load(), cancellationToken)
+              ?? (usageCache ?? UsageCacheStore.Load()).ReadRange(
                 period.PeriodStart,
                 period.PeriodEnd,
                 cancellationToken);
@@ -478,6 +536,8 @@ internal sealed record QuotaEstimateLoadResult(
     int PeriodCount)
 {
     public IReadOnlyList<CodexQuotaCycle> Periods { get; init; } = Array.Empty<CodexQuotaCycle>();
+    public int CachedHistoricalPeriodCount { get; init; }
+    public bool UsedSavedPeriods { get; init; }
 }
 
 internal sealed record QuotaWeeklyCycleRow(

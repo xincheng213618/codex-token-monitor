@@ -13,13 +13,12 @@ internal static class UsageTimelineBuilder
         startLocal = startLocal.ToOffset(CodexUsageReader.BeijingOffset);
         endLocal = endLocal.ToOffset(CodexUsageReader.BeijingOffset);
 
-        var rows = sourceRows
-            .Where(row => row.Events > 0)
-            .OrderBy(row => row.StartLocal)
-            .ToList();
-        if (rows.Count == 0 || interval is not { } bucketInterval || bucketInterval <= TimeSpan.Zero || endLocal <= startLocal)
+        if (interval is not { } bucketInterval || bucketInterval <= TimeSpan.Zero || endLocal <= startLocal)
         {
-            return rows;
+            return sourceRows
+                .Where(row => row.Events > 0)
+                .OrderBy(row => row.StartLocal)
+                .ToList();
         }
 
         var intervalTicks = bucketInterval.Ticks;
@@ -27,25 +26,41 @@ internal static class UsageTimelineBuilder
         var bucketCount = Math.Max(
             1,
             (int)Math.Min(int.MaxValue, Math.Ceiling(spanTicks / (double)intervalTicks)));
-        var buckets = new TokenUsageBucket[bucketCount];
-        for (var index = 0; index < bucketCount; index++)
+        TokenUsageBucket?[]? buckets = null;
+        // Fixed buckets already define chronological output order. Merge the
+        // incoming rows directly, creating only buckets that contain events.
+        foreach (var row in sourceRows)
         {
-            buckets[index] = new TokenUsageBucket
+            if (row.Events <= 0)
             {
-                StartLocal = startLocal.AddTicks(intervalTicks * index)
-            };
-        }
+                continue;
+            }
 
-        foreach (var row in rows)
-        {
+            buckets ??= new TokenUsageBucket?[bucketCount];
             var offsetTicks = (row.StartLocal - startLocal).Ticks;
             var clampedOffset = Math.Clamp(offsetTicks, 0L, spanTicks - 1);
             var index = Math.Clamp((int)(clampedOffset / intervalTicks), 0, bucketCount - 1);
-            buckets[index].MergeFrom(row);
+            var bucket = buckets[index] ??= new TokenUsageBucket
+            {
+                StartLocal = startLocal.AddTicks(intervalTicks * index)
+            };
+            bucket.MergeFrom(row);
         }
 
-        return buckets
-            .Where(bucket => bucket.Events > 0)
-            .ToList();
+        if (buckets is null)
+        {
+            return Array.Empty<TokenUsageBucket>();
+        }
+
+        var result = new List<TokenUsageBucket>();
+        foreach (var bucket in buckets)
+        {
+            if (bucket is { Events: > 0 })
+            {
+                result.Add(bucket);
+            }
+        }
+
+        return result;
     }
 }

@@ -1,9 +1,114 @@
+using System.Text;
+using System.Text.Json;
 using Xunit;
 
 namespace CodexTokenMonitor.Tests;
 
-public sealed class LastDisplayStoreTests
+public sealed partial class LastDisplayStoreTests
 {
+    [Fact]
+    public async Task LargeSnapshotPreservesModelsQuotasAndUnicodeWithTheExistingJsonContract()
+    {
+        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(CreateRoot());
+        using var hooks = LastDisplayStore.PushWriteTestHooks(
+            token => Task.Delay(Timeout.Infinite, token), () => { });
+        var start = new DateTimeOffset(2000, 1, 18, 0, 0, 0, TimeSpan.FromHours(8));
+        const string model = "模型-α-🧪";
+        var range = new SelectedRange(start, start.AddDays(1), "今天 · \"费用\" 🧪", "明细\n缓存", RangeMode.Day);
+        var rows = Enumerable.Range(0, 6_430).Select(index =>
+        {
+            var time = start.AddHours(9).AddSeconds(index);
+            var row = new TokenUsageBucket { StartLocal = time };
+            row.Add(new TokenUsageEvent(time, 120_000 + index, 90_000, 1_000, 300,
+                121_000 + index, CacheWriteInputTokens: 10_000, ModelId: model, ServiceTier: "priority"));
+            return row;
+        }).ToArray();
+        var summary = UsageSummaryBuilder.FromRows(range.Start, range.End, rows);
+        var daily = new TokenUsageBucket { StartLocal = start };
+        foreach (var row in rows) daily.MergeFrom(row);
+        summary.DailyBuckets.Add(daily);
+        var reset = start.AddDays(1);
+        var quota = new CodexQuotaEstimate(rows[^1].StartLocal, "codex", "额度 · 中文",
+            null, new CodexQuotaWindowEstimate("7d", 62m, 10_080, start.AddDays(-6), range.End,
+                reset, summary, 627.12m, 1_000m, 1_000_000_000));
+        var snapshots = new[]
+        {
+            new CodexQuotaSnapshot(rows[0].StartLocal, "codex", "额度 · 中文", null, null, 40m, reset),
+            new CodexQuotaSnapshot(rows[^1].StartLocal, "codex", "额度 · 中文", null, null, 62m, reset)
+        };
+        var result = new UsageQueryResult(summary, rows, TimeSpan.FromMinutes(107), quota, snapshots)
+        {
+            DetailRows = rows
+        };
+
+        LastDisplayStore.Save(UsageSource.Codex, range, result);
+        await LastDisplayStore.FlushAsync();
+
+        var restored = Assert.IsType<LastDisplaySnapshot>(LastDisplayStore.Load());
+        Assert.Equal(range, restored.Range);
+        Assert.Equal(result.CodingTime, restored.Result.CodingTime);
+        Assert.Equal(summary.TotalTokens, restored.Result.Summary.TotalTokens);
+        Assert.Single(restored.Result.Summary.DailyBuckets);
+        Assert.Equal(rows.Length, restored.Result.BreakdownRows.Count);
+        Assert.Empty(restored.Result.DetailRows);
+        for (var index = 0; index < rows.Length; index++)
+        {
+            var original = rows[index];
+            var actual = restored.Result.BreakdownRows[index];
+            Assert.Equal(original.StartLocal, actual.StartLocal);
+            Assert.Equal(original.InputTokens, actual.InputTokens);
+            Assert.Equal(original.CachedInputTokens, actual.CachedInputTokens);
+            Assert.Equal(original.CacheWriteInputTokens, actual.CacheWriteInputTokens);
+            Assert.Equal(original.TotalTokens, actual.TotalTokens);
+            Assert.Equal(original.ReasoningOutputTokens, actual.ReasoningOutputTokens);
+            var actualModel = Assert.Single(actual.ModelUsage);
+            Assert.Equal(model, actualModel.Key);
+            var actualTier = Assert.Single(actualModel.Value.ServiceTierUsage);
+            Assert.Equal("priority", actualTier.Key);
+            Assert.Equal(original.TotalTokens, actualTier.Value.TotalTokens);
+        }
+        Assert.Null(restored.Result.Quota!.FiveHour);
+        Assert.Equal(quota.LimitName, restored.Result.Quota.LimitName);
+        Assert.Equal(quota.Week!.UsedPercent, restored.Result.Quota.Week!.UsedPercent);
+        Assert.Equal(quota.Week.UsedGptCost, restored.Result.Quota.Week.UsedGptCost);
+        Assert.Equal(summary.TotalTokens, restored.Result.Quota.Week.Usage.TotalTokens);
+        Assert.Equal(snapshots, restored.Result.QuotaSnapshots);
+
+        var path = Path.Combine(MonitorCachePaths.LocalAppData, "CodexTokenMonitor", "wpf-last-display-v5.json");
+        var bytes = File.ReadAllBytes(path);
+        var state = JsonSerializer.Deserialize<LastDisplayState>(File.ReadAllText(path));
+        // The former UTF-16 string writer and the stream writer emit the same
+        // UTF-8 JSON bytes, so existing v5 readers keep the complete schema.
+        Assert.Equal(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(state)), bytes);
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "*.tmp"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LoadAcceptsExistingV5JsonIncludingUtf8Bom(bool withBom)
+    {
+        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(CreateRoot());
+        var path = Path.Combine(MonitorCachePaths.LocalAppData, "CodexTokenMonitor", "wpf-last-display-v5.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        const string json = """
+            {"Source":0,"SavedAtLocal":"2000-01-18T10:00:00+08:00",
+             "Range":{"Start":"2000-01-18T00:00:00+08:00","End":"2000-01-19T00:00:00+08:00","Title":"旧版 · 中文 🧪","BreakdownTitle":"明细","Mode":0},
+             "Result":{"Summary":{"StartLocal":"2000-01-18T00:00:00+08:00","EndLocal":"2000-01-19T00:00:00+08:00","Events":1,"InputTokens":100,"CachedInputTokens":60,"UncachedInputTokens":40,"OutputTokens":10,"TotalTokens":110},
+                       "BreakdownRows":[{"StartLocal":"2000-01-18T09:00:00+08:00","Events":1,"InputTokens":100,"CachedInputTokens":60,"UncachedInputTokens":40,"OutputTokens":10,"TotalTokens":110}],
+                       "CodingTimeTicks":3000000000,"Quota":null,"QuotaSnapshots":[]}}
+            """;
+        File.WriteAllText(path, json, new UTF8Encoding(withBom));
+
+        var restored = Assert.IsType<LastDisplaySnapshot>(LastDisplayStore.Load());
+
+        Assert.Equal("旧版 · 中文 🧪", restored.Range.Title);
+        Assert.Equal(110, restored.Result.Summary.TotalTokens);
+        Assert.Equal(60, Assert.Single(restored.Result.BreakdownRows).CachedInputTokens);
+        Assert.Equal(TimeSpan.FromMinutes(5), restored.Result.CodingTime);
+        Assert.Null(restored.Result.Quota);
+    }
+
     [Fact]
     public async Task SynchronousFlushCompletesWhileUiContextDoesNotPumpWriterContinuation()
     {
