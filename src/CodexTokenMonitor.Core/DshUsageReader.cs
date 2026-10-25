@@ -484,13 +484,14 @@ internal static class DshUsageReader
     /// format generation present. Migration keeps the superseded generation on
     /// disk, so scanning every match would report one session twice.
     /// </summary>
-    private static List<string> SelectHighestGenerations(string sessionsRoot)
+    internal static List<string> SelectHighestGenerations(string sessionsRoot)
     {
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
             IgnoreInaccessible = true,
-            MatchType = MatchType.Simple
+            MatchType = MatchType.Simple,
+            AttributesToSkip = FileAttributes.ReparsePoint
         };
 
         var selected = new Dictionary<string, (int Version, string Path)>(StringComparer.OrdinalIgnoreCase);

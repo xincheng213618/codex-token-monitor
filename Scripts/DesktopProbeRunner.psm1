@@ -101,8 +101,11 @@ function Test-DesktopProbeReport {
         'main' { @('display-bindings-initialized', 'registered-tabs', 'historical-cycle-gate',
             'materialized-cycle-display', 'source-selection-round-trip', 'latest-wins-source-and-range',
             'independent-window-recovery', 'shared-import-copy-binding', 'empty-to-ready-binding',
-            'main-price-failure', 'main-price-recovery', 'startup-update-check', 'real-closing-drain', 'isolation') }
+            'main-price-failure', 'main-price-recovery', 'startup-update-check', 'real-closing-drain',
+            'status-speed-refresh', 'speed-analysis-window', 'speed-analysis-history', 'isolation') }
         'settings' { @('normal-load', 'failed-load-and-retry', 'failed-save-and-retry', 'ten-display-slots', 'isolation-and-shutdown') }
+        'speed' { @('independent-live-sampling', 'estimate-correction', 'empty-and-missing-timing', 'source-metric-and-peak',
+            'history-index-and-export', 'history-corruption-repair', 'history-close', 'speed-window-close', 'isolation') }
         'analysis' { @('cached-windows-bypass-gate', 'empty-known-period-fallback', 'cached-windows-corruption-recovery',
             'manual-estimate-corruption-recovery', 'single-window-close', 'cycle-corruption-recovery', 'parent-shutdown', 'isolation-and-exit') }
         default { throw "Unknown suite $Suite" }
@@ -113,7 +116,10 @@ function Test-DesktopProbeReport {
     switch ($Suite) {
         'main' {
             $isolation = Get-ProbeCheck $report 'isolation'
-            Assert-ProbeFlags $isolation @{ mainLoaded = $false; sharingServerStarted = $false; allClosed = $true }
+            Assert-ProbeFlags $isolation @{ mainLoaded = $false; sharingServerStarted = $false; allClosed = $true; sourceLogsReadOnly = $true }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'status-speed-refresh') @{ sharedGateHeld = $true; automaticAppend = $true; pauseAndManual = $true; footerAlwaysSamples = $true; hiddenViewNotCreated = $true; hiddenViewFrozen = $true; inactiveSourceFrozen = $true; returnAppliesLatest = $true }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'speed-analysis-window') @{ emptySourceCleared = $true; sourceReturn = $true; fullDetails = $true; equalPageBounds = $true; trendIndependent = $true; sideSessionList = $true; sharedCardPadding = $true; tabHeaderInsideCard = $true; metricsAlwaysVisible = $true; noHeaderIcon = $true; toolbarEntry = $true; oneHeaderRow = $true; cacheInFooter = $true; singleton = $true }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'speed-analysis-history') @{ insideAnalysisWindow = $true; returnToLive = $true; workerDrained = $true; latePublication = $false }
             Assert-ProbeCondition ($isolation.appServerReads -eq 0 -and $isolation.windowsCreated -eq $isolation.closedWindows) 'Main-window isolation or shutdown was incomplete.'
             Assert-ProbeFlags (Get-ProbeCheck $report 'real-closing-drain') @{
                 firstCloseDeferred = $true; dispatcherResponsive = $true; resultPublished = $false
@@ -156,6 +162,15 @@ function Test-DesktopProbeReport {
                 draftCancelSafe = $true; corruptLoadAndSaveSafe = $true; saved = $true
             }
         }
+        'speed' {
+            $isolation = Get-ProbeCheck $report 'isolation'
+            Assert-ProbeFlags $isolation @{ allClosed = $true; realLogsRead = $false }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'speed-window-close') @{ workerDrained = $true; latePublication = $false }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'independent-live-sampling') @{ sharedGateHeld = $true; dispatcherResponsive = $true }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'history-index-and-export') @{ sharedGateHeld = $true; persistedAfterDeletion = $true }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'history-corruption-repair') @{ previousRowsPreserved = $true; bytesPreserved = $true; backupExact = $true }
+            Assert-ProbeFlags (Get-ProbeCheck $report 'history-close') @{ workerDrained = $true; latePublication = $false }
+        }
         'analysis' {
             $isolation = Get-ProbeCheck $report 'isolation-and-exit'
             Assert-ProbeFlags $isolation @{ mainWindowConstructed = $false; sharingServerStarted = $false; allClosed = $true }
@@ -172,7 +187,7 @@ function Test-DesktopProbeReport {
     Assert-ProbeCondition ($isolationPath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) 'Fixture root escaped the suite directory.'
     $renders = @($report.checks | Where-Object check -EQ 'render')
     $requiredImages = switch ($Suite) {
-        'main' { @('wpf-architecture-probe.png', 'main-source-round-trip.png', 'main-independent-window.png', 'main-stale-result.png', 'main-first-failure.png', 'main-successful-empty.png', 'main-empty-recovered.png', 'startup-update-available.png') }
+        'main' { @('wpf-architecture-probe.png', 'main-source-round-trip.png', 'main-independent-window.png', 'main-stale-result.png', 'main-first-failure.png', 'main-successful-empty.png', 'main-empty-recovered.png', 'startup-update-available.png', 'main-usage-analysis.png', 'main-usage-analysis-narrow.png', 'main-realtime-data.png', 'main-realtime-data-narrow.png', 'main-speed-window.png', 'main-speed-window-history.png') }
         'settings' {
             foreach ($window in @('ModelPricesWindow', 'SubscriptionPlanWindow', 'ResetOpportunityWindow')) {
                 foreach ($state in @('healthy', 'load-failure', 'save-failure')) { "$window-$state.png" }
@@ -181,6 +196,7 @@ function Test-DesktopProbeReport {
             'PriceSettingsWindow-ten-slots.png'; 'ModelPricesWindow-openai.png'
         }
         'analysis' { @('quota-cost-curve.png', 'quota-estimate.png', 'cycle-cache-failure-preserved.png', 'cycle-analysis-recovered.png') }
+        'speed' { @('speed-analysis.png', 'speed-analysis-narrow.png', 'speed-analysis-empty.png', 'speed-all-sources.png', 'speed-history.png', 'speed-history-failure.png') }
     }
     $imageNames = @()
     Add-Type -AssemblyName PresentationCore
@@ -217,7 +233,7 @@ function Invoke-DesktopRegression {
     [CmdletBinding()]
     param(
         [ValidateSet('Release', 'Debug')][string]$Configuration = 'Release',
-        [ValidateSet('main', 'settings', 'analysis')][string[]]$Suite = @('main', 'settings', 'analysis'),
+        [ValidateSet('main', 'settings', 'analysis', 'speed')][string[]]$Suite = @('main', 'settings', 'analysis', 'speed'),
         [string]$OutputRoot = 'artifacts\desktop-probes',
         [switch]$NoBuild,
         [ValidateRange(1, 1800)][int]$TimeoutSeconds = 120,
@@ -241,13 +257,13 @@ function Invoke-DesktopRegression {
             $summary.build = Invoke-DesktopChildProcess -FilePath $dotnet -Arguments @('build', (Join-Path $script:RepositoryRoot 'CodexTokenMonitor.slnx'), '-c', $Configuration) -WorkingDirectory $script:RepositoryRoot -LogPrefix (Join-Path $runRoot 'build') -TimeoutSeconds $BuildTimeoutSeconds
             Assert-ProbeCondition (-not $summary.build.TimedOut -and $summary.build.ExitCode -eq 0) "Build failed; see logs in $runRoot"
         }
-        $target = "bin\$Configuration\net8.0-windows10.0.19041.0"
+        $target = "bin\$Configuration\net10.0-windows10.0.19041.0"
         if ($Configuration -eq 'Release') { $target = Join-Path $target 'win-x64' }
         $probeDirectory = Join-Path $script:RepositoryRoot "tests\CodexTokenMonitor.Wpf.Probes\$target"
         $probeDll = Join-Path $probeDirectory 'CodexTokenMonitor.Wpf.Probes.dll'
         $wpfDirectory = Join-Path $script:RepositoryRoot "src\CodexTokenMonitor.Wpf\$target"
         Assert-ProbeCondition (Test-Path -LiteralPath $probeDll -PathType Leaf) 'Probe binary is missing. Run again without -NoBuild.'
-        $coreHash = (Get-FileHash -LiteralPath (Join-Path $script:RepositoryRoot "src\CodexTokenMonitor.Core\bin\$Configuration\net8.0\CodexTokenMonitor.Core.dll") -Algorithm SHA256).Hash
+        $coreHash = (Get-FileHash -LiteralPath (Join-Path $script:RepositoryRoot "src\CodexTokenMonitor.Core\bin\$Configuration\net10.0\CodexTokenMonitor.Core.dll") -Algorithm SHA256).Hash
         $wpfHash = (Get-FileHash -LiteralPath (Join-Path $wpfDirectory 'CodexTokenMonitor.dll') -Algorithm SHA256).Hash
         Assert-ProbeCondition ((Get-FileHash -LiteralPath (Join-Path $probeDirectory 'CodexTokenMonitor.Core.dll')).Hash -ceq $coreHash -and (Get-FileHash -LiteralPath (Join-Path $probeDirectory 'CodexTokenMonitor.dll')).Hash -ceq $wpfHash) 'Probe copies differ from production binaries. Run again without -NoBuild.'
         $summary['coreSha256'] = $coreHash

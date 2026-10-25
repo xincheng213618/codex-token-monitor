@@ -6,9 +6,9 @@
 .\Scripts\Test-Desktop.ps1
 ```
 
-脚本先构建整个 solution，然后依次启动主窗口、设置窗口、分析窗口三组测试。每组使用单独的 STA 进程、缓存与来源日志目录；不加载真实账户，不启动共享服务。主窗口由测试直接调用刷新入口，始终不触发 Loaded；设置和分析窗口使用真实 Loaded/Closed 生命周期。
+脚本先构建整个 solution，然后依次启动主窗口、设置窗口、分析窗口和速度窗口四组测试。每组使用单独的 STA 进程、缓存与来源日志目录；不加载真实账户，不启动共享服务。主窗口由测试直接调用刷新入口，始终不触发 Loaded；设置、分析和速度窗口使用真实 Loaded/Closed 生命周期。速度组覆盖独立采样、完成后校正、七来源/全部来源切换、总吞吐量、峰值、历史持久化/导出、损坏备份恢复及关闭后的结果抑制，并渲染正常与最小尺寸。
 
-solution 使用 `.slnx`，需要 .NET SDK 9.0.200 或更新版本，不能只依赖 .NET 8 SDK；应用目标仍为 .NET 8。本机以 SDK 10.0.401 验证，CI 显式安装 10.0.x SDK 和 .NET 8 测试运行时。SDK 格式支持依据：[Microsoft SLNX 说明](https://devblogs.microsoft.com/dotnet/introducing-slnx-support-dotnet-cli/)。
+solution 使用 `.slnx`，应用、Core 与测试均以 .NET 10 为目标；`global.json` 选择稳定版 10.0 SDK，本机使用 10.0.401，CI 安装 10.0.x。轻量程序需要 .NET 10 Desktop Runtime 和 ASP.NET Core 10 Runtime，自包含发布携带运行时。
 
 ## 常用命令
 
@@ -29,7 +29,7 @@ solution 使用 `.slnx`，需要 .NET SDK 9.0.200 或更新版本，不能只依
 dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.csproj -c Release
 ```
 
-`-Suite` 接受 main/settings/analysis，PowerShell 大小写均可；多个值使用数组，例如 `-Suite main,analysis`。`-OutputRoot` 可指定报告根目录，相对路径按仓库根目录解析。每次运行都会创建新的时间戳与 GUID 子目录，不覆盖、清理旧证据。`-NoBuild` 验证的是已有构建产物，不代表源码变更已经编译；修改代码后运行默认命令。
+`-Suite` 接受 main/settings/analysis/speed，PowerShell 大小写均可；多个值使用数组，例如 `-Suite main,analysis`。`-OutputRoot` 可指定报告根目录，相对路径按仓库根目录解析。每次运行都会创建新的时间戳与 GUID 子目录，不覆盖、清理旧证据。`-NoBuild` 验证的是已有构建产物，不代表源码变更已经编译；修改代码后运行默认命令。
 
 ## 输出与判定
 
@@ -47,13 +47,20 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 
 ## 当前覆盖
 
-| 组 | 行为检查 | 图像 | 主要边界 |
-| --- | ---: | ---: | --- |
-| main | 45 | 7 | 五来源范围读取/往返切换、周期 gate/LRU、最新请求生效、22 处绑定、共享导入、设置/缓存故障与恢复、独立窗口与关停排空 |
-| settings | 10 | 11 | 三类设置窗口加载/保存、失败禁用与编辑保留、修复后保存、真实窗口关闭与运行时排空 |
-| analysis | 8 | 4 | 缓存分析绕 gate、只读曲线不保存派生锚点、损坏保留/恢复、单窗口取消与父运行时关停 |
+| 组 | 主要边界 |
+| --- | --- |
+| main | 七来源范围读取/往返切换、周期 gate/LRU、最新请求生效、绑定、共享导入、设置/缓存故障与恢复、无品牌图标的单行工具栏、底部持续测速与按需实时视图、同 Rect 明细/实时页签、分析窗口入口、关停排空 |
+| settings | 设置窗口加载/保存、失败禁用与编辑保留、修复后保存、真实窗口关闭与运行时排空 |
+| analysis | 缓存分析绕 gate、只读曲线、损坏保留/恢复、周期分析、单窗口取消与父运行时关停 |
+| speed | 七来源、独立测速、估算校正、吞吐/峰值、窗口内部历史/导出与返回、损坏恢复及采样/索引关闭排空 |
 
-正常主窗口、临时首次失败窗口和独立窗口共 3 个，全部追踪真实 Closed。隔离作用域覆盖启动、Dispatcher 工作和失败清理；设置失败测试通过禁用控件与本地写入边界验证保护，不调用账户同步或导入处理程序。
+检查和图像数量以当前运行生成的报告为准。测试创建的主窗口和独立窗口均追踪真实 Closed。隔离作用域覆盖启动、Dispatcher 工作和失败清理；设置失败测试通过禁用控件与本地写入边界验证保护，不调用账户同步或导入处理程序。
+
+主窗口组额外生成一份隔离的原生 Codex 日志，验证底部速度在持有主统计 gate 时仍可采样、自动读取追加记录、遵守自动刷新开关与来源变化，且不受下方页签选择影响；结束时逐文件核对来源夹具哈希，禁止意外来源写入。
+
+`RealtimeDataView` 与左下角共享主采样快照，不额外读盘：仅选中实时数据页时更新指标、曲线和会话，离页冻结这些视图但底部继续采样，返回时应用最新快照。布局验证覆盖无品牌图标的单行顶部入口、底部缓存状态、独立上方趋势/分隔条不动，以及下方同一白色 `DetailsCard` 的标题行页签。该区域保留 12,10 内边距，两个页面和 Tab 内容零额外边距、无独立框；只切换原列表区域，复用同一 Rect，模块位置不动。正常和最小窗口尺寸下均检查实时页五指标条始终可见、无重复来源标题/刷新行，以及左侧主要曲线与最右约 240 px 会话栏的左右布局。
+
+完整测速及历史验证通过独立速度分析窗口进行，历史在该窗口内切换并可返回实时，其生命周期与主视图选择独立。主窗口本身仍不进入 Loaded，不发起账户或共享服务请求。
 
 `Test-DesktopRunner.ps1` 使用合成报告与短生命周期子进程验证运行器自身，不作为产品窗口行为证明。带 `-IncludeProbeCli` 时还运行缺参数、重复参数、未知组和非空目录拒绝检查，需已有对应配置的探针构建。
 
@@ -61,6 +68,6 @@ dotnet test .\tests\CodexTokenMonitor.Core.Tests\CodexTokenMonitor.Core.Tests.cs
 
 正式源码在 `tests/CodexTokenMonitor.Wpf.Probes/`，独立程序集通过明确友元访问应用内部状态；不再借用 Core.Tests 的程序集名称。新增场景优先沿用独立夹具和真实窗口事件，禁止通过取消隔离或启用账户网络补足测试。修改必需行为或图像名称时，同时更新 `DesktopProbeRunner.psm1` 的验收集合。
 
-GitHub Actions 提供手动触发的 `desktop regression` 工作流，运行同一入口并上传报告和截图。该工作流尚未在远端执行；先保留手动触发，待验证 hosted runner 的桌面能力后再决定是否作为 PR 门禁。既有 build 工作流继续进行 Core 测试和自包含发布冒烟检查。
+GitHub Actions 的 `desktop regression` 工作流支持相关路径 PR、每周计划及手动选择分组，运行同一入口并上传报告和截图。本次本地验收不代表远端 hosted runner 已执行通过。`build` 工作流继续进行 Core 测试和自包含发布冒烟检查。
 
 当前测试不覆盖真实账户联网、设备间共享 HTTP 传输、安装包升级或长时间性能测量。这些场景按相关功能迭代单独验收，不能由离屏渲染和合成数据推断通过。

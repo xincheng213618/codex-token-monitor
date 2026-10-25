@@ -160,8 +160,22 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <StackPanel Margin="0,0,0,10">
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="模型构成" />
-                        <TextBlock Style="{StaticResource SectionDescription}" Margin="0,4,0,0" Text="各模型折算代价 ÷ 总折算代价" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="模型构成" VerticalAlignment="Center" />
+                            <ComboBox x:Name="ModelCompositionSelector" Grid.Column="1" Width="106" Height="28"
+                                      Margin="8,0,0,0" SelectedIndex="0"
+                                      SelectionChanged="ModelCompositionSelector_SelectionChanged"
+                                      ToolTip="切换模型代价占比或本周期累计 Token 用量">
+                                <ComboBoxItem Content="代价占比" />
+                                <ComboBoxItem Content="Token 总量" />
+                            </ComboBox>
+                        </Grid>
+                        <TextBlock x:Name="ModelCompositionDescription" Style="{StaticResource SectionDescription}"
+                                   Margin="0,4,0,0" TextWrapping="Wrap" Text="各模型折算代价 ÷ 总折算代价" />
                     </StackPanel>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <ItemsControl x:Name="ModelShareList">

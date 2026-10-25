@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -20,6 +20,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CodexTokenMonitor.Core\CodexTokenMonitor.Core.csproj" />
     <None Update="Fixtures\Kimi\wire.jsonl" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures\AgentSpeed\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\AgentSpeed\workbuddy\.workbuddy\**\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\AgentSpeed\workbuddy\.workbuddy-ai\**\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="..\..\src\CodexTokenMonitor.Wpf\LastDisplayStore.cs" Link="DesktopPersistence\LastDisplayStore.cs" />
     <Compile Include="..\..\src\CodexTokenMonitor.Wpf\UsageDisplayViewModel.cs" Link="DesktopPresentation\UsageDisplayViewModel.cs" />
     <Compile Include="..\..\src\CodexTokenMonitor.Wpf\UsageSourceModule.cs" Link="DesktopPresentation\UsageSourceModule.cs" />

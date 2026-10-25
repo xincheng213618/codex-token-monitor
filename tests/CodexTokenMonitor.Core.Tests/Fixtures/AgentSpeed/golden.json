@@ -1,0 +1,677 @@
+[
+  {
+    "file": "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-00-modern.jsonl",
+    "source": "codex",
+    "responses": [
+      {
+        "key": "resp-1",
+        "startMs": 1792490401010,
+        "endMs": 1792490405010,
+        "input": 10000,
+        "cachedInput": 8000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 200,
+        "reasoning": 50,
+        "model": "gpt-6.1-sol",
+        "provider": "openai",
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "resp-2",
+        "startMs": 1792490407500,
+        "endMs": 1792490410500,
+        "input": 10400,
+        "cachedInput": 10000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 330,
+        "reasoning": 0,
+        "model": "gpt-6.1-sol",
+        "provider": "openai",
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-20-subagent.jsonl",
+    "source": "codex",
+    "responses": [
+      {
+        "key": "resp-3",
+        "startMs": 1792490421000,
+        "endMs": 1792490424000,
+        "input": 5000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 120,
+        "reasoning": 40,
+        "model": "gpt-6.1-sol",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "resp-4",
+        "startMs": 1792490440000,
+        "endMs": 1792490447000,
+        "input": 5200,
+        "cachedInput": 5000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 60,
+        "reasoning": 10,
+        "model": "gpt-6.1-sol",
+        "provider": null,
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "codex/sessions/2026/10/20/rollout-2026-10-20T10-01-00-legacy.jsonl",
+    "source": "codex",
+    "responses": [
+      {
+        "key": "codex-legacy:thread-legacy:20213",
+        "startMs": 1792490460500,
+        "endMs": 1792490464000,
+        "input": 19515,
+        "cachedInput": 7040,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 698,
+        "reasoning": 368,
+        "model": "gpt-5.5",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "codex-legacy:thread-legacy:41000",
+        "startMs": 1792490466000,
+        "endMs": 1792490469000,
+        "input": 20485,
+        "cachedInput": 11960,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 302,
+        "reasoning": 32,
+        "model": "gpt-5.5",
+        "provider": null,
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "codex/sessions/2026/10/20/rollout-2026-10-20T10-01-20-compressed.jsonl.zst",
+    "source": "codex",
+    "responses": [
+      {
+        "key": "resp-z1",
+        "startMs": 1792490481010,
+        "endMs": 1792490484010,
+        "input": 6000,
+        "cachedInput": 5000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 150,
+        "reasoning": 40,
+        "model": "gpt-6.1-sol-mini",
+        "provider": "custom",
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "resp-z2",
+        "startMs": 1792490485500,
+        "endMs": 1792490488500,
+        "input": 6300,
+        "cachedInput": 6000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 210,
+        "reasoning": 0,
+        "model": "gpt-6.1-sol-mini",
+        "provider": "custom",
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "claude/projects/-Users-dev-projects-nova/s-cli.jsonl",
+    "source": "claudeCode",
+    "responses": [
+      {
+        "key": "msg_A",
+        "startMs": 1792490520050,
+        "endMs": 1792490526050,
+        "input": 21002,
+        "cachedInput": 20000,
+        "cacheWriteInput": 1000,
+        "cacheWrite1hInput": 600,
+        "output": 300,
+        "reasoning": 60,
+        "model": "claude-opus-5-5",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "msg_B",
+        "startMs": 1792490529000,
+        "endMs": 1792490532000,
+        "input": 21205,
+        "cachedInput": 21000,
+        "cacheWriteInput": 200,
+        "cacheWrite1hInput": 0,
+        "output": 240,
+        "reasoning": 0,
+        "model": "claude-opus-5-5",
+        "provider": null,
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "claude/projects/-Users-dev-projects-nova/s-cli/subagents/agent-abc.jsonl",
+    "source": "claudeCode",
+    "responses": [
+      {
+        "key": "msg_D",
+        "startMs": 1792490527000,
+        "endMs": 1792490530000,
+        "input": 504,
+        "cachedInput": 0,
+        "cacheWriteInput": 500,
+        "cacheWrite1hInput": 500,
+        "output": 90,
+        "reasoning": 0,
+        "model": "claude-opus-5-5",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "msg_E",
+        "startMs": 1792490531000,
+        "endMs": 1792490535000,
+        "input": 602,
+        "cachedInput": 600,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 8,
+        "reasoning": 0,
+        "model": "claude-opus-5-5",
+        "provider": null,
+        "fast": false,
+        "final": false
+      }
+    ]
+  },
+  {
+    "file": "claude/projects/-Users-dev-projects-orbit/s-desk.jsonl",
+    "source": "claudeDesktop",
+    "responses": [
+      {
+        "key": "msg_C",
+        "startMs": 1792490580000,
+        "endMs": 1792490585000,
+        "input": 30003,
+        "cachedInput": 30000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 0,
+        "model": "claude-opus-5-5",
+        "provider": null,
+        "fast": true,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-main/session.v4.jsonl.zstd",
+    "source": "deepseek",
+    "responses": [
+      {
+        "key": "dsm-1",
+        "startMs": 1792490641000,
+        "endMs": 1792490645000,
+        "input": 9000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 400,
+        "reasoning": 0,
+        "model": "deepseek-flash",
+        "provider": "deepseek-account",
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "dsm-2",
+        "startMs": 1792490646010,
+        "endMs": 1792490648010,
+        "input": 9400,
+        "cachedInput": 9216,
+        "cacheWriteInput": 64,
+        "cacheWrite1hInput": 0,
+        "output": 300,
+        "reasoning": 0,
+        "model": "deepseek-flash",
+        "provider": "deepseek-account",
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "dsh/sessions/--Users-dev-projects-quasar--/session-dsh-sub/session.v4.jsonl.zstd",
+    "source": "deepseek",
+    "responses": [
+      {
+        "key": "dss-1",
+        "startMs": 1792490651000,
+        "endMs": 1792490654000,
+        "input": 4500,
+        "cachedInput": 4000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 240,
+        "reasoning": 0,
+        "model": "deepseek-pro",
+        "provider": "deepseek-account",
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/ef76e24d-06dd-4094-a4aa-63bd6f8faf05.jsonl",
+    "source": "workbuddy",
+    "responses": [
+      {
+        "key": "edbab45572c72a5d9440b40bcc0500c0",
+        "startMs": 1792576865000,
+        "endMs": 1792576868000,
+        "input": 5000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 120,
+        "reasoning": 0,
+        "model": "auto",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "fbfba2e45c2045dc5cab22a5afe83d9d",
+        "startMs": 1792576880000,
+        "endMs": 1792576884000,
+        "input": 5400,
+        "cachedInput": 5000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 300,
+        "reasoning": 0,
+        "model": "minimax-m3-pay",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "7a6f150b83091ce20c89368641f9a137",
+        "startMs": 1792576886000,
+        "endMs": 1792576888000,
+        "input": 5800,
+        "cachedInput": 5300,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 90,
+        "reasoning": 0,
+        "model": "deepseek-v3-2-volc",
+        "provider": null,
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2/subagents/agent-66bc0cda-451f-4616-a37d-d44361673dd1.jsonl",
+    "source": "workbuddy",
+    "responses": [
+      {
+        "key": "8ddf878039b70767c4a5bcf4f0c4f65e",
+        "startMs": 1792577102100,
+        "endMs": 1792577105000,
+        "input": 4000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 60,
+        "reasoning": 0,
+        "model": "glm-5.3-flash",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "fac989447cad2edbc89fbcba70003b36",
+        "startMs": 1792577106000,
+        "endMs": 1792577109004,
+        "input": 4300,
+        "cachedInput": 4000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 90,
+        "model": "glm-5.3-flash",
+        "provider": null,
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/b09191b3-a788-47e6-a104-a4e92743fae2.jsonl",
+    "source": "workbuddy",
+    "responses": [
+      {
+        "key": "8a8bb7cd343aa2ad99b7d762030857a2",
+        "startMs": 1792576800000,
+        "endMs": 1792576803905,
+        "input": 12000,
+        "cachedInput": 8000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 420,
+        "reasoning": 120,
+        "model": "glm-5.3",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "693a9fdd4c2fd0700968fba0d07ff3c0",
+        "startMs": 1792576860000,
+        "endMs": 1792576862506,
+        "input": 15000,
+        "cachedInput": 14000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 260,
+        "reasoning": 200,
+        "model": "deepseek-v4-pro",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "9d607a663f3e9b0a90c3c8d4426640dc",
+        "startMs": 1792576869004,
+        "endMs": 1792576872300,
+        "input": 15800,
+        "cachedInput": 15000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 90,
+        "reasoning": 0,
+        "model": "deepseek-v4-pro",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "894f782a148b33af1e39a0efed952d69",
+        "startMs": 1792576875000,
+        "endMs": 1792576879200,
+        "input": 16200,
+        "cachedInput": 15600,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 310,
+        "reasoning": 150,
+        "model": "deepseek-v4-pro",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "32cfe6c19200b67afb7c3d0e1c43eadb",
+        "startMs": 1792576920000,
+        "endMs": 1792576925010,
+        "input": 16500,
+        "cachedInput": 16000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 80,
+        "reasoning": 80,
+        "model": "deepseek-v4-pro",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "c692562238d8c12c32434c50b96d56ae",
+        "startMs": 1792577070050,
+        "endMs": 1792577073050,
+        "input": 17000,
+        "cachedInput": 16800,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 150,
+        "reasoning": 0,
+        "model": "glm-5.3",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "68c42382c8b93fc29c2fcb6a444aeda5",
+        "startMs": 1792577100000,
+        "endMs": 1792577102000,
+        "input": 17300,
+        "cachedInput": 17000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 70,
+        "reasoning": 0,
+        "model": "glm-5.3",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "3d1e97d18e692ca5484d1abfe617b6c1",
+        "startMs": 1792577140000,
+        "endMs": 1792577143500,
+        "input": 17600,
+        "cachedInput": 17300,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 240,
+        "reasoning": 30,
+        "model": "glm-5.3",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "48881d728a96516e0e886c09603e7eee",
+        "startMs": 1792577160000,
+        "endMs": 1792577161500,
+        "input": 17900,
+        "cachedInput": 17600,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 40,
+        "reasoning": 0,
+        "model": "glm-5.3",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "11340131feec68e7ca463f960f0f341c",
+        "startMs": 1792577220000,
+        "endMs": 1792577228000,
+        "input": 60000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 2000,
+        "reasoning": 0,
+        "model": "glm-5.3",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "ed20a959d410ccd843d9e1dfcee04228",
+        "startMs": 1792577228020,
+        "endMs": 1792577231020,
+        "input": 3000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 200,
+        "reasoning": 0,
+        "model": "glm-5.3",
+        "provider": null,
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "workbuddy/.workbuddy/projects/Users-dev-projects-atlas/99aa739a-ed94-446a-a6e0-be45f96cc697.jsonl",
+    "source": "workbuddy",
+    "responses": [
+      {
+        "key": "bd19836ddb62c11c55ab251ccaca5645",
+        "startMs": 1792578001000,
+        "endMs": 1792578004000,
+        "input": 9000,
+        "cachedInput": 8800,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 180,
+        "reasoning": 0,
+        "model": "glm-5.3",
+        "provider": null,
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/7321aebd-eedd-4d8c-a034-7b74b0ca1dd1.jsonl",
+    "source": "workbuddyAi",
+    "responses": [
+      {
+        "key": "9948c645c094247794f4c7acdbeb2bb6",
+        "startMs": 1792580400000,
+        "endMs": 1792580404000,
+        "input": 9000,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 300,
+        "reasoning": 40,
+        "model": "gpt-5.5",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "b25b0651e4b6e887e5194135d3692631",
+        "startMs": 1792580460000,
+        "endMs": 1792580463000,
+        "input": 9400,
+        "cachedInput": 9000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 50,
+        "reasoning": 0,
+        "model": "deepseek-v4.1-flash-sg",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "e53125275854402400f74fd6ab3f7659",
+        "startMs": 1792580465000,
+        "endMs": 1792580469000,
+        "input": 12000,
+        "cachedInput": 9400,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 400,
+        "reasoning": 0,
+        "model": "deepseek-v4.1-flash-sg",
+        "provider": null,
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "ae11976937537e4c1206237dea035331",
+        "startMs": 1792580520000,
+        "endMs": 1792580526000,
+        "input": 20000,
+        "cachedInput": 15000,
+        "cacheWriteInput": 4000,
+        "cacheWrite1hInput": 0,
+        "output": 500,
+        "reasoning": 0,
+        "model": "claude-sonnet-5-5",
+        "provider": "custom",
+        "fast": false,
+        "final": true
+      },
+      {
+        "key": "b9884d9c846186c2a5426d7f46393de8",
+        "startMs": 1792580580000,
+        "endMs": 1792580582000,
+        "input": 800,
+        "cachedInput": 0,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 60,
+        "reasoning": 0,
+        "model": "gpt-5.5",
+        "provider": "custom",
+        "fast": false,
+        "final": true
+      }
+    ]
+  },
+  {
+    "file": "workbuddy/.workbuddy-ai/projects/C-Users-dev-projects-orbit/bec52a4b-a049-4377-a53e-fa03a3357f35.jsonl",
+    "source": "workbuddyAi",
+    "responses": [
+      {
+        "key": "cd3dc8b6cffb41e4163dcbd857ca87da",
+        "startMs": 1792580462000,
+        "endMs": 1792580466000,
+        "input": 7000,
+        "cachedInput": 6000,
+        "cacheWriteInput": 0,
+        "cacheWrite1hInput": 0,
+        "output": 260,
+        "reasoning": 100,
+        "model": "hy4-preview",
+        "provider": null,
+        "fast": false,
+        "final": true
+      }
+    ]
+  }
+]

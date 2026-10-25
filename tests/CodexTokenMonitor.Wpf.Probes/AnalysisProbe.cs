@@ -406,6 +406,71 @@ internal static class AnalysisProbe
             "quota-share references also render when there are no calibrated models");
         Require(!Get<TextBlock>(window, "ModelCapacityValue").Text.Contains("样本不足"),
             "dated model ids share the reference identity without a duplicate insufficient-sample label");
+        await CheckModelCompositionModesAsync(window, period, capacities);
+    }
+
+    private static async Task CheckModelCompositionModesAsync(
+        Window window, CodexQuotaCycle period, QuotaModelCapacityReport capacities)
+    {
+        var models = new[]
+        {
+            new QuotaCycleModelShare("gpt-6-astra", 3m, 60m, 4_920_000, 6.1m, 61m, true),
+            new QuotaCycleModelShare("gpt-6.1-sol", 2m, 40m, 27_668_000, 3.9m, 39m, true),
+            new QuotaCycleModelShare("gpt-unlisted", 0m, 0m, 2_000_000, 0m, 0m, false)
+        };
+        var band = new QuotaCycleAnalysisBand(0, 0m, 5m, period.PeriodStart,
+            period.PeriodStart.AddHours(1), 5m, 34_588_000, 10m, 200m, "gpt-6-astra", models);
+        var analysis = new QuotaCycleAnalysisResult(period, new[] { band }, models, 3, 5m,
+            34_588_000, 10m, 200m, 200m, 200m, 0m, "gpt-6-astra", "");
+        var selector = Get<ComboBox>(window, "ModelCompositionSelector");
+        var list = Get<ItemsControl>(window, "ModelShareList");
+        Require(selector.SelectedIndex == 0, "model composition defaults to cost share");
+        Invoke(window, "ApplyResult", analysis, capacities);
+        Require(((QuotaCycleModelRow)list.Items[0]).Model == "astra" &&
+                ((QuotaCycleModelRow)list.Items[0]).Share == "61.0%",
+            "cost mode retains cost ordering and percentages");
+
+        var gridSource = Get<DataGrid>(window, "BandGrid").ItemsSource;
+        selector.SelectedIndex = 1;
+        var shares = list.Items.Cast<QuotaCycleModelRow>().ToArray();
+        Require(shares[0].Model == "6.1 sol" && shares[0].Share == "27.668M" &&
+                shares[1].Model == "astra" && shares[1].Share == "4.920M" && shares[2].Share == "2.000M",
+            "token mode orders by usage and includes unpriced model tokens");
+        Require(Math.Abs(shares.Sum(item => item.ShareValue) - 100d) < .0001 &&
+                Math.Abs(shares[0].ShareValue - 27_668_000 * 100d / 34_588_000) < .0001,
+            "token bars use token shares independently of cost");
+        Require(Get<TextBlock>(window, "ModelCompositionDescription").Text.Contains("34.588M Token") &&
+                ReferenceEquals(gridSource, Get<DataGrid>(window, "BandGrid").ItemsSource),
+            "token mode shows cycle total and switches without rebuilding analysis");
+        await RenderAsync(window, "cycle-model-composition-tokens.png");
+        var originalWidth = window.Width;
+        window.Width = window.MinWidth;
+        await RenderAsync(window, "cycle-model-composition-tokens-min-width.png");
+        var panel = Get<Border>(window, "ModelCompositionPanel");
+        var selectorBounds = selector.TransformToAncestor(panel).TransformBounds(new Rect(selector.RenderSize));
+        Require(selectorBounds.Right <= panel.ActualWidth && selectorBounds.Left >= 0,
+            "composition selector fits at the minimum window width");
+        window.Width = originalWidth;
+
+        var refreshed = analysis with
+        {
+            Tokens = analysis.Tokens + 1_000_000,
+            Models = models.Select(item => item.ModelId == "gpt-6-astra"
+                ? item with { Tokens = item.Tokens + 1_000_000 } : item).ToArray()
+        };
+        Invoke(window, "ApplyResult", refreshed, capacities);
+        Require(selector.SelectedIndex == 1 && ((QuotaCycleModelRow)list.Items[1]).Share == "5.920M" &&
+                Get<TextBlock>(window, "ModelCompositionDescription").Text.Contains("35.588M Token"),
+            "refresh updates token totals while preserving the selected mode");
+        Invoke(window, "ApplyResult", QuotaCycleAnalysisResult.Empty(period, "no usage"), capacities);
+        Require(list.Items.Count == 0 && Get<TextBlock>(window, "ModelCompositionDescription").Text.Contains("0.000M"),
+            "empty results clear old model totals");
+        selector.SelectedIndex = 0;
+        Invoke(window, "ApplyResult", analysis, capacities);
+        Require(((QuotaCycleModelRow)list.Items[0]).Share == "61.0%",
+            "switching back restores cost shares");
+        Results.Add(new { check = "model-composition-modes", totalTokens = analysis.Tokens,
+            tokenRows = shares.Select(item => new { item.Model, item.Share, item.ShareValue }), refreshPreservesMode = true });
     }
 
     private static async Task CheckPostZeroStageAndRefreshAsync(MonitorRuntime runtime)
@@ -468,6 +533,13 @@ internal static class AnalysisProbe
             "automatic refresh updates the 101st stage and preserves selection");
         Require(Get<TextBlock>(window, "EquivalentCostNote").Text.Contains("250.000M") &&
                 Get<TextBlock>(window, "PostZeroUsageValue").Text.Contains("150.000M"), "all summaries retain new post-zero tokens");
+        Get<ComboBox>(window, "ModelCompositionSelector").SelectedIndex = 1;
+        Require(((QuotaCycleModelRow)Get<ItemsControl>(window, "ModelShareList").Items[0]).Share == "250.000M",
+            "model token totals include refreshed post-zero usage");
+        Invoke(window, "ApplyResult", source.Analysis with { Bands = Array.Empty<QuotaCycleAnalysisBand>() },
+            new QuotaModelCapacityReport("test", Array.Empty<QuotaModelCapacityEstimate>()));
+        Require(((QuotaCycleModelRow)Get<ItemsControl>(window, "ModelShareList").Items[0]).Share == "250.000M",
+            "model totals remain available when there are no quota-drop bands");
         Results.Add(new { check = "post-zero-101-stages-and-refresh", displayedStages = grid.Items.Count,
             calibrationBands = source.Analysis.Bands.Count, postZeroTokens = tailRow.Band.Tokens,
             updatedAfterZero = true, exhaustionNotAssumed = true });

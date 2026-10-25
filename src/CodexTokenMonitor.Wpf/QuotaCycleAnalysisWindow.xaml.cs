@@ -17,6 +17,7 @@ public partial class QuotaCycleAnalysisWindow : Window
     private readonly QuotaCycleAnalysisQueryService queryService;
     private readonly DispatcherTimer refreshTimer = new() { Interval = TimeSpan.FromMinutes(1) };
     private IReadOnlyList<QuotaCycleBandRow> bandRows = Array.Empty<QuotaCycleBandRow>();
+    private QuotaCycleAnalysisResult? compositionResult;
     private bool analysisLoading;
     private bool hasSuccessfulResult;
     private bool bandSizeChangePending;
@@ -190,6 +191,8 @@ public partial class QuotaCycleAnalysisWindow : Window
         QuotaCycleAnalysisResult result,
         QuotaModelCapacityReport capacities)
     {
+        compositionResult = result;
+        ApplyModelComposition();
         displayedBandSizePercent = result.BandSizePercent;
         if (!result.Period.IsCurrent) refreshTimer.Stop();
         ApplyPostZeroUsage(result);
@@ -207,7 +210,6 @@ public partial class QuotaCycleAnalysisWindow : Window
         {
             bandRows = Array.Empty<QuotaCycleBandRow>();
             BandGrid.ItemsSource = bandRows;
-            ModelShareList.ItemsSource = null;
             QuotaDropValue.Text = EquivalentCostValue.Text = FullEstimateValue.Text = VolatilityValue.Text = DominantModelValue.Text = "—";
             EquivalentCostNote.Text = FullEstimateNote.Text = VolatilityNote.Text = DominantModelNote.Text = "";
             ModelCapacityValue.Text = "样本不足";
@@ -257,14 +259,6 @@ public partial class QuotaCycleAnalysisWindow : Window
         ApplyModelCapacityEstimate(result, capacities, tokenCapacities);
         ApplyModelTokenCapacity(tokenCapacities);
 
-        ModelShareList.ItemsSource = result.Models.OrderByDescending(item => item.EquivalentCost).Select(item => new QuotaCycleModelRow(
-            QuotaCycleModelPalette.ShortName(item.ModelId),
-            item.IsPriced ? $"{item.CostSharePercent:N1}%" : "未计价",
-            (double)item.CostSharePercent,
-            QuotaCycleModelPalette.GetBrush(item.ModelId),
-            $"{item.ModelId}\n折算代价占比 {item.CostSharePercent:N2}% · {item.Tokens / 1_000_000d:N3}M tokens\n" +
-            $"折算代价 {FormatMoney(item.EquivalentCost)}" + (item.IsPriced ? "" : " · 含未计价记录"))).ToList();
-
         var average = result.EstimatedFullQuotaCost ?? 0m;
         var consumptionRows = QuotaConsumptionTimelineCalculator.BuildBands(result)
             .ToDictionary(item => item.BandIndex, QuotaConsumptionSpeedRow.From);
@@ -285,6 +279,46 @@ public partial class QuotaCycleAnalysisWindow : Window
         InsightText.Text = BuildInsight(result);
         StatusText.Text = $"已形成 {result.Bands.Count:N0} 个 {displayedBandSizePercent:N0}% 额度分段" +
                           (result.PostZeroUsage is not null ? $" + 0% 后阶段，共 {bandRows.Count:N0} 级" : "");
+    }
+
+    private void ModelCompositionSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // SelectedIndex can change while InitializeComponent is still creating the card.
+        if (ModelShareList is null || ModelCompositionDescription is null) return;
+        ApplyModelComposition();
+    }
+
+    private void ApplyModelComposition()
+    {
+        var result = compositionResult;
+        var showTokens = ModelCompositionSelector.SelectedIndex == 1;
+        ModelCompositionDescription.Text = showTokens
+            ? $"本周期合计 {(result?.Tokens ?? 0) / 1_000_000d:N3}M Token"
+            : "各模型折算代价 ÷ 总折算代价";
+        ModelCompositionDescription.ToolTip = showTokens
+            ? "累计输入（含缓存）与输出 Token；包含显示 0% 后继续记录的用量。条形按 Token 占比显示。"
+            : null;
+        if (result is null)
+        {
+            ModelShareList.ItemsSource = null;
+            return;
+        }
+
+        var models = showTokens
+            ? result.Models.OrderByDescending(item => item.Tokens)
+            : result.Models.OrderByDescending(item => item.EquivalentCost);
+        ModelShareList.ItemsSource = models.Select(item =>
+        {
+            var tokenShare = result.Tokens > 0 ? item.Tokens * 100d / result.Tokens : 0d;
+            return new QuotaCycleModelRow(
+                QuotaCycleModelPalette.ShortName(item.ModelId),
+                showTokens ? $"{item.Tokens / 1_000_000d:N3}M" : item.IsPriced ? $"{item.CostSharePercent:N1}%" : "未计价",
+                showTokens ? tokenShare : (double)item.CostSharePercent,
+                QuotaCycleModelPalette.GetBrush(item.ModelId),
+                $"{item.ModelId}\n{item.Tokens / 1_000_000d:N3}M Token · Token 占比 {tokenShare:N2}%\n" +
+                $"折算代价占比 {item.CostSharePercent:N2}% · 折算代价 {FormatMoney(item.EquivalentCost)}" +
+                (item.IsPriced ? "" : " · 含未计价记录"));
+        }).ToList();
     }
 
     private void ApplyPostZeroUsage(QuotaCycleAnalysisResult result)

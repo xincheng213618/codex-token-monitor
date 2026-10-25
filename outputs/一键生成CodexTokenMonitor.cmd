@@ -37,7 +37,7 @@ if not exist "%TEST_PROJECT%" (
 
 where dotnet >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] .NET SDK was not found. Install .NET 8 SDK first.
+    echo [ERROR] .NET SDK was not found. Install .NET 10 SDK first.
     goto :failed
 )
 

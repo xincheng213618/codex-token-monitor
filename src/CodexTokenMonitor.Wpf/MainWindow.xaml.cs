@@ -133,6 +133,7 @@ public partial class MainWindow : Window
             backgroundCacheWarmer.Start();
         });
         Closing += MainWindow_Closing;
+        InitializeSpeedStatus();
         Closed += (_, _) =>
         {
             breakdownGridAdapter.Dispose();
@@ -397,10 +398,13 @@ public partial class MainWindow : Window
 
     private async void SourceTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (suppressUiEvents.IsSuppressing || !ReferenceEquals(e.Source, SourceTabs))
+        if (!ReferenceEquals(e.Source, SourceTabs))
         {
             return;
         }
+
+        UpdateSpeedSelection();
+        if (suppressUiEvents.IsSuppressing) return;
 
         await RunUiActionAsync(async () =>
         {
@@ -942,13 +946,17 @@ public partial class MainWindow : Window
                         ZCodeQuotaAnalysisSource.RecordSnapshot(read.Snapshot, runtime.LifetimeToken);
                     }
 
-                    return read;
+                    // Reset cards ride the same refresh; their own short cache
+                    // keeps repeated quota reads off the extra endpoint.
+                    var resetCredits = ZCodeResetCreditReader.Shared.ReadCurrent(runtime.LifetimeToken);
+                    return (read, resetCredits);
                 },
                 runtime.LifetimeToken);
             if (!isClosed && CurrentModule() is ZCodeUsageModule current && ReferenceEquals(current, zcodeModule))
             {
-                zcodeModule.CurrentQuotaSnapshot = result.Snapshot;
-                zcodeModule.CurrentQuotaFailure = result.Failure;
+                zcodeModule.CurrentQuotaSnapshot = result.read.Snapshot;
+                zcodeModule.CurrentQuotaFailure = result.read.Failure;
+                zcodeModule.CurrentResetCredits = result.resetCredits;
                 ApplyZCodeQuotaSummary(zcodeModule);
                 RefreshZCodeRealPriceCard(zcodeModule);
                 if (zcodeModule.Mode == RangeMode.Cycle)
@@ -1651,6 +1659,7 @@ public partial class MainWindow : Window
 
     private void ApplyZCodeQuotaSummary(ZCodeUsageModule module)
     {
+        ApplyZCodeResetCredits(module);
         if (module.CurrentQuotaSnapshot is not { } snapshot || snapshot.Plans.Count == 0)
         {
             suppressZCodePlanSelection = true;
@@ -1731,6 +1740,67 @@ public partial class MainWindow : Window
             ZCodeQuotaExpiryValue.Text = "-";
             ZCodeQuotaExpiryDetail.Text = null;
         }
+    }
+
+    /// <summary>
+    /// Renders the GLM coding-plan reset cards. The value line counts cards by
+    /// window type; the detail line carries the earliest expiry, and the
+    /// tooltip lists every card plus the latest usage history.
+    /// </summary>
+    private void ApplyZCodeResetCredits(ZCodeUsageModule module)
+    {
+        if (module.CurrentResetCredits is not { } status)
+        {
+            ZCodeResetCreditValue.Text = "-";
+            ZCodeResetCreditDetail.Text = "等待重置卡数据";
+            ZCodeResetCreditValue.ToolTip = "未登录 ZCode 账号，或 zcode.z.ai 重置卡接口暂时不可用";
+            ZCodeResetCreditDetail.ToolTip = ZCodeResetCreditValue.ToolTip;
+            return;
+        }
+
+        var counts = new List<string>();
+        if (status.FiveHourCount > 0)
+        {
+            counts.Add($"5h×{status.FiveHourCount:N0}");
+        }
+
+        if (status.WeekCount > 0)
+        {
+            counts.Add($"周×{status.WeekCount:N0}");
+        }
+
+        ZCodeResetCreditValue.Text = counts.Count == 0 ? "无可用" : string.Join(" · ", counts);
+        ZCodeResetCreditDetail.Text = status.EarliestExpiresLocal is { } earliest
+            ? $"最早 {earliest:MM-dd} 到期 · 数据 {status.SnapshotLocal:HH:mm}"
+            : $"暂无可用 · 数据 {status.SnapshotLocal:HH:mm}";
+
+        var tooltipLines = new List<string>();
+        if (status.FiveHourExpiresLocal.Count > 0)
+        {
+            tooltipLines.Add("5 小时卡：" + string.Join(
+                "、", status.FiveHourExpiresLocal.Select(item => item.ToString("MM-dd HH:mm"))));
+        }
+
+        if (status.WeekExpiresLocal.Count > 0)
+        {
+            tooltipLines.Add("周卡：" + string.Join(
+                "、", status.WeekExpiresLocal.Select(item => item.ToString("MM-dd HH:mm"))));
+        }
+
+        if (status.LatestFiveHourUsedLocal is { } fiveHourUsed)
+        {
+            tooltipLines.Add($"上次用 5h 卡：{fiveHourUsed:MM-dd HH:mm}");
+        }
+
+        if (status.LatestWeekUsedLocal is { } weekUsed)
+        {
+            tooltipLines.Add($"上次用周卡：{weekUsed:MM-dd HH:mm}");
+        }
+
+        tooltipLines.Add("使用请在 ZCode 端内点击重置（周卡会把 5 小时额度一并回满）");
+        var tooltip = string.Join(Environment.NewLine, tooltipLines);
+        ZCodeResetCreditValue.ToolTip = tooltip;
+        ZCodeResetCreditDetail.ToolTip = tooltip;
     }
 
     /// <summary>

@@ -13,7 +13,7 @@ internal static class Program
         if (!TryReadArguments(args, out var suite, out var output, out var error))
         {
             Console.Error.WriteLine(error);
-            Console.Error.WriteLine("Usage: CodexTokenMonitor.Wpf.Probes --suite main|settings|analysis|zcode --output <new-or-empty-directory>");
+            Console.Error.WriteLine("Usage: CodexTokenMonitor.Wpf.Probes --suite main|settings|analysis|zcode|speed --output <new-or-empty-directory>");
             return 2;
         }
 
@@ -44,6 +44,7 @@ internal static class Program
                 case "settings": SettingsProbe.Run(output); break;
                 case "analysis": AnalysisProbe.Run(output); break;
                 case "zcode": ZCodeQuotaProbe.Run(output); break;
+                case "speed": SpeedProbe.Run(output); break;
             }
             return Environment.ExitCode;
         }
@@ -74,9 +75,9 @@ internal static class Program
                 default: return false;
             }
         }
-        if (suite is not ("main" or "settings" or "analysis" or "zcode"))
+        if (suite is not ("main" or "settings" or "analysis" or "zcode" or "speed"))
         {
-            error = "Unknown suite. Supported suites: main, settings, analysis, zcode.";
+            error = "Unknown suite. Supported suites: main, settings, analysis, zcode, speed.";
             return false;
         }
         return output.Length > 0;

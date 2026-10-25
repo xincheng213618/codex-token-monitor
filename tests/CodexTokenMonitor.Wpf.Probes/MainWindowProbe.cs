@@ -189,6 +189,7 @@ internal static partial class MainWindowProbe
             await RenderContentAsync(window, Path.Combine(outputRoot, "wpf-architecture-probe.png"));
             await CheckRealPriceCardsAsync(window, modules);
             await CheckDayTimeZoneAsync(window, modules[UsageSource.ClaudeCode]);
+            await CheckStatusSpeedAsync(window, modules);
             Require(!mainWasLoaded, "main Loaded lifecycle never entered");
 
             // Closing must keep the dispatcher alive while registered work
@@ -224,16 +225,21 @@ internal static partial class MainWindowProbe
             if (GetObject(window, "shutdownTask") is Task shutdownTask)
                 await shutdownTask.WaitAsync(TimeSpan.FromSeconds(10));
             Require(Get<bool>(window, "shutdownComplete"), "second Closing completes");
+            await Get<AgentSpeedStatusMonitor>(window, "speedStatus").Completion.WaitAsync(TimeSpan.FromSeconds(10));
+            Require(!Get<AgentSpeedStatusMonitor>(window, "speedStatus").IsAutoRefreshing, "speed status timer stops with main window");
             Results.Add(new { check = "real-closing-drain", firstCloseDeferred = true, dispatcherResponsive = true,
                 resultPublished = false, gateReleasedBeforeDisposal = true, finalClosed = true });
 
             Require(Equals(attemptBefore, appServerAttempt.GetValue(appServer)), "no live app-server quota reads");
             Require(GetObject(window, "dataSharingServer") is null, "no sharing server started");
-            Require(!Directory.EnumerateFiles(logRoot, "*", SearchOption.AllDirectories).Any(), "no source log fixtures or writes");
+            var sourceFiles = Directory.GetFiles(logRoot, "*", SearchOption.AllDirectories);
+            Require(sourceFiles.Length == SourceFixtureHashes.Count && sourceFiles.All(file =>
+                SourceFixtureHashes.TryGetValue(file, out var expected) && expected ==
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file)))), "source fixtures unchanged and no unexpected source writes");
             Require(LoadedWindows.Count == 0, "no main window entered Loaded");
             Require(ClosedSignals.Values.All(signal => signal.Task.IsCompletedSuccessfully), "all created main windows reached Closed");
             Results.Add(new { check = "isolation", isolatedRoot, mainLoaded = LoadedWindows.Count > 0, appServerReads = 0,
-                sharingServerStarted = false, windowsCreated = Windows.Count,
+                sharingServerStarted = false, sourceLogsReadOnly = true, windowsCreated = Windows.Count,
                 closedWindows = ClosedSignals.Values.Count(signal => signal.Task.IsCompletedSuccessfully), allClosed = true });
         }
         finally
@@ -1055,7 +1061,7 @@ internal static partial class MainWindowProbe
         }
     }
 
-    private static async Task RenderContentAsync(MainWindow window, string path, int width = 1380, Action? afterLayout = null)
+    private static async Task RenderContentAsync(MainWindow window, string path, int width = 1380, Action? afterLayout = null, int height = 940)
     {
         await DrainBindingsAsync(window);
         var expectedStatus = Get<TextBlock>(window, "StatusText").Text;
@@ -1064,10 +1070,10 @@ internal static partial class MainWindowProbe
         window.Content = null;
         var host = new Window
         {
-            Content = content, Width = width, Height = 940, Left = -20000, Top = -20000,
+            Content = content, Width = width, Height = height, Left = -20000, Top = -20000,
             // Headless CI desktops can be narrower than the requested render.
             // Pin the minimum tracking size so Windows does not clamp the host.
-            MinWidth = width, MinHeight = 940,
+            MinWidth = width, MinHeight = height,
             ShowActivated = false, ShowInTaskbar = false, WindowStyle = WindowStyle.None,
             Background = window.Background, Foreground = window.Foreground,
             FontFamily = window.FontFamily, FontSize = window.FontSize,
@@ -1082,11 +1088,11 @@ internal static partial class MainWindowProbe
                     Get<FrameworkElement>(window, "UsageSummaryPanel").Visibility == expectedContentVisibility,
                 "render host preserves bound display values");
             host.UpdateLayout();
-            Require(Math.Abs(host.ActualWidth - width) < 1 && Math.Abs(host.ActualHeight - 940) < 1,
+            Require(Math.Abs(host.ActualWidth - width) < 1 && Math.Abs(host.ActualHeight - height) < 1,
                 $"render host uses requested dimensions: {host.ActualWidth} x {host.ActualHeight}");
             afterLayout?.Invoke();
             host.UpdateLayout();
-            var bitmap = new RenderTargetBitmap(width, 940, 96, 96, PixelFormats.Pbgra32);
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
             bitmap.Render(host);
             var encoder = new PngBitmapEncoder();
             encoder.Frames.Add(BitmapFrame.Create(bitmap));
@@ -1101,7 +1107,7 @@ internal static partial class MainWindowProbe
         }
         await DrainBindingsAsync(window);
         CheckDisplayBindings(window);
-        Results.Add(new { check = "render", path, width, height = 940 });
+        Results.Add(new { check = "render", path, width, height });
     }
 
     private static Task Refresh(MainWindow window) => (Task)Invoke(window, "RefreshUsageAsync", true, false)!;

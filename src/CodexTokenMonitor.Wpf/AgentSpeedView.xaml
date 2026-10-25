@@ -1,0 +1,120 @@
+<UserControl x:Class="CodexTokenMonitor.AgentSpeedView"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Background="{StaticResource CanvasBrush}"
+        Foreground="{StaticResource TextBrush}" FontFamily="Microsoft YaHei UI" FontSize="12" FontWeight="Normal"
+        UseLayoutRounding="True">
+    <UserControl.Resources>
+        <Style x:Key="SpeedCell" TargetType="TextBlock">
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+        </Style>
+    </UserControl.Resources>
+    <Grid>
+    <Grid x:Name="LiveLayout" Margin="20,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="2*" MinHeight="170" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="*" MinHeight="110" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid Margin="0,0,0,14">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock x:Name="HeadingText" Text="输出速度" FontSize="20" FontWeight="SemiBold" />
+                <TextBlock x:Name="MetricDescription" Text="输出含推理 Token · 请求耗时包含首字等待 · 今日按 UTC+8 统计" Style="{StaticResource SectionDescription}" Margin="0,5,0,0" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <ComboBox x:Name="SourceBox" Width="130" Margin="0,0,8,0" SelectionChanged="SourceBox_SelectionChanged" />
+                <ComboBox x:Name="MetricBox" Width="154" Margin="0,0,8,0" SelectionChanged="MetricBox_SelectionChanged">
+                    <ComboBoxItem Content="输出速度" /><ComboBoxItem Content="总吞吐量（输入+输出）" />
+                </ComboBox>
+                <Button Content="刷新" Style="{StaticResource ToolButton}" Click="Refresh_Click" />
+                <Button Content="历史与导出" Style="{StaticResource ToolButton}" Click="History_Click" Margin="8,0,0,0" />
+            </StackPanel>
+        </Grid>
+        <UniformGrid Grid.Row="1" Columns="5" Margin="0,0,0,12">
+            <Border Style="{StaticResource PanelBorder}" Padding="14,12" Margin="0,0,10,0">
+                <StackPanel>
+                    <TextBlock Text="实时并行总速度" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="LiveValue" Text="—" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="EstimateText" Text="等待采样" Style="{StaticResource QuotaDetail}" />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource PanelBorder}" Padding="14,12" Margin="0,0,10,0">
+                <StackPanel>
+                    <TextBlock Text="最近一次响应" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="LastValue" Text="—" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="LastText" Text="暂无完成记录" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource PanelBorder}" Padding="14,12" Margin="0,0,10,0">
+                <StackPanel>
+                    <TextBlock x:Name="AverageCaption" Text="今日平均响应速度" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="AverageValue" Text="—" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="AverageDetail" Text="总实测输出 ÷ 总请求耗时" Style="{StaticResource QuotaDetail}" />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource PanelBorder}" Padding="14,12" Margin="0,0,10,0">
+                <StackPanel>
+                    <TextBlock Text="今日测速覆盖" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="CoverageValue" Text="—" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="CoverageText" Text="有效测速 / 已记录请求" Style="{StaticResource QuotaDetail}" />
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource PanelBorder}" Padding="14,12">
+                <StackPanel>
+                    <TextBlock Text="今日实测峰值" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="PeakValue" Text="—" Style="{StaticResource QuotaValue}" />
+                    <TextBlock Text="3 秒并行均值 · 不含估算" Style="{StaticResource QuotaDetail}" />
+                </StackPanel>
+            </Border>
+        </UniformGrid>
+        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="12,8" Margin="0,0,0,10">
+            <StackPanel>
+                <TextBlock Text="最近 5 分钟 · 绿色为已完成请求的区间平均，橙色虚线为含估算的总速度" FontWeight="SemiBold" />
+                <TextBlock Text="实时值使用 3 秒窗口；生成中根据近期同模型样本估算，完成后校正。无样本时等待实测。" Style="{StaticResource SectionDescription}" Margin="0,4,0,0" TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="8" Margin="0,0,0,10">
+            <ContentControl x:Name="ChartHost" />
+        </Border>
+        <Grid Grid.Row="4" Margin="2,0,2,7">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <TextBlock Text="今日按模型统计" FontWeight="SemiBold" />
+            <TextBlock Grid.Column="1" Text="近期会话 · 生成 / 工具执行 / 空闲" FontWeight="SemiBold" Margin="12,0,0,0" />
+        </Grid>
+        <Grid Grid.Row="5">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <DataGrid x:Name="ModelGrid" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" Margin="0,0,6,0" ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                <DataGrid.Columns>
+                    <DataGridTextColumn x:Name="ModelSourceColumn" Header="来源" Binding="{Binding Source}" Width="95" MinWidth="95" Visibility="Collapsed" />
+                    <DataGridTextColumn Header="模型" Binding="{Binding Model}" Width="*" MinWidth="110" ElementStyle="{StaticResource SpeedCell}" />
+                    <DataGridTextColumn Header="记录模式" Binding="{Binding Mode}" Width="90" MinWidth="90" ElementStyle="{StaticResource SpeedCell}" />
+                    <DataGridTextColumn Header="有效 / 请求" Binding="{Binding Coverage}" Width="85" MinWidth="85" />
+                    <DataGridTextColumn Header="输出 Token" Binding="{Binding Output}" Width="95" MinWidth="95" />
+                    <DataGridTextColumn Header="平均 tok/s" Binding="{Binding Average}" Width="100" MinWidth="100" />
+                </DataGrid.Columns>
+            </DataGrid>
+            <DataGrid x:Name="AgentGrid" Grid.Column="1" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" Margin="6,0,0,0" ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                <DataGrid.Columns>
+                    <DataGridTextColumn x:Name="AgentSourceColumn" Header="来源" Binding="{Binding Source}" Width="95" MinWidth="95" Visibility="Collapsed" />
+                    <DataGridTextColumn Header="会话" Binding="{Binding Session}" Width="*" MinWidth="110" ElementStyle="{StaticResource SpeedCell}" />
+                    <DataGridTextColumn Header="模型" Binding="{Binding Model}" Width="*" MinWidth="100" ElementStyle="{StaticResource SpeedCell}" />
+                    <DataGridTextColumn Header="状态" Binding="{Binding Phase}" Width="70" MinWidth="70" />
+                    <DataGridTextColumn Header="tok/s" Binding="{Binding Live}" Width="80" MinWidth="80" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+        <StackPanel Grid.Row="6" Margin="2,10,2,0">
+            <TextBlock x:Name="StatusText" Text="读取本机日志…" Style="{StaticResource SectionDescription}" TextWrapping="Wrap" />
+            <TextBlock Text="工具执行不参与在途估算。耗时缺失或异常的请求保留计数；曲线按日志重建，不代表逐 Token 解码速度。" Style="{StaticResource SectionDescription}" TextWrapping="Wrap" Margin="0,4,0,0" />
+        </StackPanel>
+    </Grid>
+    <Grid x:Name="HistoryLayout" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Button Content="返回实时分析" Click="ReturnToLive_Click" Style="{StaticResource ToolButton}" HorizontalAlignment="Left" Margin="20,12,0,0" />
+        <ContentControl x:Name="HistoryHost" Grid.Row="1" />
+    </Grid>
+    </Grid>
+</UserControl>

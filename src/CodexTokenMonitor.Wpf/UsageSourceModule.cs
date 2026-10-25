@@ -170,6 +170,9 @@ internal sealed class ZCodeUsageModule : UsageSourceModule
 
     public ZCodeQuotaFailure? CurrentQuotaFailure { get; set; }
 
+    /// <summary>The GLM coding-plan reset cards shown beside the quota cards.</summary>
+    public ZCodeResetCreditStatus? CurrentResetCredits { get; set; }
+
     /// <summary>The plan the quota panel is showing; null means "pick the snapshot default".</summary>
     public ZCodePlanSelection? SelectedPlan { get; set; }
 }

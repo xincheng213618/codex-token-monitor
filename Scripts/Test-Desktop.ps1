@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Release', 'Debug')][string]$Configuration = 'Release',
-    [ValidateSet('main', 'settings', 'analysis')][string[]]$Suite = @('main', 'settings', 'analysis'),
+    [ValidateSet('main', 'settings', 'analysis', 'speed')][string[]]$Suite = @('main', 'settings', 'analysis', 'speed'),
     [string]$OutputRoot = 'artifacts\desktop-probes',
     [switch]$NoBuild,
     [ValidateRange(1, 1800)][int]$TimeoutSeconds = 120,

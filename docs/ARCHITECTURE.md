@@ -9,7 +9,7 @@
 ```text
 CodexTokenMonitor.slnx
 ├─ src/
-│  ├─ CodexTokenMonitor.Core/        # 无 UI 的核心逻辑（net8.0）
+│  ├─ CodexTokenMonitor.Core/        # 无 UI 的核心逻辑（net10.0）
 │  │   ├─ 日志读取：CodexUsageReader、ClaudeUsageReader、ZCodeUsageReader、
 │  │   │            WorkBuddyUsageReader、LiveFileTailReader
 │  │   ├─ 额度读取：CodexAppServerQuotaReader、CodexCliLocator
@@ -25,7 +25,7 @@ CodexTokenMonitor.slnx
 │  │   │            ResetOpportunities、MonitorSettingsTable、QuotaModelCapacityCalibrationStore
 │  │   ├─ 缓存存储：UsageCacheStore、QuotaSnapshotCacheStore、UsageLogScanning
 │  │   └─ 数据交换：CodexDataTransferService、CodexDataSharingServer/Client
-│  └─ CodexTokenMonitor.Wpf/        # 原生 WPF 界面与设置窗口（net8.0-windows10.0.19041.0）
+│  └─ CodexTokenMonitor.Wpf/        # 原生 WPF 界面与设置窗口（net10.0-windows10.0.19041.0）
 │      ├─ MainWindow、MainWindow.DataTransfer、MainWindow.DataSharing、MainWindow.Settings
 │      ├─ UsageDisplayViewModel（统计快照、空/错误状态、复制可用性）
 │      ├─ UsageSourceModule（每来源页面选择、周期状态、显示 LRU 与每窗工厂）
@@ -42,13 +42,27 @@ CodexTokenMonitor.slnx
 
 局域网共享使用 `Microsoft.AspNetCore.App` 中的 Kestrel，显式监听 IPv4 端口（默认 36666），由主窗口持有服务生命周期。启动时按保存的 `AutoStart` 设置开启监听，默认开启；`DataSharingWindow` 提供该选项、手动启停和客户端同步操作。程序不会定时主动发起跨电脑同步。所有请求使用 `X-Codex-Sharing-Key` 请求头鉴权，不启用 CORS，不接受客户端给定的文件路径。`GET /api/health` 返回协议版本与设备名，`GET /api/week` 导出最近 8 个北京时间日期的 v2 JSON 数据包，`POST /api/week` 接收原始 JSON 数据包并返回新增/已有事件与快照数。下载包含服务器已合并的其他设备数据。
 
-网络读写使用独立临时文件和流式传输；包上限 256 MB，每次传输限时 3 分钟，单个服务器同时只处理一个数据包，多余传输返回 409。`MainWindow.DataSharing.cs` 在已有 `usageQueryGate` 内调用导出/导入，导入先验证整包属于最近 8 个北京时间日期，再通过现有稳定键合并。网络成功返回与 UI 刷新分离，UI 刷新通过 Dispatcher 排队，避免缓存锁与主线程相互等待。共享配置位于 `%LOCALAPPDATA%\CodexTokenMonitor\data-sharing-v1.json`；自包含发布携带网络运行时，Lite 发布要求另装 ASP.NET Core 8 Runtime。
+网络读写使用独立临时文件和流式传输；包上限 256 MB，每次传输限时 3 分钟，单个服务器同时只处理一个数据包，多余传输返回 409。`MainWindow.DataSharing.cs` 在已有 `usageQueryGate` 内调用导出/导入，导入先验证整包属于最近 8 个北京时间日期，再通过现有稳定键合并。网络成功返回与 UI 刷新分离，UI 刷新通过 Dispatcher 排队，避免缓存锁与主线程相互等待。共享配置位于 `%LOCALAPPDATA%\CodexTokenMonitor\data-sharing-v1.json`；自包含发布携带网络运行时，Lite 发布要求另装 ASP.NET Core 10 Runtime。
 
 ## 2. 数据源与读取
 
-### 2.1 五种来源
+### 2.1 七种来源
 
-`UsageSource` 枚举：`Codex`、`ClaudeCode`、`ZCode`、`WorkBuddy`、`Dsh`。`UsageSourceRegistry` 统一来源元数据及延迟工厂。每种来源由 `IUsageSourceReader` 包装，它组合 `IUsageCacheQuery`、`IUsageQuery`、`IUsageCacheMaintenance`；查询服务不再持有清理/预热方法，后台维护显式取得维护能力。`UsageSourceReaders.For(source)` 保留按来源取单例的入口，Registry 的窄接口视图指向同一个 Reader。
+`UsageSource` 枚举：`Codex`、`ClaudeCode`、`ZCode`、`WorkBuddy`、`Dsh`、`Kimi`、`Qoder`。`UsageSourceRegistry` 统一来源元数据及延迟工厂。每种来源由 `IUsageSourceReader` 包装，它组合 `IUsageCacheQuery`、`IUsageQuery`、`IUsageCacheMaintenance`；查询服务不再持有清理/预热方法，后台维护显式取得维护能力。`UsageSourceReaders.For(source)` 保留按来源取单例的入口，Registry 的窄接口视图指向同一个 Reader。
+
+速度分析使用独立的 `AgentSpeedMonitor` / `AgentSpeedHub`，按原生日志读取请求起止及用量，交给 `AgentSpeedEngine` 做来源隔离的响应更新、归属去重、区间加权、在途估算和会话层次计算，不占主统计 `SharedIoGate`。`FileSystemWatcher` 唤醒采样，一秒轮询和五秒文件发现兜底；`ZstdJsonlTailReader` 只提交完整压缩帧，保留跨帧 UTF-8 与半行。ZCode 用 `AgentSqliteReadOnly` 读取原库，缺失 SHM 的离线 WAL 在私有临时副本中重建。
+
+`AgentSpeedHistoryIndexer` 复用同一批解析器，`AgentSpeedHistoryStore` 将文件签名、请求归属哈希和每日/来源/模型/模式汇总保存到独立 SQLite。原生请求行只在索引事务的 TEMP 表中聚合，不持久化对话或逐请求行；变化文件在同一来源事务内释放、重新分配归属。文件删除不删除已有贡献，部分写入保留旧贡献或索引新文件的完整前缀，取消回滚当前来源事务。CSV 导出当前汇总，来源峰值独立保存，不将不同来源的历史峰值相加。
+
+主窗口顶部去掉品牌图标，只保留左侧七来源切换和右侧工具入口的一行布局，速度分析入口与数据管理同排，缓存状态位于底部。`UsageDetailsPanel` 是整体 Grid，上方 `UsageTrendPanel` 独立承载用量趋势。分隔条下方为同一白色 `DetailsCard`，在原“用量明细”标题行放置“用量明细 / 实时数据”页签，替代重复标题与卡片外的页签行；切换仅作用于该标题行下的原列表区域，两个页面占据同一 Rect，不移动趋势、分隔条或模块位置。`DetailsCard` 保留自然的 12,10 内边距，里面两个页面及 Tab 内容的 `Padding` / `Margin` 为 0，不增加独立框。
+
+`MainWindow.Speed` 管理主状态栏采样和单一 `speedWindow`。`AgentSpeedStatusMonitor` 持续为左下角提供当前来源的实时并行输出速度，遵守自动刷新开关和来源变化，不依赖明细页签选择。`RealtimeDataView` 只呈现主 `speedStatus` 的同一份快照，不另开读盘线程；仅选中实时数据页时调用 `Apply` 更新指标、曲线和会话，离开该页停止这些视图更新，返回时立即应用最新快照，底部采样始终按开关运行。主窗口关闭取消并排空采样任务。
+
+`RealtimeDataView` 从五项速度指标开始呈现，指标条在各可用高度下保持可见。页面内部采用左右布局：左侧主要空间显示指标与曲线，最右约 240 px 的 `RecentSessionsPanel` 显示紧凑会话列表，不在曲线下方叠放会话。
+
+`AgentSpeedView` 是完整分析 UserControl，`AgentSpeedWindow` 是窗口宿主，集中展示曲线、模型/模式和会话明细。历史与导出在该分析视图内切换到 `AgentSpeedHistoryView`，支持返回实时；`AgentSpeedHistoryWindow` 仍可作为独立历史宿主。该分析窗口的采样生命周期与主实时数据页独立，历史视图统一索引、查询和 CSV 导出，采样与历史任务均随所属窗口关停。
+
+测速来源与指标切换采用版本号抑制过期发布，表格复用行对象以保持选择和滚动。计算方法、范围及证据见 [Agent Speed 验收](AGENT-SPEED-ADOPTION.md)。
 
 只有 Codex 支持额度（`SupportsQuota == true`）。
 
@@ -160,12 +174,20 @@ DSH 页的账号余额面板（`DshBalanceReader`）读的是 DeepSeek 平台账
 ## 8. UI 结构（MainWindow）
 
 ```text
-├─ 应用标题与设置操作；下一行是来源 Tab（Codex / Claude Code / ZCode / WorkBuddy / DSH）与缓存详情
-├─ 额度面板（仅 Codex）：5h 额度 / 7d 额度 / 当前套餐 / 重置过期 / 重置评估 + [估算]
+├─ 单行顶栏：七来源 Tab｜数据管理 / 速度分析 / 设置 / 检查更新
+├─ 按来源显示额度或余额面板
 ├─ 范围选择条：模式（天/周/月/周期）｜<｜日期 或 周期下拉｜选7天｜>｜今天｜从当前算｜刷新日
 ├─ 汇总卡：TOTAL TOKENS + 按价格预设横向排列的费用卡（Codex/ZCode/WorkBuddy 首张为"实际模型 · 标准 API 等价"，非 Codex 来源按各自价格组计价）
 ├─ 单行九项指标：Input / Cached / Cache Write / Uncached / Output / Reasoning / Cache Ratio / Events / Coding Time
-└─ 明细区：可拖高的时间轴（ScottPlot） + 明细表（DataGrid，冻结前两列、行/列虚拟化）
+├─ UsageDetailsPanel（整体 Grid）
+│  ├─ 用量趋势（UsageTrendPanel，ScottPlot）
+│  ├─ 可拖拽分隔条
+│  └─ DetailsCard（白色卡片，12,10 内边距）
+│     ├─ 标题行：用量明细 / 实时数据页签
+│     └─ 原列表区域（两页同 Rect，页面/Tab 内容零额外边距、无独立框）
+│        ├─ 用量明细（DataGrid）
+│        └─ 实时数据：左侧始终显示的五指标/曲线 + 最右约 240 px 紧凑会话栏
+└─ 底部状态栏：持续采样的实时并行速度｜刷新状态｜缓存状态入口｜自动刷新 / 复制摘要
 ```
 
 - 每来源模块（`UsageSourceModule` 子类）保存自己的模式、选中日期、自定义起点和显示缓存；切换 Tab 时恢复各自状态。

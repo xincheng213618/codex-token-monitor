@@ -23,27 +23,66 @@
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
         </Style>
+        <Style x:Key="HeaderToolButton" TargetType="Button" BasedOn="{StaticResource ToolButton}">
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+            <Setter Property="MinHeight" Value="32" />
+        </Style>
+        <Style x:Key="HeaderSourceTab" TargetType="TabItem" BasedOn="{StaticResource SourceTabItemStyle}">
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="Padding" Value="8,0" />
+        </Style>
+        <Style x:Key="DetailsTabItemStyle" TargetType="TabItem" BasedOn="{StaticResource HeaderSourceTab}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border Background="Transparent" BorderThickness="0" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="{StaticResource AccentBrush}" /></Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource AccentBrush}" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="DetailsTabsStyle" TargetType="TabControl">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabControl">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="32" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                            <DockPanel LastChildFill="True" Margin="0">
+                                <TextBlock x:Name="CostEstimateCaption" DockPanel.Dock="Right" Text="费用为 API 等价估算" Foreground="{StaticResource MutedBrush}" FontSize="11" VerticalAlignment="Center" Margin="8,0,4,0" Visibility="Collapsed" />
+                                <TabPanel IsItemsHost="True" Margin="0" />
+                            </DockPanel>
+                            <ContentPresenter Grid.Row="1" ContentSource="SelectedContent" Margin="0" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="SelectedIndex" Value="0"><Setter TargetName="CostEstimateCaption" Property="Visibility" Value="Visible" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
     <Grid Margin="20,14,20,12">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="0" />
             <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
             <RowDefinition Height="*" MinHeight="210" /><RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <Grid Grid.Row="0" Margin="0,0,0,10">
+        <Grid x:Name="CompactHeader" Grid.Row="0" Margin="0,0,0,10">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Border Width="34" Height="34" CornerRadius="9" Background="{StaticResource AccentBrush}" Margin="0,0,10,0">
-                    <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" Foreground="White" FontSize="19" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                </Border>
-                <StackPanel>
-                    <TextBlock Text="Token Monitor" FontWeight="SemiBold" FontSize="18" />
-                    <TextBlock Text="用量与额度概览" Foreground="{StaticResource MutedBrush}" FontSize="11" />
-                </StackPanel>
-            </StackPanel>
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                <Button x:Name="DataTransferButton" Style="{StaticResource ToolbarButton}" Content="数据管理" Click="DataTransferButton_Click" ToolTip="导入、导出或共享 Codex 数据；也可拖入数据包">
+            <TabControl x:Name="SourceTabs" Grid.Column="0" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,10,0" Style="{StaticResource SourceTabsStyle}" ItemContainerStyle="{StaticResource HeaderSourceTab}" SelectionChanged="SourceTabs_SelectionChanged" />
+            <StackPanel x:Name="HeaderActions" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="DataTransferButton" Style="{StaticResource HeaderToolButton}" Content="数据管理" Click="DataTransferButton_Click" ToolTip="导入、导出或共享 Codex 数据；也可拖入数据包">
                     <Button.ContextMenu>
                         <ContextMenu>
                             <MenuItem Header="导入其他电脑数据..." ToolTip="仅合并同一 Codex 账户的数据" Click="ImportDataButton_Click" />
@@ -56,17 +95,12 @@
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>
-                <Button x:Name="ResetSettingsButton" Style="{StaticResource ToolbarButton}" Content="重置设置" Click="ResetSettingsButton_Click" />
-                <Button x:Name="PlanSettingsButton" Style="{StaticResource ToolbarButton}" Content="套餐设置" Click="PlanSettingsButton_Click" />
-                <Button Style="{StaticResource ToolButton}" Content="价格设置" Click="PriceSettingsButton_Click" />
-                <Button x:Name="CheckForUpdatesButton" Style="{StaticResource ToolbarButton}" Content="检查更新" Click="CheckForUpdatesButton_Click" ToolTip="检查 GitHub Releases 上的最新正式版本" />
+                <Button x:Name="SpeedAnalysisButton" Style="{StaticResource HeaderToolButton}" Content="速度分析" Click="SpeedAnalysisButton_Click" ToolTip="查看实时速度、模型和会话明细；历史与导出在分析窗口内" />
+                <Button x:Name="ResetSettingsButton" Style="{StaticResource HeaderToolButton}" Content="重置设置" Click="ResetSettingsButton_Click" />
+                <Button x:Name="PlanSettingsButton" Style="{StaticResource HeaderToolButton}" Content="套餐设置" Click="PlanSettingsButton_Click" />
+                <Button Style="{StaticResource HeaderToolButton}" Content="价格设置" Click="PriceSettingsButton_Click" />
+                <Button x:Name="CheckForUpdatesButton" Style="{StaticResource HeaderToolButton}" Margin="0" Content="检查更新" Click="CheckForUpdatesButton_Click" ToolTip="检查 GitHub Releases 上的最新正式版本" />
             </StackPanel>
-        </Grid>
-        <Grid Grid.Row="1" Margin="0,0,0,10">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-            <TabControl x:Name="SourceTabs" HorizontalAlignment="Left" Style="{StaticResource SourceTabsStyle}" ItemContainerStyle="{StaticResource SourceTabItemStyle}" SelectionChanged="SourceTabs_SelectionChanged">
-            </TabControl>
-            <Button x:Name="CacheStatusButton" Grid.Column="1" Style="{StaticResource StatusLinkButton}" MaxWidth="330" Content="缓存详情" ToolTip="查看后台缓存进度与运行信息" Click="CacheStatusButton_Click" />
         </Grid>
         <Border x:Name="QuotaPanel" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,10" Visibility="Collapsed">
             <Grid>
@@ -116,7 +150,7 @@
         <Border x:Name="ZCodeQuotaPanel" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,10" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="1.35*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="1.35*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,16,0">
                     <TextBlock Text="剩余余额" Style="{StaticResource QuotaCaption}" />
@@ -138,7 +172,12 @@
                     <TextBlock x:Name="ZCodeQuotaExpiryValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                     <TextBlock x:Name="ZCodeQuotaExpiryDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <StackPanel Grid.Column="4" VerticalAlignment="Center">
+                <StackPanel Grid.Column="4" Margin="0,0,16,0">
+                    <TextBlock Text="重置卡" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ZCodeResetCreditValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    <TextBlock x:Name="ZCodeResetCreditDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="5" VerticalAlignment="Center">
                     <Button x:Name="ZCodeQuotaAnalysisButton" Style="{StaticResource ToolbarButton}" Content="消费分析" Click="ZCodeQuotaAnalysisButton_Click" ToolTip="查看套餐期内消费时间线、分段速度与用尽预测" />
                 </StackPanel>
             </Grid>
@@ -216,23 +255,30 @@
                 <Border Style="{StaticResource MetricTile}" BorderThickness="0" ToolTip="Coding Time · 以 10 分钟空闲间隔计算的活跃时长"><StackPanel><TextBlock Text="活跃时长" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CodingTimeValue" Text="{Binding Snapshot.CodingTime}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
             </UniformGrid>
         </Border>
-        <Border x:Name="UsageDetailsPanel" Visibility="{Binding ShowContent, Converter={StaticResource UsageVisibility}}" Grid.Row="6" Style="{StaticResource PanelBorder}" Padding="12,10">
-            <Grid>
-                <Grid.RowDefinitions><RowDefinition x:Name="TimelineRow" Height="0" /><RowDefinition x:Name="TimelineSplitterRow" Height="0" /><RowDefinition x:Name="BreakdownRow" Height="*" MinHeight="112" /></Grid.RowDefinitions>
-                <Grid x:Name="TimelineHost" Grid.Row="0" Visibility="Collapsed">
+        <Grid x:Name="UsageDetailsPanel" Grid.Row="6" Visibility="{Binding ShowContent, Converter={StaticResource UsageVisibility}}" TextElement.FontWeight="Normal">
+            <Grid.RowDefinitions><RowDefinition x:Name="TimelineRow" Height="0" /><RowDefinition x:Name="TimelineSplitterRow" Height="0" /><RowDefinition x:Name="BreakdownRow" Height="*" MinHeight="112" /></Grid.RowDefinitions>
+            <Border x:Name="UsageTrendPanel" Grid.Row="0" Visibility="{Binding Visibility, ElementName=TimelineHost}" Style="{StaticResource PanelBorder}" Padding="12,10">
+                <Grid x:Name="TimelineHost" Visibility="Collapsed">
                     <Grid.RowDefinitions><RowDefinition Height="28" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                     <DockPanel LastChildFill="False" Margin="4,0"><TextBlock Text="用量趋势" Style="{StaticResource SectionTitle}" DockPanel.Dock="Left" /><TextBlock Text="Token / 时间" Foreground="{StaticResource MutedBrush}" FontSize="11" DockPanel.Dock="Right" /></DockPanel>
                     <local:WpfTokenTimelineControl x:Name="Timeline" Grid.Row="1" />
                 </Grid>
-                <GridSplitter x:Name="TimelineSplitter" Grid.Row="1" Height="4" Margin="0,3" HorizontalAlignment="Stretch" VerticalAlignment="Center" Background="{StaticResource BorderBrush}" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" ShowsPreview="True" Visibility="Collapsed" />
-                <Grid Grid.Row="2">
-                    <Grid.RowDefinitions><RowDefinition Height="30" /><RowDefinition Height="*" /></Grid.RowDefinitions>
-                    <DockPanel LastChildFill="False" Margin="4,3,4,0"><TextBlock Text="用量明细" Style="{StaticResource SectionTitle}" DockPanel.Dock="Left" /><TextBlock Text="费用为 API 等价估算" Foreground="{StaticResource MutedBrush}" FontSize="11" DockPanel.Dock="Right" /></DockPanel>
-                    <DataGrid x:Name="BreakdownGrid" Grid.Row="1" FrozenColumnCount="2" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" EnableRowVirtualization="True" EnableColumnVirtualization="True" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True" />
-                </Grid>
-            </Grid>
-        </Border>
-        <Border x:Name="EmptyUsagePanel" Grid.Row="4" Grid.RowSpan="3" Style="{StaticResource PanelBorder}" Padding="28" Visibility="{Binding ShowEmpty, Converter={StaticResource UsageVisibility}}">
+            </Border>
+            <GridSplitter x:Name="TimelineSplitter" Grid.Row="1" Height="4" Margin="0,3" HorizontalAlignment="Stretch" VerticalAlignment="Center" Background="{StaticResource BorderBrush}" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" ShowsPreview="True" Visibility="Collapsed" />
+            <Border x:Name="DetailsCard" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="12,10">
+                <TabControl x:Name="DetailsTabs" Style="{StaticResource DetailsTabsStyle}" ItemContainerStyle="{StaticResource DetailsTabItemStyle}" SelectionChanged="DetailsTabs_SelectionChanged">
+                    <TabItem x:Name="UsageAnalysisTab" Header="用量明细">
+                        <Border x:Name="UsageBreakdownPanel" Background="Transparent" Padding="0" BorderThickness="0" Margin="0" TextElement.FontWeight="Normal">
+                            <DataGrid x:Name="BreakdownGrid" FrozenColumnCount="2" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False" EnableRowVirtualization="True" EnableColumnVirtualization="True" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True" />
+                        </Border>
+                    </TabItem>
+                    <TabItem x:Name="RealtimeDataTab" Header="实时数据">
+                        <Border x:Name="RealtimeDataPanel" Background="Transparent" Padding="0" BorderThickness="0" Margin="0" TextElement.FontWeight="Normal"><ContentControl x:Name="RealtimeDataHost" /></Border>
+                    </TabItem>
+                </TabControl>
+            </Border>
+        </Grid>
+        <Border x:Name="EmptyUsagePanel" Grid.Row="4" Grid.RowSpan="2" Style="{StaticResource PanelBorder}" Padding="28" Visibility="{Binding ShowEmpty, Converter={StaticResource UsageVisibility}}">
             <StackPanel MaxWidth="560" HorizontalAlignment="Center" VerticalAlignment="Center" TextBlock.TextAlignment="Center">
                 <Border Width="56" Height="56" Margin="0,0,0,10" HorizontalAlignment="Center" Background="{StaticResource AccentSoftBrush}" CornerRadius="16"><TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="24" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border>
                 <TextBlock x:Name="EmptyUsageTitle" Text="{Binding Snapshot.EmptyTitle}" FontSize="22" FontWeight="SemiBold" />
@@ -242,9 +288,13 @@
         </Border>
         <DockPanel Grid.Row="7" Margin="2,10,0,0" LastChildFill="True">
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                <CheckBox x:Name="AutoRefreshBox" Content="自动刷新" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" />
+                <CheckBox x:Name="AutoRefreshBox" Content="自动刷新" IsChecked="True" Checked="SpeedAutoRefresh_Changed" Unchecked="SpeedAutoRefresh_Changed" VerticalAlignment="Center" Margin="0,0,16,0" />
                 <Button x:Name="CopySummaryButton" Style="{StaticResource ToolButton}" Content="复制摘要" ToolTip="复制当前来源、时间范围、Token、费用与额度摘要" IsEnabled="{Binding CanCopy}" Click="CopySummaryButton_Click" />
             </StackPanel>
+            <Button x:Name="CacheStatusButton" DockPanel.Dock="Right" Style="{StaticResource StatusLinkButton}" MaxWidth="220" Margin="0,0,12,0" Content="缓存详情" ToolTip="查看后台缓存进度与运行信息" Click="CacheStatusButton_Click">
+                <Button.ContentTemplate><DataTemplate><TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" /></DataTemplate></Button.ContentTemplate>
+            </Button>
+            <TextBlock x:Name="RealtimeSpeedText" DockPanel.Dock="Left" Text="实时并行速度 —" Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
             <TextBlock x:Name="StatusText" Text="{Binding Status}" ToolTip="{Binding StatusDetail}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,16,0" />
         </DockPanel>
     </Grid>

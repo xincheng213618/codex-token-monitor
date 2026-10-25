@@ -13,10 +13,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          # .slnx needs SDK 9.0.200 or newer; keep .NET 8 for the test runtime.
-          dotnet-version: |
-            8.0.x
-            10.0.x
+          dotnet-version: 10.0.x
 
       - name: Restore
         run: dotnet restore .\CodexTokenMonitor.slnx -r win-x64
@@ -36,4 +33,7 @@ jobs:
           $notices = '.\artifacts\publish\Notices\real-api-pricing'
           foreach ($name in @('LICENSE.txt', 'README.md', 'SOURCES.md')) {
             if (-not (Test-Path (Join-Path $notices $name))) { throw "Missing Real API Pricing notice: $name" }
+          }
+          foreach ($name in @('LICENSE.txt', 'README.md')) {
+            if (-not (Test-Path (Join-Path '.\artifacts\publish\Notices\agent-speed' $name))) { throw "Missing Agent Speed notice: $name" }
           }

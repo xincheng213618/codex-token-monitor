@@ -14,6 +14,11 @@
 - “按天”可选择统计时区（默认 UTC+8，支持 UTC-12 至 UTC+14），设置自动保存；当天边界、图表、明细与复制摘要跟随所选时区。近 7 天、月、额度周期与“从当前算”保留原有口径。SQLite 复用 UTC 小时汇总缓存，新增、导入或删除事件时自动失效对应小时，避免为每个时区重复扫描日志。
 - 当前周/月/周期范围若截止到现在，会叠加当天实时日志并随自动刷新更新；历史范围继续优先使用缓存。
 - 支持“从当前算”，方便比较同一任务在不同 AI 工具里的消耗。
+- 顶部去掉品牌图标，只保留左侧七来源切换和右侧工具入口的一行布局，“速度分析”放在“数据管理”旁，缓存状态位于底部。
+- 用量趋势保留为独立的上方模块；下方同一明细卡片的标题行提供“用量明细 / 实时数据”页签，只切换原列表区域，不移动上方趋势、分隔条或模块位置。该区域保留 12,10 内边距，页签及页面内容不再叠加边距或框。实时数据顶部直接显示始终可见的五项速度指标，左侧以曲线为主，最右窄栏显示近期会话。
+- 左下角实时并行速度持续跟随当前来源采样和刷新，遵守“自动刷新”开关，不依赖下方页签选择。实时数据页复用同一份采样快照，仅在选中时更新指标、曲线和会话视图；离开该页只停止视图更新，返回时立即显示最新快照，不另外读盘。
+- “速度分析”打开完整分析窗口，集中显示五分钟曲线、最近响应、今日加权平均、有效测速覆盖、实测峰值、模型/模式分组及主子会话，支持现有七来源和全部来源视图。可切换“输出速度”和“输入+输出总吞吐量”，后者包含缓存输入，不代表生成速度。请求耗时含首字等待，在途估算完成后校正；缺少有效耗时的请求保留用量及计数，支持压缩帧和半行重试。
+- 分析窗口内的“历史与导出”可按日期、来源查看持久日汇总并导出 CSV，再返回实时分析。首次索引补扫本机历史日志，后续复用文件索引；保留已删除日志的统计，只保存汇总、文件签名和去重哈希，不保存对话正文。损坏库可先备份后重建。历史峰值只保存采样期间计算过的来源实测峰值，各来源峰值不能相加。速度日期固定按 UTC+8，与主统计范围独立；数据包缺少请求起点时不能恢复测速。计算和解析规则借鉴 MIT 许可的 [Agent Speed](https://github.com/zoefix/agent-speed)，许可随程序放在 `Notices/agent-speed`，吸收范围见 [验收说明](docs/AGENT-SPEED-ADOPTION.md)。
 - 展示 input、cached input、cache write、uncached input、output、reasoning output、缓存命中率、事件数和 Coding Time（10 分钟空闲判定的活跃时长）。
   - Codex、ZCode 与 WorkBuddy 页均提供"实际模型 · 标准 API 等价"费用卡与明细"实际模型/模型费用"两列；ZCode 按智谱/Z.AI 价格组人民币计价，默认对比档为 GLM-5.3 Flash（输入 ¥0.80 / 缓存命中 ¥0.23 / 输出 ¥2.80 每百万 tokens，参考 bigmodel.cn，可编辑）；WorkBuddy 按 WorkBuddy 价格组计价（`hy3` 命中腾讯混元 hy3 档，端点 ID 等未知模型 0x 待填、可按模型 ID 补价）。
 - 以 ScottPlot 时间轴图表查看当天/周/月 token 峰值：总 Token 与缓存输入柱状图 + 累计总 Token 折线，可调节高度、带图例和轴标签。
@@ -26,6 +31,7 @@
   - 优先通过 Codex 本地 app-server（`codex app-server --stdio`）实时读取 5h / 7d 剩余额度百分比，自动发现可运行的 Codex CLI（Desktop 插件副本、npm 安装、PATH 上的 `codex.exe/.cmd/.bat`），不可用时回退到本机会话日志捕获的额度记录。
   - 根据当前 7d 周期的额度变化和本地 token 消耗，按可选的 1% / 2% / 5% / 10% 额度分段分析模型构成、换算代价、消耗速度与用量预测。各模型独立显示“100% 额度预计可用多少 M Token”，统一按本周期输入、缓存和输出构成及普通短上下文价格计算；满额折算金额除以每百万 Token 折算代价即为估算用量，无需基准模型。图表和明细中的模型占比统一为各模型折算代价除以总折算代价。
   - 模型历史校准排除与本期重叠的记录，同一历史周期的重叠版本只取一次。单段历史需在缓存中有超过 0.5 个百分点的模型额度归因，避免将额度接近耗尽时的微小变化当成可靠基准；缺少可靠历史时显示“本期混用推算”，其范围同时考虑其他模型的估算范围和额度读数取整，不代表独立实测或统计置信区间。
+  - “模型构成”卡片右上角可切换“代价占比 / Token 总量”。Token 总量显示各模型累计的 M 用量及本周期合计，包含显示 0% 后的记录；条形按 Token 占比显示，自动刷新保留当前选择。
   - 周期分析默认使用 1% 分段；显示 0% 后新增“0% → 结束”阶段（默认第 101 级），继续累计 Token 和代价，不参与百分比拟合或模型校准。当前周期每分钟自动刷新，也可手动刷新；预测表示可见额度到 0% 的时间，实际停止时间未知。
   - 主界面额度面板保留“额度估算”入口；窗口内继续提供当前 5h / 7d、手动区间和历史周期，并可按需新开额度曲线或分析所选周期。
 - 价格设置：
@@ -45,9 +51,9 @@
 ## 运行环境
 
 - Windows 10/11
-- .NET SDK 8.0+
+- .NET SDK 10.0+
 
-项目主界面和设置窗口均使用 WPF，目标框架是 `net8.0-windows10.0.19041.0`，通过共享主题统一控件与配色。
+项目主界面和设置窗口均使用 WPF，目标框架是 `net10.0-windows10.0.19041.0`，通过共享主题统一控件与配色。
 
 ## 构建
 
@@ -71,6 +77,7 @@ dotnet publish .\src\CodexTokenMonitor.Wpf\CodexTokenMonitor.Wpf.csproj -c Relea
 ```text
 outputs/CodexTokenMonitor/CodexTokenMonitor.exe
 outputs/CodexTokenMonitor/Notices/real-api-pricing/
+outputs/CodexTokenMonitor/Notices/agent-speed/
 ```
 
 日常只使用这一个输出目录。一键生成和后续更新均使用此位置，不再按功能名称另建发布目录。`outputs` 顶层仅保留 `CodexTokenMonitor` 正式目录和已纳入版本控制的 `一键生成CodexTokenMonitor.cmd`；临时发布、旧版备份、测试截图和验证目录放在系统临时目录或项目 `artifacts` 中。
@@ -79,7 +86,7 @@ outputs/CodexTokenMonitor/Notices/real-api-pricing/
 
 Release 发布目录的根目录只保留这个 exe，不需要旁边的 Core PDB 或 .NET runtime 文件；`Notices` 目录保留内置参考价格数据的许可与来源声明。发布前应清理旧目录，避免旧版文件残留。
 
-轻量版（`Lite` 配置，框架依赖）只打包应用和依赖，要求本机已安装 .NET 8 Desktop Runtime 和 ASP.NET Core 8 Runtime（局域网共享服务使用），exe 体积会小很多：
+轻量版（`Lite` 配置，框架依赖）只打包应用和依赖，要求本机已安装 .NET 10 Desktop Runtime 和 ASP.NET Core 10 Runtime（局域网共享服务使用），exe 体积会小很多：
 
 ```powershell
 $stagingDir = Join-Path $env:TEMP ('CodexTokenMonitor-lite-' + [Guid]::NewGuid().ToString('N'))
@@ -109,6 +116,7 @@ outputs/一键生成CodexTokenMonitor.cmd
 主要包括：
 
 - token 统计缓存（SQLite，含每日汇总、明细事件）
+- `speed-history.sqlite3`：速度日汇总、去重索引及已观测来源峰值，由采样或历史索引建立
 - quota 快照缓存（SQLite + `quota-history-v2.jsonl` 历史额度时间线）
 - 价格设置、套餐设置、重置机会设置（SQLite）
 - `wpf-last-display-v5.json`：上次关闭时的显示状态
@@ -174,8 +182,8 @@ cost = uncached_input_millions * input_price
 项目分层：
 
 ```text
-src/CodexTokenMonitor.Core/CodexTokenMonitor.Core.csproj   日志、缓存、统计与额度计算（net8.0）
-src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj    原生 WPF 界面与设置窗口（net8.0-windows）
+src/CodexTokenMonitor.Core/CodexTokenMonitor.Core.csproj   日志、缓存、统计与额度计算（net10.0）
+src/CodexTokenMonitor.Wpf/CodexTokenMonitor.Wpf.csproj    原生 WPF 界面与设置窗口（net10.0-windows）
 tests/CodexTokenMonitor.Core.Tests/                        核心回归测试
 ```
 

@@ -78,6 +78,25 @@ internal static class ZCodeQuotaProbe
                          ReferenceEquals(first.Failure, second.Failure)
             });
 
+            // The reset-card endpoint rides the same account credentials; a
+            // signed-in desktop install must yield a parsed status, and the
+            // second read must come from the reader's cache.
+            var resetFirst = ZCodeResetCreditReader.Shared.ReadCurrent();
+            var resetSecond = ZCodeResetCreditReader.Shared.ReadCurrent();
+            checks.Add(new
+            {
+                check = "reset-credits-live-read",
+                passed = resetFirst is not null && ReferenceEquals(resetFirst, resetSecond),
+                fiveHourCount = resetFirst?.FiveHourCount,
+                weekCount = resetFirst?.WeekCount,
+                fiveHourExpires = resetFirst?.FiveHourExpiresLocal
+                    .Select(item => item.ToString("yyyy-MM-dd HH:mm zzz")).ToArray(),
+                weekExpires = resetFirst?.WeekExpiresLocal
+                    .Select(item => item.ToString("yyyy-MM-dd HH:mm zzz")).ToArray(),
+                latestFiveHourUsedLocal = resetFirst?.LatestFiveHourUsedLocal?.ToString("yyyy-MM-dd HH:mm zzz"),
+                latestWeekUsedLocal = resetFirst?.LatestWeekUsedLocal?.ToString("yyyy-MM-dd HH:mm zzz")
+            });
+
             ProbeReport.Write(output, "zcode", checks.All(item => (bool)item.GetType().GetProperty("passed")!.GetValue(item)!), null, checks);
         }
         catch (Exception ex)

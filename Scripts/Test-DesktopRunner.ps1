@@ -97,7 +97,7 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $suiteRoot $imageNames[0]), $png)
     Verify | Out-Null
     if ($IncludeProbeCli) {
-        $target = "bin\$Configuration\net8.0-windows10.0.19041.0"
+        $target = "bin\$Configuration\net10.0-windows10.0.19041.0"
         if ($Configuration -ieq 'Release') { $target = Join-Path $target 'win-x64' }
         $probe = Join-Path $repo "tests\CodexTokenMonitor.Wpf.Probes\$target\CodexTokenMonitor.Wpf.Probes.dll"
         Check (Test-Path -LiteralPath $probe -PathType Leaf) 'probe-cli-binary-available'

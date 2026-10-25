@@ -32,6 +32,7 @@ public partial class MainWindow
     {
         try
         {
+            var speedCompletion = StopSpeedMonitoring();
             foreach (var child in OwnedWindows.Cast<Window>().ToArray())
             {
                 try { child.Close(); }
@@ -45,6 +46,7 @@ public partial class MainWindow
                 backgroundCacheWarmer.Completion,
                 usageRefreshRunner.Completion,
                 cycleRefreshTask,
+                speedCompletion,
                 LastDisplayStore.FlushAsync()));
             var result = await runtime.StopAsync(TimeSpan.FromSeconds(3));
             if (!result.Completed)
