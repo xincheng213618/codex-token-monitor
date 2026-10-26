@@ -111,8 +111,10 @@ public partial class MainWindow
             var progress = new Progress<ReleaseDownloadProgress>(value =>
             {
                 if (isClosed || runtime.IsStopping || !updateDownloadInProgress) return;
-                CheckForUpdatesButton.Content = $"下载更新 {value.Percent}%";
-                CheckForUpdatesButton.ToolTip = $"{value.BytesReceived / 1048576d:N1} / {value.TotalBytes / 1048576d:N1} MB\n下载并校验完成后自动替换并重启。";
+                CheckForUpdatesButton.Content = value.IsRetrying
+                    ? $"重新连接… {value.Percent}%"
+                    : $"下载更新 {value.Percent}%";
+                CheckForUpdatesButton.ToolTip = $"{value.BytesReceived / 1048576d:N1} / {value.TotalBytes / 1048576d:N1} MB\n第 {value.Attempt} 次连接；中断后自动重试并续传。\n下载并校验完成后自动替换并重启。";
             });
             using var prepared = await runtime.Run("下载更新", token =>
                 new GitHubReleaseDownloader().DownloadAsync(release, progress, token));

@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -11,6 +10,8 @@ namespace CodexTokenMonitor;
 public sealed record ReleaseDownloadProgress(long BytesReceived, long TotalBytes)
 {
     public int Percent => TotalBytes <= 0 ? 0 : (int)Math.Min(100, BytesReceived * 100 / TotalBytes);
+    public int Attempt { get; init; } = 1;
+    public bool IsRetrying { get; init; }
 }
 
 public sealed class PreparedReleaseUpdate : IDisposable
@@ -32,7 +33,7 @@ public sealed class PreparedReleaseUpdate : IDisposable
 
 public sealed class GitHubReleaseDownloader(HttpClient? client = null)
 {
-    private const long MaximumPackageBytes = 512L * 1024 * 1024;
+    private const long MaximumPackageBytes = ReleasePackageDownloader.MaximumPackageBytes;
     private static readonly HttpClient SharedClient = new() { Timeout = Timeout.InfiniteTimeSpan };
     private readonly HttpClient client = client ?? SharedClient;
 
@@ -49,40 +50,8 @@ public sealed class GitHubReleaseDownloader(HttpClient? client = null)
             timeout.CancelAfter(TimeSpan.FromMinutes(15));
             var token = timeout.Token;
             var archivePath = Path.Combine(directory, "package.zip");
-            using var request = CreateRequest(asset.Url);
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var expectedSize = asset.Size > 0 ? asset.Size : response.Content.Headers.ContentLength ?? 0;
-            if (expectedSize > MaximumPackageBytes ||
-                (asset.Size > 0 && response.Content.Headers.ContentLength is { } length && length != asset.Size))
-                throw new InvalidDataException("更新包大小与 GitHub 发布信息不一致。");
-            await using (var source = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false))
-            await using (var destination = new FileStream(archivePath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                81920, useAsync: true))
-            using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
-            {
-                var buffer = new byte[81920];
-                var lastProgress = Stopwatch.StartNew();
-                long received = 0;
-                int read;
-                while ((read = await source.ReadAsync(buffer, token).ConfigureAwait(false)) != 0)
-                {
-                    received += read;
-                    if (received > MaximumPackageBytes || (expectedSize > 0 && received > expectedSize))
-                        throw new InvalidDataException("更新包超过预期大小。");
-                    hash.AppendData(buffer, 0, read);
-                    await destination.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
-                    if (lastProgress.ElapsedMilliseconds >= 150 || received == expectedSize)
-                    {
-                        progress?.Report(new(received, expectedSize));
-                        lastProgress.Restart();
-                    }
-                }
-                if (received == 0 || (expectedSize > 0 && received != expectedSize) ||
-                    !Convert.ToHexString(hash.GetHashAndReset()).Equals(asset.Sha256, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException("更新包 SHA-256 校验失败，请重新下载。");
-                progress?.Report(new(received, received));
-            }
+            await new ReleasePackageDownloader(client).DownloadAsync(asset.Url, archivePath,
+                asset.Size, asset.Sha256, progress, token).ConfigureAwait(false);
 
             await Task.Run(() =>
             {
