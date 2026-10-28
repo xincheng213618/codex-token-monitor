@@ -180,7 +180,8 @@ public sealed class CodexSpeedTests
             using (var encoder = new ZstdSharp.CompressionStream(stream))
             using (var writer = new StreamWriter(encoder))
                 writer.Write(Meta("z") + "\n" + Input(13) + "\n" + Usage(16, "r3") + "\n");
-            Assert.Equal(3, monitor.Read(At(20), Day).Requests);
+            Assert.True(SpinWait.SpinUntil(() => monitor.Read(At(20), Day).Requests == 3, TimeSpan.FromSeconds(3)),
+                "new archives are discovered through asynchronous file notifications");
             // A truncated replacement replays from the beginning without adding old response keys.
             File.WriteAllText(file, Meta() + "\n" + Input(1) + "\n" + Usage(4, "r1") + "\n");
             Assert.Equal(3, monitor.Read(At(21), Day).Requests);

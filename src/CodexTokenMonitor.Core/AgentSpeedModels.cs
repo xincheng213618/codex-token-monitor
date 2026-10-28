@@ -2,6 +2,8 @@ namespace CodexTokenMonitor;
 
 internal enum AgentSpeedPhase { Idle, Generating, Tools }
 internal enum AgentSpeedMetric { Output, TotalThroughput }
+[Flags]
+internal enum AgentSpeedSnapshotOptions { Live = 0, Details = 1, Peak = 2, Full = Details | Peak }
 
 internal sealed record AgentSpeedResponse(
     string Key, string AgentId, string Model, DateTimeOffset? Start,
@@ -31,7 +33,11 @@ internal sealed record AgentSpeedSnapshot(
     AgentSpeedResponse? Last, double? Average, int Requests, int MeasuredRequests,
     IReadOnlyList<AgentSpeedModelSummary> Models, IReadOnlyList<AgentSpeedAgentSummary> Agents,
     IReadOnlyList<AgentSpeedPoint> History, int UnreadableFiles = 0,
-    AgentSpeedMetric Metric = AgentSpeedMetric.Output, double? MeasuredPeak = null, int UnfinalizedRequests = 0);
+    AgentSpeedMetric Metric = AgentSpeedMetric.Output, double? MeasuredPeak = null, int UnfinalizedRequests = 0,
+    AgentSpeedSnapshotOptions Options = AgentSpeedSnapshotOptions.Full)
+{
+    public bool HasDetails => (Options & AgentSpeedSnapshotOptions.Details) != 0;
+}
 
 internal interface IAgentSpeedParser
 {
@@ -45,5 +51,5 @@ internal interface IAgentSpeedSampler : IDisposable
     UsageSource? Source { get; }
     event EventHandler? Changed;
     AgentSpeedSnapshot Read(DateTimeOffset now, DateTimeOffset dayStart, CancellationToken token = default,
-        AgentSpeedMetric metric = AgentSpeedMetric.Output);
+        AgentSpeedMetric metric = AgentSpeedMetric.Output, AgentSpeedSnapshotOptions options = AgentSpeedSnapshotOptions.Full);
 }

@@ -1471,8 +1471,35 @@ internal sealed class CodexUsageReader
 
             var fullHistoricalDay = clippedStart == dayStart && clippedEnd == dayEnd && dayStart < todayStart;
             var liveToday = dayStart == todayStart;
-            var fullCachedDay = clippedStart == dayStart && (fullHistoricalDay || liveToday);
             var date = DateOnly.FromDateTime(dayStart.DateTime);
+
+            if (liveToday)
+            {
+                // Refresh the shared day cache, then clip the query's contribution.
+                // A cycle can start partway through today, and an already-cached
+                // day can extend beyond a selected end. Never substitute that
+                // whole-day aggregate for either slice, even after a live merge.
+                if (includeLiveToday)
+                {
+                    var dayRows = ReadDetailRows(dayStart, Min(clippedEnd, now),
+                        includeLiveToday: true, cancellationToken: cancellationToken);
+                    var bucket = new TokenUsageBucket { StartLocal = dayStart };
+                    foreach (var row in dayRows.Where(row => row.StartLocal >= clippedStart && row.StartLocal < clippedEnd))
+                    {
+                        AddBucketValues(bucket, row);
+                    }
+                    AddBucketToSummary(summary, dailyBuckets, bucket);
+                }
+                else
+                {
+                    var cachedSlice = cache.ReadRange(clippedStart, clippedEnd, cancellationToken);
+                    foreach (var bucket in cachedSlice.DailyBuckets)
+                    {
+                        AddBucketToSummary(summary, dailyBuckets, bucket);
+                    }
+                }
+                continue;
+            }
 
             // Quota cycles usually start partway through a day. A complete day
             // with all event details can answer that slice precisely, including
@@ -1490,7 +1517,7 @@ internal sealed class CodexUsageReader
                 continue;
             }
 
-            if (fullCachedDay && cache.TryGet(date, out var cachedBucket))
+            if (fullHistoricalDay && cache.TryGet(date, out var cachedBucket))
             {
                 AddBucketToSummary(summary, dailyBuckets, cachedBucket);
             }
@@ -1509,27 +1536,6 @@ internal sealed class CodexUsageReader
                 // Its previous coverage is no longer proof that the counters
                 // are current, so rebuild the whole day and merge its details.
                 AddScanRange(scanRanges, dayStart, dayEnd, cacheHistoricalDays: true);
-            }
-            else if (liveToday)
-            {
-                if (!includeLiveToday)
-                {
-                    continue;
-                }
-
-                var liveScanEnd = Min(clippedEnd, now);
-                if (clippedStart >= liveScanEnd)
-                {
-                    continue;
-                }
-
-                var effectiveScannedThrough = cache.TryGetRecord(date, out var record)
-                    ? GetEffectiveLiveScannedThrough(record, now)
-                    : null;
-                var scanStart = effectiveScannedThrough is not null
-                    ? effectiveScannedThrough.Value.AddTicks(1)
-                    : clippedStart;
-                AddScanRange(scanRanges, Max(scanStart, clippedStart), liveScanEnd, cacheHistoricalDays: false);
             }
             else
             {

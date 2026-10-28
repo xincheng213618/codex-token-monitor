@@ -21,7 +21,7 @@ public partial class MainWindow
             if (isClosed || !speedStatus.IsActive) return;
             RealtimeSpeedText.Text = $"实时并行速度 {(snapshot.EstimatedShare > 0 ? "≈ " : "")}{snapshot.Live:N1} tok/s";
             RealtimeSpeedText.ToolTip = $"{UsageSourceRegistry.For(CurrentSource()).Title} · 3 秒窗口 · 更新 {snapshot.Now:HH:mm:ss} · 估算占比 {snapshot.EstimatedShare:P0}";
-            if (RealtimeDataTab.IsSelected)
+            if (RealtimeDataTab.IsSelected && snapshot.HasDetails)
             {
                 EnsureRealtimeData();
                 realtimeData!.Apply(snapshot);
@@ -53,9 +53,9 @@ public partial class MainWindow
         if (RealtimeDataTab.IsSelected)
         {
             EnsureRealtimeData();
-            if (!sourceChanged && speedStatus.LastSnapshot is { } latest) realtimeData!.Apply(latest);
+            if (!sourceChanged && speedStatus.LastSnapshot is { HasDetails: true } latest) realtimeData!.Apply(latest);
         }
-        speedStatus.Activate(CurrentSource(), AutoRefreshBox.IsChecked == true);
+        speedStatus.Activate(CurrentSource(), AutoRefreshBox.IsChecked == true, RealtimeDataTab.IsSelected);
     }
     private void EnsureRealtimeData()
     {

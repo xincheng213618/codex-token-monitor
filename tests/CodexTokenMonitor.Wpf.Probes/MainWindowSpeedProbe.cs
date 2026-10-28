@@ -45,8 +45,12 @@ internal static partial class MainWindowProbe
         finally { gate.Release(); }
         Require(tabs.SelectedIndex == 0 && status.IsActive && GetObject(window, "realtimeData") is null,
             "default usage page samples the footer without creating chart or session view");
+        Require(status.LastSnapshot is { HasDetails: false, History.Count: 0, Agents.Count: 0, Models.Count: 0 },
+            "footer sampling skips chart, session-tree and model-table calculations");
         tabs.SelectedIndex = 1;
         var realtime = Get<RealtimeDataView>(window, "realtimeData");
+        await Wait(() => realtime.LastSnapshot is { HasDetails: true, Requests: 1 } && !status.IsReading,
+            "selecting live data computes a detailed snapshot even when automatic refresh is paused");
         Require(status.IsActive && realtime.LastSnapshot?.Requests == 1 && Get<TextBlock>(window, "RealtimeSpeedText").Text.StartsWith("实时并行速度 "),
             "live-page sample updates the pure view and footer");
         Get<CheckBox>(window, "AutoRefreshBox").IsChecked = true;
@@ -63,14 +67,19 @@ internal static partial class MainWindowProbe
         SourceFixtureHashes[path] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
         await Wait(() => status.LastSnapshot?.Requests == 4 && !status.IsReading, "footer continues sampling the new request on the usage page");
         var firstHiddenSample = status.LastSnapshot!;
+        Require(firstHiddenSample.Live > 0 && Get<TextBlock>(window, "RealtimeSpeedText").Text.EndsWith($"{firstHiddenSample.Live:N1} tok/s"),
+            "lightweight sampling publishes the current nonzero speed to the footer");
         await Wait(() => status.LastSnapshot!.Now > firstHiddenSample.Now && !status.IsReading, "footer continues automatic sampling while the chart page is hidden");
         Require(status.IsActive && status.IsAutoRefreshing && ReferenceEquals(hiddenViewSnapshot, realtime.LastSnapshot),
             "hidden chart and sessions retain their snapshot while the footer advances");
+        Require(status.LastSnapshot is { HasDetails: false, History.Count: 0, Agents.Count: 0, Models.Count: 0 },
+            "leaving live data also stops generating the hidden presentation data");
         Select(window, modules[UsageSource.ClaudeCode], RangeMode.Day);
         await Wait(() => status.LastSnapshot?.Requests == 0 && !status.IsReading, "hidden-page source change updates the footer");
         Require(ReferenceEquals(hiddenViewSnapshot, realtime.LastSnapshot), "hidden source change does not clear or redraw the realtime view");
         tabs.SelectedIndex = 1;
-        Require(realtime.LastSnapshot?.Requests == 0, "returning to live data immediately applies the latest empty-source snapshot");
+        await Wait(() => realtime.LastSnapshot is { HasDetails: true, Requests: 0 } && !status.IsReading,
+            "returning to live data computes current detail instead of applying a footer-only snapshot");
         Select(window, modules[UsageSource.Codex], RangeMode.Day);
         await Wait(() => status.LastSnapshot?.Requests == 4 && realtime.LastSnapshot?.Requests == 4 && !status.IsReading, "visible source return restores native data");
         Get<CheckBox>(window, "AutoRefreshBox").IsChecked = false;

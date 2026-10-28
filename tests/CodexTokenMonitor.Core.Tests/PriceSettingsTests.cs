@@ -244,6 +244,7 @@ public sealed class PriceSettingsTests
 
     [Theory]
     [InlineData("OpenAI", "GPT-6.1 Sol", "gpt-6.1-sol", 2, .10, 2.50, 10)]
+    [InlineData("OpenAI", "GPT-6.1 Terra", "gpt-6.1-terra", 1, .05, 1.25, 5)]
     [InlineData("OpenAI", "GPT-6 Sol", "gpt-6-sol", 2, .20, 2.50, 10)]
     [InlineData("OpenAI", "GPT-6 Luna", "gpt-6-luna", .10, .01, .125, .50)]
     [InlineData("Claude", "Fable 5.1 API", "claude-fable-5-1", 10, .25, 12.50, 50)]
@@ -360,29 +361,50 @@ public sealed class PriceSettingsTests
     }
 
     [Fact]
-    public void Gpt61_UpgradesUntouchedDiscoveredPlaceholderAndRetainsItsSlot()
+    public void Gpt61Terra_IsPricedFromExistingSettingsEvenWhenHidden()
+    {
+        var settings = PriceSettingsStore.Defaults();
+        settings.CodexPresets.RemoveAll(item => item.ModelId == "gpt-6.1-terra");
+        settings.DisplaySlots[PricePresetGroups.Codex] = new();
+        var normalized = PriceSettingsStore.Normalize(settings);
+        var usage = new TokenUsageBucket();
+        usage.Add(new TokenUsageEvent(DateTimeOffset.UtcNow, 1_000_000, 500_000, 100_000, 0, 1_100_000,
+            ModelId: "openai/gpt-6.1-terra", ServiceTier: "fast"));
+        var estimate = CodexModelCost.Estimate(usage, normalized.CodexPresets);
+
+        Assert.Empty(normalized.DisplayPresetsForGroup(PricePresetGroups.Codex));
+        Assert.True(estimate.IsComplete);
+        Assert.Equal(1.025m, estimate.KnownCost);
+        Assert.Equal(2.5625m, estimate.QuotaEquivalentCost);
+        Assert.Equal(0, CodexModelCost.AddMissingPresets(normalized, new[] { "gpt-6.1-terra" }));
+    }
+
+    [Theory]
+    [InlineData("gpt-6.1-sol", "GPT-6.1 Sol", 2, .1, 2.5, 10)]
+    [InlineData("gpt-6.1-terra", "GPT-6.1 Terra", 1, .05, 1.25, 5)]
+    public void Gpt61_UpgradesUntouchedDiscoveredPlaceholderAndRetainsItsSlot(string id, string name, double input, double cached, double write, double output)
     {
         var settings = PriceSettingsStore.Defaults();
         var placeholder = new PricePreset
         {
-            Group = PricePresetGroups.Codex, Provider = "OpenAI", Model = "gpt-6.1-sol", ModelId = "gpt-6.1-sol",
+            Group = PricePresetGroups.Codex, Provider = "OpenAI", Model = id, ModelId = id,
             CurrencySymbol = "$", UnitLabel = "USD / 1M tokens", CacheWriteInput = 0,
             Source = CodexModelCost.PlaceholderPriceSource
         };
         settings.CodexPresets.Insert(0, placeholder);
         settings.DisplaySlots[PricePresetGroups.Codex] = new() { placeholder.SelectionKey };
         var normalized = PriceSettingsStore.Normalize(settings);
-        var sol = Assert.Single(normalized.CodexPresets, item => item.ModelId == "gpt-6.1-sol");
-        Assert.Equal(2m, sol.UncachedInput);
-        Assert.Equal(.1m, sol.CachedInput);
-        Assert.Equal(2.5m, sol.CacheWriteInput);
-        Assert.Equal(10m, sol.Output);
+        var sol = Assert.Single(normalized.CodexPresets, item => item.ModelId == id);
+        Assert.Equal((decimal)input, sol.UncachedInput);
+        Assert.Equal((decimal)cached, sol.CachedInput);
+        Assert.Equal((decimal)write, sol.CacheWriteInput);
+        Assert.Equal((decimal)output, sol.Output);
         Assert.Equal(sol.SelectionKey, normalized.DisplaySlotsForGroup(PricePresetGroups.Codex)[0]);
-        Assert.Equal("GPT-6.1 Sol", Assert.Single(normalized.DisplayPresetsForGroup(PricePresetGroups.Codex)).Model);
+        Assert.Equal(name, Assert.Single(normalized.DisplayPresetsForGroup(PricePresetGroups.Codex)).Model);
 
         placeholder.Output = 17m;
         var edited = PriceSettingsStore.Normalize(settings);
-        Assert.Equal(17m, edited.CodexPresets.First(item => item.ModelId == "gpt-6.1-sol").Output);
+        Assert.Equal(17m, edited.CodexPresets.First(item => item.ModelId == id).Output);
         Assert.Equal(placeholder.SelectionKey, edited.DisplaySlotsForGroup(PricePresetGroups.Codex)[0]);
     }
 

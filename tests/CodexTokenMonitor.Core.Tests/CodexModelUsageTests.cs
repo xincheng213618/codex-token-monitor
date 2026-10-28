@@ -123,6 +123,7 @@ public sealed class CodexModelUsageTests
     [InlineData("gpt-5.5", "priority", 2.5)]
     [InlineData("gpt-5.6-luna", "fast", 2.5)]
     [InlineData("gpt-6-astra", "fast", 2.5)]
+    [InlineData("gpt-6.1-terra", "fast", 2.5)]
     [InlineData("gpt-6-sol", "fast", 2.5)]
     [InlineData("gpt-6-luna", "fast", 2.5)]
     [InlineData("gpt-5.4", "priority", 2)]

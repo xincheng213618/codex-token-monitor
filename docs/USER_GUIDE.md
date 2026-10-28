@@ -142,6 +142,7 @@ Codex 主界面的“标准 API 等价”按实际模型、Token 和现行 API �
 - 按用量来源（Codex / Claude Code / ZCode / WorkBuddy / DSH / Kimi）独立配置 **10 个展示位置**；每个位置先选供应商，再从该供应商的模型中选择，可上移、下移或清空。已有设置迁移时保留原列表前 10 项及手动报价。
 - 点右上角 **模型价格 →** 进入独立价格页面；可按供应商筛选、搜索、新增或编辑模型、货币（`$` / `¥` / `Credits`）与单位（`USD / 1M tokens`、`CNY / 1M tokens`、`Credits / token`）。确认价格后返回价格设置，再点 **保存设置** 统一生效；取消价格设置会丢弃本次修改。
 - 新增 **GPT-6.1 Sol**（`gpt-6.1-sol`），标准短上下文（输入 ≤272K）每百万 tokens 输入 $2 / 缓存输入 $0.10 / 缓存创建 $2.50 / 输出 $10，来源为 [OpenAI 官方定价](https://developers.openai.com/api/docs/pricing)。Fast 订阅额度参考倍率为 2.5x。主界面按可用宽度展示前面的费用卡，复制摘要包含全部已选位置；未选中的模型仍按完整价格库计算实际日志费用。
+- **GPT-6.1 Terra**（`gpt-6.1-terra`）标准短上下文每百万 tokens 输入 $1 / 缓存输入 $0.05 / 30 分钟缓存创建 $1.25 / 输出 $5，Fast 订阅额度参考倍率为 2.5x，详见 [OpenAI 模型文档](https://developers.openai.com/api/docs/models/gpt-6.1-terra)。可在价格设置中选择显示位置；超过 272K 输入的 API 实际价格不同，软件使用固定短上下文参考价。
 - 默认库包含 OpenAI、DeepSeek、小米、Kimi、智谱/Z.AI、豆包、MiniMax、千问、混元、Claude、Grok 等参考档，可直接选用或修改。
 - DeepSeek V4.1 Flash / V4 Pro 的表格价格是空闲时段单价；北京时间周一至周五 `09:00–12:00`、`14:00–18:00` 自动按两倍高峰价计算，首页只显示每个模型合并后的一个金额。V4.1 Flash 当前空闲价为每百万 token：未缓存输入 ¥1、缓存命中 ¥0.02、输出 ¥4。
 

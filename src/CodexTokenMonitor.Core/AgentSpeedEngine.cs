@@ -51,8 +51,10 @@ internal sealed class AgentSpeedEngine
     }
 
     public AgentSpeedSnapshot Snapshot(DateTimeOffset now, DateTimeOffset dayStart,
-        AgentSpeedMetric metric = AgentSpeedMetric.Output, UsageSource? source = null)
+        AgentSpeedMetric metric = AgentSpeedMetric.Output, UsageSource? source = null,
+        AgentSpeedSnapshotOptions options = AgentSpeedSnapshotOptions.Full)
     {
+        var details = (options & AgentSpeedSnapshotOptions.Details) != 0;
         var retainFrom = dayStart < now.AddMinutes(-30) ? dayStart : now.AddMinutes(-30);
         var expired = responses.Where(p => p.Value.End < retainFrom).Select(p => p.Key).ToHashSet(StringComparer.Ordinal);
         foreach (var key in expired) responses.Remove(key);
@@ -78,13 +80,12 @@ internal sealed class AgentSpeedEngine
                 AgentSpeedPhase.Idle, pending.End, null, pending.Source, pending.ExecutionMode);
             if (Reference(owner) is { } speed) samples.Add((pending.EffectiveStart!.Value, pending.End, 0, speed));
         }
-        var summaries = new List<AgentSpeedAgentSummary>();
+        var summaries = details ? new List<AgentSpeedAgentSummary>() : null;
         foreach (var agent in agents.Values.Where(a => source is null || a.Source == source))
         {
             var fresh = agent.LastActivity is { } activity && activity <= now.AddSeconds(5) && now - activity <= TimeSpan.FromMinutes(5);
             var phase = fresh ? agent.Phase : AgentSpeedPhase.Idle;
             if (phase == AgentSpeedPhase.Idle && (agent.LastActivity is null || agent.LastActivity < now.AddMinutes(-10))) continue;
-            var measured = valid.Where(r => r.AgentId == agent.Id).Sum(r => r.Speed(metric)!.Value * Overlap(r.EffectiveStart!.Value, r.End, now.AddSeconds(-3), now)) / 3;
             var estimated = 0d;
             if (phase == AgentSpeedPhase.Generating && agent.RequestStart is { } requestStart && requestStart <= now && Reference(agent) is { } speed)
             {
@@ -92,14 +93,16 @@ internal sealed class AgentSpeedEngine
                 samples.Add((start, now, 0, speed));
                 estimated = speed * Overlap(start, now, now.AddSeconds(-3), now) / 3;
             }
+            if (!details) continue;
+            var measured = valid.Where(r => r.AgentId == agent.Id).Sum(r => r.Speed(metric)!.Value * Overlap(r.EffectiveStart!.Value, r.End, now.AddSeconds(-3), now)) / 3;
             foreach (var pending in known.Where(r => r.AgentId == agent.Id && !r.Final && r.DurationSeconds is not null))
                 if (Reference(agent) is { } partialSpeed) estimated += partialSpeed * Overlap(pending.EffectiveStart!.Value, pending.End, now.AddSeconds(-3), now) / 3;
             if (agent.LastActivity >= now.AddMinutes(-10) || phase != AgentSpeedPhase.Idle)
-                summaries.Add(new(agent, phase, measured + estimated, measured + estimated > 0 ? estimated / (measured + estimated) : 0));
+                summaries!.Add(new(agent, phase, measured + estimated, measured + estimated > 0 ? estimated / (measured + estimated) : 0));
         }
         var liveMeasured = samples.Sum(s => s.Measured * Overlap(s.Start, s.End, now.AddSeconds(-3), now)) / 3;
         var liveEstimated = samples.Sum(s => s.Estimated * Overlap(s.Start, s.End, now.AddSeconds(-3), now)) / 3;
-        var history = new AgentSpeedPoint[300];
+        var history = details ? new AgentSpeedPoint[300] : [];
         var lastSecond = DateTimeOffset.FromUnixTimeSeconds(now.ToUnixTimeSeconds());
         for (var index = 0; index < history.Length; index++)
         {
@@ -108,14 +111,20 @@ internal sealed class AgentSpeedEngine
             history[index] = new(start, samples.Sum(s => s.Measured * Overlap(s.Start, s.End, start, end)),
                 samples.Sum(s => s.Estimated * Overlap(s.Start, s.End, start, end)));
         }
-        var peakIdentity = (revision, dayStart, metric, source, today.Count(r => r.Final && r.DurationSeconds is not null));
-        if (peakKey != peakIdentity) { cachedPeak = Peak(today, dayStart, metric); peakKey = peakIdentity; }
+        var measuredCount = today.Count(r => r.Final && r.DurationSeconds is not null);
+        double? peak = null;
+        if ((options & AgentSpeedSnapshotOptions.Peak) != 0)
+        {
+            var peakIdentity = (revision, dayStart, metric, source, measuredCount);
+            if (peakKey != peakIdentity) { cachedPeak = Peak(today, dayStart, metric); peakKey = peakIdentity; }
+            peak = cachedPeak;
+        }
         return new(now, dayStart, liveMeasured + liveEstimated, liveMeasured + liveEstimated > 0 ? liveEstimated / (liveMeasured + liveEstimated) : 0,
-            today.OrderByDescending(r => r.End).FirstOrDefault(), Average(today, metric), today.Length, today.Count(r => r.Final && r.DurationSeconds is not null),
-            today.GroupBy(r => (r.Source, r.Model, r.ExecutionMode)).Select(group => new AgentSpeedModelSummary(group.Key.Model, group.Count(),
+            details ? today.MaxBy(r => r.End) : null, details ? Average(today, metric) : null, today.Length, measuredCount,
+            details ? today.GroupBy(r => (r.Source, r.Model, r.ExecutionMode)).Select(group => new AgentSpeedModelSummary(group.Key.Model, group.Count(),
                 group.Count(r => r.Final && r.DurationSeconds is not null), group.Sum(r => Math.Max(0, r.OutputTokens)), Average(group, metric),
-                group.Key.Source, group.Key.ExecutionMode, group.Sum(r => Math.Max(0, r.InputTokens)))).OrderByDescending(r => r.OutputTokens).ToArray(),
-            BuildTree(summaries), history, Metric: metric, MeasuredPeak: cachedPeak, UnfinalizedRequests: today.Count(r => !r.Final));
+                group.Key.Source, group.Key.ExecutionMode, group.Sum(r => Math.Max(0, r.InputTokens)))).OrderByDescending(r => r.OutputTokens).ToArray() : [],
+            details ? BuildTree(summaries!) : [], history, Metric: metric, MeasuredPeak: peak, UnfinalizedRequests: today.Count(r => !r.Final), Options: options);
     }
 
     private IReadOnlyList<AgentSpeedAgentSummary> BuildTree(List<AgentSpeedAgentSummary> active)

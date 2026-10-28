@@ -50,13 +50,13 @@ CodexTokenMonitor.slnx
 
 `UsageSource` 枚举：`Codex`、`ClaudeCode`、`ZCode`、`WorkBuddy`、`Dsh`、`Kimi`、`Qoder`。`UsageSourceRegistry` 统一来源元数据及延迟工厂。每种来源由 `IUsageSourceReader` 包装，它组合 `IUsageCacheQuery`、`IUsageQuery`、`IUsageCacheMaintenance`；查询服务不再持有清理/预热方法，后台维护显式取得维护能力。`UsageSourceReaders.For(source)` 保留按来源取单例的入口，Registry 的窄接口视图指向同一个 Reader。
 
-速度分析使用独立的 `AgentSpeedMonitor` / `AgentSpeedHub`，按原生日志读取请求起止及用量，交给 `AgentSpeedEngine` 做来源隔离的响应更新、归属去重、区间加权、在途估算和会话层次计算，不占主统计 `SharedIoGate`。`FileSystemWatcher` 唤醒采样，一秒轮询和五秒文件发现兜底；`ZstdJsonlTailReader` 只提交完整压缩帧，保留跨帧 UTF-8 与半行。ZCode 用 `AgentSqliteReadOnly` 读取原库，缺失 SHM 的离线 WAL 在私有临时副本中重建。
+速度分析使用独立的 `AgentSpeedMonitor` / `AgentSpeedHub`，按原生日志读取请求起止及用量，交给 `AgentSpeedEngine` 做来源隔离的响应更新、归属去重、区间加权、在途估算和会话层次计算，不占主统计 `SharedIoGate`。`FileSystemWatcher` 将创建、修改、删除、重命名事件放入有界队列，由采样线程增量维护文件目录；一秒轮询仅读取候选日志的新增内容，正常监听时每五分钟校验一次完整目录。根目录迟到、监听不可用时只对该根做五秒发现兜底；监听错误或事件队列溢出触发补扫，跨日重建目录。目录移动只重查对应子树，保留 DSH 最高代次选择及 Qoder 跨段状态。`ZstdJsonlTailReader` 只提交完整压缩帧，保留跨帧 UTF-8 与半行。ZCode 用 `AgentSqliteReadOnly` 读取原库，缺失 SHM 的离线 WAL 在私有临时副本中重建。
 
 `AgentSpeedHistoryIndexer` 复用同一批解析器，`AgentSpeedHistoryStore` 将文件签名、请求归属哈希和每日/来源/模型/模式汇总保存到独立 SQLite。原生请求行只在索引事务的 TEMP 表中聚合，不持久化对话或逐请求行；变化文件在同一来源事务内释放、重新分配归属。文件删除不删除已有贡献，部分写入保留旧贡献或索引新文件的完整前缀，取消回滚当前来源事务。CSV 导出当前汇总，来源峰值独立保存，不将不同来源的历史峰值相加。
 
 主窗口顶部去掉品牌图标，只保留左侧七来源切换和右侧工具入口的一行布局，速度分析入口与数据管理同排，缓存状态位于底部。`UsageDetailsPanel` 是整体 Grid，上方 `UsageTrendPanel` 独立承载用量趋势。分隔条下方为同一白色 `DetailsCard`，在原“用量明细”标题行放置“用量明细 / 实时数据”页签，替代重复标题与卡片外的页签行；切换仅作用于该标题行下的原列表区域，两个页面占据同一 Rect，不移动趋势、分隔条或模块位置。`DetailsCard` 保留自然的 12,10 内边距，里面两个页面及 Tab 内容的 `Padding` / `Margin` 为 0，不增加独立框。
 
-`MainWindow.Speed` 管理主状态栏采样和单一 `speedWindow`。`AgentSpeedStatusMonitor` 持续为左下角提供当前来源的实时并行输出速度，遵守自动刷新开关和来源变化，不依赖明细页签选择。`RealtimeDataView` 只呈现主 `speedStatus` 的同一份快照，不另开读盘线程；仅选中实时数据页时调用 `Apply` 更新指标、曲线和会话，离开该页停止这些视图更新，返回时立即应用最新快照，底部采样始终按开关运行。主窗口关闭取消并排空采样任务。
+`MainWindow.Speed` 管理主状态栏采样和单一 `speedWindow`。`AgentSpeedStatusMonitor` 持续为左下角提供当前来源的实时并行输出速度，遵守自动刷新开关和来源变化，不依赖明细页签选择。`AgentSpeedSnapshotOptions` 区分轻量速度、页面详情与峰值计算；隐藏实时页时跳过 300 点曲线、会话树、模型表和详情统计，仅每 30 秒为持久历史请求一次峰值。`RealtimeDataView` 不另开读盘线程；选中实时数据页才请求完整快照并 `Apply`，即使自动刷新暂停也在切入时更新一次。页面/来源变化递增版本并取消旧任务，不将轻量快照送入详情页，不发布迟到的旧页面结果。主窗口关闭取消并排空采样任务。
 
 `RealtimeDataView` 从五项速度指标开始呈现，指标条在各可用高度下保持可见。页面内部采用左右布局：左侧主要空间显示指标与曲线，最右约 240 px 的 `RecentSessionsPanel` 显示紧凑会话列表，不在曲线下方叠放会话。
 

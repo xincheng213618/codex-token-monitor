@@ -254,6 +254,7 @@ internal sealed class PricePreset
             Preset("OpenAI", "GPT-6 Astra", "$", "USD / 1M tokens", 1_000_000m, 10m, 1m, 50m, "https://developers.openai.com/api/docs/models/gpt-6-astra (Standard)", cacheWrite: 12.5m),
             Preset("OpenAI", "GPT-6 Sol", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.20m, 10m, Gpt6PriceSource, cacheWrite: 2.50m),
             Preset("OpenAI", "GPT-6.1 Sol", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.10m, 10m, Gpt61PriceSource, cacheWrite: 2.50m),
+            Preset("OpenAI", "GPT-6.1 Terra", "$", "USD / 1M tokens", 1_000_000m, 1m, 0.05m, 5m, "https://developers.openai.com/api/docs/models/gpt-6.1-terra (Standard, ≤272K)", cacheWrite: 1.25m),
             Preset("OpenAI", "GPT-6 Luna", "$", "USD / 1M tokens", 1_000_000m, 0.10m, 0.01m, 0.50m, Gpt6PriceSource, cacheWrite: 0.125m),
             Preset("OpenAI", "codex-auto-review", "$", "USD / 1M tokens", 1_000_000m, 0.20m, 0.02m, 1.20m, "用户截图参考价（2026-09-05）；未核实为 OpenAI 官方报价，可编辑"),
             Preset("OpenAI", "GPT-5.6 Sol", "$", "USD / 1M tokens", 1_000_000m, 4.00m, 0.40m, 20.00m, OpenAiPriceSource, cacheWrite: 5.00m),
@@ -973,10 +974,10 @@ internal static class PriceSettingsStore
         // Earlier builds discover new model ids as zero-price placeholders.
         // Replace only untouched placeholders so they cannot shadow the published tariff.
         if (normalized.Provider == "OpenAI" &&
-            CodexModelCost.NormalizeModelId(normalized.ModelId) == "gpt-6.1-sol" &&
+            CodexModelCost.NormalizeModelId(normalized.ModelId) is "gpt-6.1-sol" or "gpt-6.1-terra" &&
             CodexModelCost.IsPending(normalized))
         {
-            normalized = PricePreset.Defaults().Single(item => item.ModelId == "gpt-6.1-sol").Clone();
+            normalized = PricePreset.Defaults().Single(item => item.ModelId == CodexModelCost.NormalizeModelId(normalized.ModelId)).Clone();
             normalized.Group = PricePresetGroups.Normalize(group);
         }
         // Upgrade only the untouched placeholder; retain user prices and order.

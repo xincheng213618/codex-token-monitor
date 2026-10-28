@@ -10,7 +10,7 @@ internal sealed class AgentSpeedStatusMonitor
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly AgentSpeedHistoryStore history = new();
     private UsageSource source;
-    private bool active, closed, reading, pending;
+    private bool active, closed, reading, pending, detailsEnabled;
     private long version;
     private DateTimeOffset nextPeakSave;
     private Task readTask = Task.CompletedTask, cleanup = Task.CompletedTask;
@@ -24,13 +24,14 @@ internal sealed class AgentSpeedStatusMonitor
     internal event Action<Exception>? Failed;
 
     internal AgentSpeedStatusMonitor() => timer.Tick += async (_, _) => await RefreshAsync();
-    internal void Activate(UsageSource selected, bool automatic)
+    internal void Activate(UsageSource selected, bool automatic, bool details = false)
     {
         if (closed) return;
-        if (source != selected || !active || LastSnapshot is null)
+        if (source != selected || detailsEnabled != details || !active || LastSnapshot is null)
         {
             if (source != selected) LastSnapshot = null;
-            source = selected; version++; nextPeakSave = default; sampling?.Cancel();
+            if (source != selected || !active) nextPeakSave = default;
+            source = selected; detailsEnabled = details; version++; sampling?.Cancel();
         }
         active = true; SetAutoRefresh(automatic); _ = RefreshAsync();
     }
@@ -54,9 +55,11 @@ internal sealed class AgentSpeedStatusMonitor
             var selected = source; var now = BeijingClock.Now;
             var day = new DateTimeOffset(now.Date, now.Offset); var token = pass.Token;
             var savePeak = now >= nextPeakSave;
+            var options = detailsEnabled ? AgentSpeedSnapshotOptions.Full :
+                savePeak ? AgentSpeedSnapshotOptions.Peak : AgentSpeedSnapshotOptions.Live;
             var task = Task.Run(() =>
             {
-                var result = sampler.Read(now, day, token);
+                var result = sampler.Read(now, day, token, options: options);
                 token.ThrowIfCancellationRequested();
                 if (savePeak) history.TryRecordPeak(selected, result);
                 return result;
