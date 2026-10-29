@@ -40,6 +40,35 @@ internal static partial class MainWindowProbe
         week.MergeFrom(Row(SeedDay.AddDays(-2), 48_000_000, "claude-opus-5-5"));
         claude.CurrentActivity = new ClaudeCodeActivitySnapshot(now, ClaudeCodeBlockCalculator.Build(rows), today, week, 3);
         Invoke(window, "ApplyClaudeActivitySummary", claude);
+        Require(Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text == "未录入", "capacity waits for a /usage reading");
+
+        // Two 5h windows ($80 and $100 at full) and one week reading.
+        foreach (var reading in new[]
+                 {
+                     ClaudeQuotaEstimator.CreateReading(ClaudeQuotaWindowKind.FiveHour, 25, SeedDay.AddHours(13), SeedDay.AddHours(12), new[] { Row(SeedDay.AddHours(9), 0, "claude-opus-5-5") }) with { CostUsd = 20m, Tokens = 30_000_000 },
+                     ClaudeQuotaEstimator.CreateReading(ClaudeQuotaWindowKind.FiveHour, 40, SeedDay.AddHours(18), now, rows) with { CostUsd = 40m, Tokens = 50_000_000 },
+                     ClaudeQuotaEstimator.CreateReading(ClaudeQuotaWindowKind.Week, 12, SeedDay.AddDays(4).AddHours(20), now, rows) with { CostUsd = 96m, Tokens = 140_000_000 }
+                 })
+        {
+            ClaudeQuotaReadingStore.Add(reading);
+        }
+        claude.QuotaReadings = ClaudeQuotaReadingStore.Load();
+        Invoke(window, "ApplyClaudeActivitySummary", claude);
+        Require(Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text == "$90" &&
+                Get<TextBlock>(window, "ClaudeWeekValue").Text == "$800",
+            "capacity cards show the median full-window dollars");
+        var dialog = new ClaudeQuotaWindow(SeedDay.AddHours(18)) { Left = -20000, Top = -20000, ShowInTaskbar = false };
+        try
+        {
+            dialog.Show();
+            await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Background);
+            Require(((DataGrid)dialog.FindName("HistoryGrid")).Items.Count == 3, "dialog lists every reading");
+            await RenderDialogAsync(dialog, Path.Combine(outputRoot, "claude-quota-dialog.png"));
+        }
+        finally
+        {
+            dialog.Close();
+        }
 
         Require(Get<TextBlock>(window, "ClaudeBlockDetail").Text.StartsWith("13:00–18:00", StringComparison.Ordinal),
             "live block opens on the hour of its first request");
@@ -58,6 +87,21 @@ internal static partial class MainWindowProbe
         Invoke(window, "ApplyQuotaSummary", modules[UsageSource.Codex], null);
         Require(Get<Border>(window, "ClaudeActivityPanel").Visibility == Visibility.Collapsed, "panel hides on other sources");
         Results.Add(new { check = "claude-activity-panel", liveBlock = true, idleBlock = true, hiddenElsewhere = true });
+
+        static async Task RenderDialogAsync(Window dialog, string path)
+        {
+            dialog.Measure(new Size(860, 720));
+            dialog.Arrange(new Rect(0, 0, 860, 720));
+            dialog.UpdateLayout();
+            await dialog.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+            var content = (FrameworkElement)dialog.Content;
+            var image = new System.Windows.Media.Imaging.RenderTargetBitmap((int)content.ActualWidth, (int)content.ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+            image.Render(content);
+            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));
+            using var stream = File.Create(path);
+            encoder.Save(stream);
+        }
 
         static async Task Wait(Func<bool> predicate, string message)
         {

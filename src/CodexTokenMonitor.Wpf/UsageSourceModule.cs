@@ -156,6 +156,9 @@ internal sealed class ClaudeCodeUsageModule : UsageSourceModule
 
     /// <summary>The live 5h block, today's model mix and 7-day total shown by the header panel.</summary>
     public ClaudeCodeActivitySnapshot? CurrentActivity { get; set; }
+
+    /// <summary>Manual /usage readings behind the 5h / 7d capacity estimates.</summary>
+    public IReadOnlyList<ClaudeQuotaReading> QuotaReadings { get; set; } = Array.Empty<ClaudeQuotaReading>();
 }
 
 internal sealed class ZCodeUsageModule : UsageSourceModule
