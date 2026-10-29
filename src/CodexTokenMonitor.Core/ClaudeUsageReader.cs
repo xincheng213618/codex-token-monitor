@@ -331,6 +331,20 @@ internal static class ClaudeUsageReader
         return ToDetailBuckets(ReadEventsUncached(startLocal, endLocal, cancellationToken).Events);
     }
 
+    /// <summary>Like <see cref="ReadTransientDetailRows"/>, also reporting whether every log file was read.</summary>
+    public static (IReadOnlyList<TokenUsageBucket> Rows, bool IsComplete) ReadTransientDetailRowsWithStatus(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var result = ReadEventsUncached(
+            startLocal.ToOffset(CodexUsageReader.BeijingOffset),
+            endLocal.ToOffset(CodexUsageReader.BeijingOffset),
+            cancellationToken);
+        return (ToDetailBuckets(result.Events), result.IsComplete);
+    }
+
     private static UsageRangeScanResult ReadRangeUncached(
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,

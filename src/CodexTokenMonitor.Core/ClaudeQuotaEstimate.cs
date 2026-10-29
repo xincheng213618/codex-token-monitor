@@ -10,10 +10,18 @@ internal enum ClaudeQuotaWindowKind
     Week
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+internal enum ClaudeQuotaReadingSource
+{
+    Manual,
+    Official
+}
+
 /// <summary>
-/// One manual reading of Claude Code's /usage: the percentage used in a window
-/// plus the Claude-model spend the local transcripts show for that window at
-/// the moment it was entered. Capacity is spend scaled up to 100%.
+/// One reading of a quota window: the percentage used, entered from /usage or
+/// taken from the status line's official rate_limits, plus the Claude-model
+/// spend the local transcripts show for that window at that moment. Capacity
+/// is spend scaled up to 100%.
 /// </summary>
 internal sealed record ClaudeQuotaReading(
     ClaudeQuotaWindowKind Kind,
@@ -23,7 +31,8 @@ internal sealed record ClaudeQuotaReading(
     DateTimeOffset ResetLocal,
     decimal CostUsd,
     long Tokens,
-    long Events)
+    long Events,
+    ClaudeQuotaReadingSource Source = ClaudeQuotaReadingSource.Manual)
 {
     // /usage prints whole percentages, so the true value is within half a point.
     public const double ReportedPercentStep = 0.5;
@@ -115,6 +124,47 @@ internal static class ClaudeQuotaEstimator
         return CreateReading(kind, usedPercent, resetLocal, nowLocal, rows);
     }
 
+    /// <summary>
+    /// Turns official windows into readings so capacity calibrates itself.
+    /// Each window keeps one official reading, replaced as its percentage
+    /// grows; returns true when the store changed.
+    /// </summary>
+    public static bool RecordOfficial(ClaudeCodeActivitySnapshot snapshot, IReadOnlyList<ClaudeQuotaReading> readings)
+    {
+        var changed = false;
+        foreach (var window in new[] { snapshot.FiveHourWindow, snapshot.WeekWindow })
+        {
+            if (window is not { Source: ClaudeWindowSource.Official, OfficialPercent: { } percent, IsComplete: true } || percent < 1)
+            {
+                continue;
+            }
+
+            var claude = window.ClaudeUsage;
+            var cost = UsdCost(claude);
+            if (cost <= 0)
+            {
+                continue;
+            }
+
+            var existing = readings.FirstOrDefault(item =>
+                item.Source == ClaudeQuotaReadingSource.Official && item.Kind == window.Kind && SameWindow(item.ResetLocal, window.ResetLocal));
+            if (existing is not null && existing.UsedPercent >= percent)
+            {
+                continue;
+            }
+
+            var reading = new ClaudeQuotaReading(window.Kind, snapshot.NowLocal, percent, window.StartLocal, window.ResetLocal,
+                cost, claude.TotalTokens, claude.Events, ClaudeQuotaReadingSource.Official);
+            ClaudeQuotaReadingStore.Replace(existing, reading);
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool SameWindow(DateTimeOffset first, DateTimeOffset second) =>
+        Math.Abs((first - second).TotalMinutes) < 1;
+
     public static ClaudeQuotaCapacity? Summarize(IEnumerable<ClaudeQuotaReading> readings, ClaudeQuotaWindowKind kind)
     {
         var ofKind = readings.Where(item => item.Kind == kind && item.UsedPercent > 0 && item.CostUsd > 0).ToList();
@@ -178,11 +228,35 @@ internal static class ClaudeQuotaReadingStore
 
     public static void Remove(ClaudeQuotaReading reading) => Update(list => list.Remove(reading));
 
+    public static void Replace(ClaudeQuotaReading? previous, ClaudeQuotaReading reading) => Update(list =>
+    {
+        if (previous is not null)
+        {
+            list.Remove(previous);
+        }
+
+        list.Add(reading);
+    });
+
     private static void Update(Action<List<ClaudeQuotaReading>> change)
     {
         lock (Gate)
         {
-            var list = Load().ToList();
+            List<ClaudeQuotaReading> list;
+            try
+            {
+                list = File.Exists(FilePath)
+                    ? JsonSerializer.Deserialize<List<ClaudeQuotaReading>>(File.ReadAllText(FilePath), Options) ?? []
+                    : [];
+            }
+            catch (JsonException)
+            {
+                // Never overwrite readings that merely failed to parse; keep
+                // them beside the fresh file for recovery.
+                File.Move(FilePath, FilePath + $".corrupt-{DateTime.Now:yyyyMMddHHmmss}", overwrite: true);
+                list = [];
+            }
+
             change(list);
             list = list.OrderBy(item => item.RecordedLocal).TakeLast(MaxReadings).ToList();
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);

@@ -83,6 +83,59 @@ public sealed class ClaudeQuotaEstimateTests : IDisposable
     }
 
     [Fact]
+    public void RecordOfficial_KeepsOneGrowingReadingPerWindow()
+    {
+        TokenUsageBucket Usage(long uncached)
+        {
+            var bucket = new TokenUsageBucket { StartLocal = Day.AddHours(10) };
+            bucket.MergeFrom(Row(Day.AddHours(11), uncached, 0, "claude-opus-5-5"));
+            return bucket;
+        }
+
+        ClaudeCodeActivitySnapshot Snapshot(double percent, long uncached) => new(
+            Day.AddHours(12), Array.Empty<ClaudeCodeBlock>(), new TokenUsageBucket(), new TokenUsageBucket(), 0,
+            FiveHourWindow: new ClaudeQuotaWindowUsage(ClaudeQuotaWindowKind.FiveHour, ClaudeWindowSource.Official,
+                Day.AddHours(10), Day.AddHours(15), Usage(uncached), percent, true));
+
+        Assert.True(ClaudeQuotaEstimator.RecordOfficial(Snapshot(10, 1_000_000), ClaudeQuotaReadingStore.Load()));
+        Assert.False(ClaudeQuotaEstimator.RecordOfficial(Snapshot(10, 1_000_000), ClaudeQuotaReadingStore.Load()));
+        Assert.True(ClaudeQuotaEstimator.RecordOfficial(Snapshot(20, 2_000_000), ClaudeQuotaReadingStore.Load()));
+
+        var reading = Assert.Single(ClaudeQuotaReadingStore.Load());
+        Assert.Equal(ClaudeQuotaReadingSource.Official, reading.Source);
+        Assert.Equal(20, reading.UsedPercent);
+        Assert.Equal(40.00m, reading.CapacityUsd);
+    }
+
+    [Fact]
+    public void Store_KeepsACorruptFileInsteadOfOverwritingIt()
+    {
+        var folder = Path.Combine(root, "ClaudeCodeTokenMonitor");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "quota-readings.json"), "[{ not json");
+
+        ClaudeQuotaReadingStore.Add(new ClaudeQuotaReading(ClaudeQuotaWindowKind.Week, Day, 12, Day.AddDays(-3), Day.AddDays(4), 120m, 900, 3));
+
+        Assert.Single(ClaudeQuotaReadingStore.Load());
+        var backup = Assert.Single(Directory.GetFiles(folder, "quota-readings.json.corrupt-*"));
+        Assert.Equal("[{ not json", File.ReadAllText(backup));
+    }
+
+    [Fact]
+    public void Store_ReadsReadingsSavedBeforeSourceExisted()
+    {
+        var folder = Path.Combine(root, "ClaudeCodeTokenMonitor");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "quota-readings.json"),
+            "[{\"Kind\":\"FiveHour\",\"RecordedLocal\":\"2026-10-30T01:00:00+08:00\",\"UsedPercent\":24,\"WindowStartLocal\":\"2026-10-30T00:50:00+08:00\"," +
+            "\"ResetLocal\":\"2026-10-30T05:50:00+08:00\",\"CostUsd\":6.57,\"Tokens\":18550000,\"Events\":92}]");
+
+        var reading = Assert.Single(ClaudeQuotaReadingStore.Load());
+        Assert.Equal(ClaudeQuotaReadingSource.Manual, reading.Source);
+        Assert.Equal(24, reading.UsedPercent);
+    }
+
+    [Fact]
     public void Store_RoundTripsAndRemovesReadings()
     {
         var reading = new ClaudeQuotaReading(ClaudeQuotaWindowKind.Week, Day, 12, Day.AddDays(-3), Day.AddDays(4), 120m, 900, 3);

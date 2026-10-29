@@ -10,13 +10,15 @@ namespace CodexTokenMonitor;
 /// </summary>
 internal partial class ClaudeQuotaWindow : Window
 {
-    public ClaudeQuotaWindow(DateTimeOffset? currentBlockEnd)
+    /// <param name="fiveHourReset">The live 5h window's reset (official, entered or inferred).</param>
+    /// <param name="weekReset">The live 7d window's reset when one is known.</param>
+    public ClaudeQuotaWindow(DateTimeOffset? fiveHourReset, DateTimeOffset? weekReset = null)
     {
         InitializeComponent();
         var now = BeijingClock.Now;
         var readings = ClaudeQuotaReadingStore.Load();
-        FiveHourResetPicker.Value = (currentBlockEnd is { } end && end > now ? end : NextHour(now)).DateTime;
-        WeekResetPicker.Value = DefaultWeekReset(readings, now).DateTime;
+        FiveHourResetPicker.Value = (fiveHourReset is { } end && end > now ? end : NextHour(now)).DateTime;
+        WeekResetPicker.Value = (weekReset is { } week && week > now ? week : DefaultWeekReset(readings, now)).DateTime;
         ApplyReadings(readings);
     }
 
@@ -153,7 +155,8 @@ internal partial class ClaudeQuotaWindow : Window
     {
         public ClaudeQuotaReading Reading { get; } = reading;
         public string Recorded => Reading.RecordedLocal.ToString("MM-dd HH:mm");
-        public string Window => $"{(Reading.Kind == ClaudeQuotaWindowKind.FiveHour ? "5h" : "7d")} · 重置 {Reading.ResetLocal:MM-dd HH:mm}";
+        public string Window => $"{(Reading.Kind == ClaudeQuotaWindowKind.FiveHour ? "5h" : "7d")} · 重置 {Reading.ResetLocal:MM-dd HH:mm}" +
+                                (Reading.Source == ClaudeQuotaReadingSource.Official ? " · 官方" : "");
         public string Percent => $"{Reading.UsedPercent:0.#}%";
         public string Cost => FormatUsd(Reading.CostUsd);
         public string Tokens => UsageDisplayFormatting.TokenAdaptive(Reading.Tokens);

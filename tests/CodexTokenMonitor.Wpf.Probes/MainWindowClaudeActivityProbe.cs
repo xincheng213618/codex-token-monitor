@@ -38,9 +38,20 @@ internal static partial class MainWindowProbe
         var week = new TokenUsageBucket { StartLocal = SeedDay.AddDays(-6) };
         week.MergeFrom(today);
         week.MergeFrom(Row(SeedDay.AddDays(-2), 48_000_000, "claude-opus-5-5"));
-        claude.CurrentActivity = new ClaudeCodeActivitySnapshot(now, ClaudeCodeBlockCalculator.Build(rows), today, week, 3);
+        var blocks = ClaudeCodeBlockCalculator.Build(rows);
+        TokenUsageBucket Since(DateTimeOffset start)
+        {
+            var bucket = new TokenUsageBucket { StartLocal = start };
+            foreach (var row in rows.Where(row => row.StartLocal >= start)) bucket.MergeFrom(row);
+            return bucket;
+        }
+        var inferred = new ClaudeQuotaWindowUsage(ClaudeQuotaWindowKind.FiveHour, ClaudeWindowSource.Inferred,
+            blocks[^1].StartLocal, blocks[^1].EndLocal, Since(blocks[^1].StartLocal), null, true);
+        claude.CurrentActivity = new ClaudeCodeActivitySnapshot(now, blocks, today, week, 3, FiveHourWindow: inferred);
         Invoke(window, "ApplyClaudeActivitySummary", claude);
         Require(Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text == "未录入", "capacity waits for a /usage reading");
+        Require(Get<TextBlock>(window, "ClaudeBlockDetail").Text.StartsWith("推算 · 13:12–18:12", StringComparison.Ordinal),
+            "inferred window opens at its first request, not on the hour");
 
         // Two 5h windows ($80 and $100 at full) and one week reading.
         foreach (var reading in new[]
@@ -57,6 +68,20 @@ internal static partial class MainWindowProbe
         Require(Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text == "$90" &&
                 Get<TextBlock>(window, "ClaudeWeekValue").Text == "$800",
             "capacity cards show the median full-window dollars");
+
+        // Official status-line windows replace the inferred block everywhere.
+        claude.CurrentActivity = claude.CurrentActivity with
+        {
+            FiveHourWindow = new ClaudeQuotaWindowUsage(ClaudeQuotaWindowKind.FiveHour, ClaudeWindowSource.Official,
+                SeedDay.AddHours(13), SeedDay.AddHours(18), Since(SeedDay.AddHours(13)), 40, true),
+            WeekWindow = new ClaudeQuotaWindowUsage(ClaudeQuotaWindowKind.Week, ClaudeWindowSource.Official,
+                SeedDay.AddDays(-3).AddHours(20), SeedDay.AddDays(4).AddHours(20), week, 12, true)
+        };
+        Invoke(window, "ApplyClaudeActivitySummary", claude);
+        Require(Get<TextBlock>(window, "ClaudeBlockValue").Text == "已用 40%" &&
+                Get<TextBlock>(window, "ClaudeFiveHourCapacityDetail").Text.Contains("已用 40%（官方）", StringComparison.Ordinal) &&
+                Get<TextBlock>(window, "ClaudeWeekDetail").Text.Contains("已用 12%（官方）", StringComparison.Ordinal),
+            "official percentages drive the window and capacity cards");
         var dialog = new ClaudeQuotaWindow(SeedDay.AddHours(18)) { Left = -20000, Top = -20000, ShowInTaskbar = false };
         try
         {
@@ -70,8 +95,6 @@ internal static partial class MainWindowProbe
             dialog.Close();
         }
 
-        Require(Get<TextBlock>(window, "ClaudeBlockDetail").Text.StartsWith("13:00–18:00", StringComparison.Ordinal),
-            "live block opens on the hour of its first request");
         Require(Get<TextBlock>(window, "ClaudeModelValue").Text.StartsWith("Opus 5.5 ", StringComparison.Ordinal),
             "dominant model leads the model mix");
         Require(!Get<TextBlock>(window, "ClaudeBlockCostValue").Text.Contains("Credits", StringComparison.Ordinal),

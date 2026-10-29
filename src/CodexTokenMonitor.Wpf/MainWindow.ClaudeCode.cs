@@ -1,14 +1,15 @@
 using System.Windows;
+using System.Windows.Controls;
 
 namespace CodexTokenMonitor;
 
 public partial class MainWindow
 {
     /// <summary>
-    /// Rebuilds the Claude Code header from local transcripts. Claude Code logs
-    /// no account quota, so the panel shows the 5h block those limits are
-    /// metered in, inferred from request times, and capacity estimates from
-    /// the user's own /usage readings.
+    /// Rebuilds the Claude Code header. Quota windows come from the status
+    /// line's official rate_limits when recorded, else from the user's /usage
+    /// readings, else from the block inferred from request times; every share
+    /// and spend figure is measured over that same window.
     /// </summary>
     private async Task RefreshClaudeActivityCoreAsync()
     {
@@ -21,7 +22,17 @@ public partial class MainWindow
         try
         {
             var (snapshot, readings) = await Task.Run(
-                () => (ClaudeCodeActivityReader.ReadCurrent(BeijingClock.Now, runtime.LifetimeToken), ClaudeQuotaReadingStore.Load()),
+                () =>
+                {
+                    var readings = ClaudeQuotaReadingStore.Load();
+                    var snapshot = ClaudeCodeActivityReader.ReadCurrent(BeijingClock.Now, readings, runtime.LifetimeToken);
+                    if (ClaudeQuotaEstimator.RecordOfficial(snapshot, readings))
+                    {
+                        readings = ClaudeQuotaReadingStore.Load();
+                    }
+
+                    return (snapshot, readings);
+                },
                 runtime.LifetimeToken);
             if (!isClosed && CurrentModule() is ClaudeCodeUsageModule current && ReferenceEquals(current, claudeModule))
             {
@@ -38,7 +49,7 @@ public partial class MainWindow
         {
             if (!isClosed)
             {
-                SetStatus($"Claude Code 区块刷新失败：{ex.Message}");
+                SetStatus($"Claude Code 额度刷新失败：{ex.Message}");
             }
         }
         finally
@@ -59,70 +70,89 @@ public partial class MainWindow
             ClaudeBlockCostDetail.Text = null;
             ClaudeModelValue.Text = "-";
             ClaudeModelDetail.Text = null;
-            ApplyClaudeCapacity(ClaudeFiveHourCapacityValue, ClaudeFiveHourCapacityDetail, fiveHour, null, "本区块");
-            ApplyClaudeCapacity(ClaudeWeekValue, ClaudeWeekDetail, week, null, "近 7 天");
+            ApplyClaudeCapacity(ClaudeFiveHourCapacityValue, ClaudeFiveHourCapacityDetail, fiveHour, null);
+            ApplyClaudeCapacity(ClaudeWeekValue, ClaudeWeekDetail, week, null);
             return;
         }
 
         var now = activity.NowLocal;
-        var block = activity.CurrentBlock;
-        if (block is not null)
+        var window = activity.FiveHourWindow;
+        if (window is not null)
         {
-            ClaudeBlockValue.Text = FormatTokenAdaptive(block.Usage.TotalTokens);
-            ClaudeBlockDetail.Text = $"{block.StartLocal:HH:mm}–{block.EndLocal:HH:mm} · {FormatDuration(block.EndLocal - now)}后重置 · {block.Usage.Events:N0} 次请求";
-            ClaudeBlockCostValue.Text = FormatClaudeCost(block.Usage);
-            ClaudeBlockCostDetail.Text = block.TokensPerMinute is { } rate
+            var remaining = $"{FormatDuration(window.ResetLocal - now)}后重置";
+            if (window.OfficialPercent is { } percent)
+            {
+                ClaudeBlockValue.Text = $"已用 {percent:0.#}%";
+                ClaudeBlockDetail.Text = $"官方 · {window.ResetLocal:HH:mm} 重置 · {remaining} · 本机 {FormatTokenAdaptive(window.Usage.TotalTokens)}";
+            }
+            else
+            {
+                ClaudeBlockValue.Text = FormatTokenAdaptive(window.Usage.TotalTokens);
+                ClaudeBlockDetail.Text = $"{(window.Source == ClaudeWindowSource.Manual ? "按录入" : "推算")} · {window.StartLocal:HH:mm}–{window.ResetLocal:HH:mm} · {remaining} · {window.Usage.Events:N0} 次请求";
+            }
+
+            ClaudeBlockCostValue.Text = FormatClaudeCost(window.Usage);
+            ClaudeBlockCostDetail.Text = activity.CurrentBlock is { TokensPerMinute: { } rate } block
                 ? $"{FormatTokenAdaptive((long)rate)}/分钟 · 照此到 {block.EndLocal:HH:mm} 约 {FormatTokenAdaptive(block.ProjectedTotalTokens(now) ?? block.Usage.TotalTokens)}"
-                : "请求不足 1 分钟，暂无速率";
+                : "本窗口内的 API 等价费用";
         }
         else
         {
             ClaudeBlockValue.Text = "空闲";
             ClaudeBlockDetail.Text = activity.LastBlock is { } last
                 ? $"上个区块 {last.StartLocal:MM-dd HH:mm} · {FormatTokenAdaptive(last.Usage.TotalTokens)} · 最后请求 {last.LastActivityLocal:HH:mm}"
-                : "下次请求开启新的 5h 区块";
+                : "下次请求开启新的 5h 窗口";
             ClaudeBlockCostValue.Text = activity.LastBlock is { } previous ? FormatClaudeCost(previous.Usage) : "-";
             ClaudeBlockCostDetail.Text = activity.LastBlock is null ? "近 24 小时没有请求" : "上个区块费用";
         }
 
-        ApplyClaudeCapacity(ClaudeFiveHourCapacityValue, ClaudeFiveHourCapacityDetail, fiveHour, block?.Usage, "本区块");
-        ApplyClaudeCapacity(ClaudeWeekValue, ClaudeWeekDetail, week, activity.Week, "近 7 天");
-        if (week is null && activity.WeekActiveDays > 0)
+        ApplyClaudeCapacity(ClaudeFiveHourCapacityValue, ClaudeFiveHourCapacityDetail, fiveHour, window);
+        ApplyClaudeCapacity(ClaudeWeekValue, ClaudeWeekDetail, week, activity.WeekWindow);
+        if (activity.WeekWindow is null && (week is null || activity.WeekActiveDays > 0))
         {
-            ClaudeWeekDetail.Text = $"近 7 天 {FormatTokenAdaptive(activity.Week.TotalTokens)} · {FormatClaudeCost(activity.Week)} · 活跃 {activity.WeekActiveDays} 天";
+            // Without a known weekly reset there is no window to measure; the
+            // calendar total is shown as context only, never extrapolated.
+            var prefix = week is null ? "" : $"{ClaudeWeekDetail.Text} · ";
+            ClaudeWeekDetail.Text = prefix + $"近 7 天 {FormatTokenAdaptive(activity.Week.TotalTokens)} · {FormatClaudeCost(activity.Week)}" +
+                                    (activity.WeekIsComplete ? $" · 活跃 {activity.WeekActiveDays} 天" : " · 数据不完整");
         }
 
         ApplyClaudeModelMix(activity.Today);
     }
 
     /// <summary>
-    /// Shows the median full-window capacity and, when usage for that window is
-    /// at hand, roughly how much of it the Claude models have used so far.
+    /// Shows the median full-window capacity and how much of the live window
+    /// is used: the official percentage when known, otherwise the window's
+    /// Claude-model spend over capacity. An incomplete window is not
+    /// extrapolated.
     /// </summary>
-    private static void ApplyClaudeCapacity(
-        System.Windows.Controls.TextBlock value,
-        System.Windows.Controls.TextBlock detail,
-        ClaudeQuotaCapacity? capacity,
-        TokenUsageBucket? used,
-        string usedLabel)
+    private static void ApplyClaudeCapacity(TextBlock value, TextBlock detail, ClaudeQuotaCapacity? capacity, ClaudeQuotaWindowUsage? window)
     {
+        var used = window switch
+        {
+            null => null,
+            { OfficialPercent: { } percent } => $"已用 {percent:0.#}%（官方）",
+            { IsComplete: false } => "数据不完整，暂不外推",
+            _ when capacity is { CapacityUsd: > 0 } =>
+                $"约用 {ClaudeQuotaEstimator.UsdCost(window.ClaudeUsage) / capacity.CapacityUsd * 100:N0}%",
+            _ => null
+        };
+        var reset = window is null ? null : $"{window.ResetLocal:MM-dd HH:mm} 重置";
+
         if (capacity is null)
         {
             value.Text = "未录入";
-            detail.Text = "点“额度估算”录入 /usage 百分比";
+            detail.Text = string.Join(" · ", new[] { used, used is null ? "点“额度估算”录入 /usage" : reset }.Where(part => part is not null));
             return;
         }
 
         value.Text = ClaudeQuotaWindow.FormatUsd(capacity.CapacityUsd) + (capacity.IsTentative ? "?" : "");
-        var parts = new List<string> { $"≈ {FormatTokenAdaptive(capacity.CapacityTokens)} Token" };
-        if (used is not null && capacity.CapacityUsd > 0)
+        detail.Text = string.Join(" · ", new[]
         {
-            var spent = ClaudeQuotaEstimator.UsdCost(ClaudeQuotaEstimator.ClaudeModelUsage(new[] { used }, used.StartLocal, DateTimeOffset.MaxValue));
-            parts.Add($"{usedLabel}约用 {spent / capacity.CapacityUsd * 100:N0}%");
-        }
-
-        parts.Add($"{capacity.Windows} 个窗口");
-        detail.Text = string.Join(" · ", parts);
+            $"≈ {FormatTokenAdaptive(capacity.CapacityTokens)} Token",
+            used,
+            $"{capacity.Windows} 个窗口"
+        }.Where(part => part is not null));
     }
 
     private void ClaudeQuotaButton_Click(object sender, RoutedEventArgs e)
@@ -132,12 +162,18 @@ public partial class MainWindow
             return;
         }
 
-        var window = new ClaudeQuotaWindow(module.CurrentActivity?.CurrentBlock?.EndLocal) { Owner = this };
+        var window = new ClaudeQuotaWindow(
+            module.CurrentActivity?.FiveHourWindow?.ResetLocal,
+            module.CurrentActivity?.WeekWindow?.ResetLocal)
+        {
+            Owner = this
+        };
         window.ShowDialog();
         if (window.Changed)
         {
             module.QuotaReadings = ClaudeQuotaReadingStore.Load();
             ApplyClaudeActivitySummary(module);
+            _ = RefreshQuotaSummaryAsync();
         }
     }
 

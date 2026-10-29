@@ -19,7 +19,7 @@
         <StackPanel Margin="0,0,0,14">
             <TextBlock Text="Claude 额度估算" Style="{StaticResource PageTitle}" />
             <TextBlock Style="{StaticResource PageSubtitle}" Margin="0,5,0,0" TextWrapping="Wrap"
-                       Text="在 Claude Code 中运行 /usage，填入已用百分比和重置时间。程序按本地日志统计该窗口内 Claude 模型的花费，再折算到 100%。MiMo 等网关模型不占 Claude 额度，不计入。" />
+                       Text="在 Claude Code 中运行 /usage，填入已用百分比和重置时间；配置了状态栏采集后，官方读数会自动记录。程序按本地日志统计该窗口内 Claude 模型的花费，再折算到 100%。MiMo 等网关模型不占 Claude 额度，不计入；claude.ai 网页对话也计入官方百分比但不在本地日志里，估算可能偏低。" />
         </StackPanel>
         <Grid Grid.Row="1" Margin="0,0,0,12">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
