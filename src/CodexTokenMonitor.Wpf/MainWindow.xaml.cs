@@ -89,7 +89,7 @@ public partial class MainWindow : Window
 
             if (action == AutomaticRefreshAction.RefreshQuotaOnly)
             {
-                if (module is CodexUsageModule or ZCodeUsageModule)
+                if (module is CodexUsageModule or ZCodeUsageModule or ClaudeCodeUsageModule)
                 {
                     await RefreshQuotaSummaryAsync();
                 }
@@ -873,13 +873,14 @@ public partial class MainWindow : Window
 
     private static bool ShouldRefreshQuota(UsageSourceModule module)
     {
-        return module.SupportsQuota || module is ZCodeUsageModule || module is DshUsageModule;
+        return module.SupportsQuota || module is ZCodeUsageModule or DshUsageModule or ClaudeCodeUsageModule;
     }
 
     private Task RefreshQuotaSummaryAsync() => runtime.Run("额度刷新", _ => CurrentModule() switch
     {
         ZCodeUsageModule => RefreshZCodeQuotaCoreAsync(),
         DshUsageModule => RefreshDshBalanceCoreAsync(),
+        ClaudeCodeUsageModule => RefreshClaudeActivityCoreAsync(),
         _ => RefreshQuotaSummaryCoreAsync()
     });
 
@@ -1536,6 +1537,7 @@ public partial class MainWindow : Window
         QuotaPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         ZCodeQuotaPanel.Visibility = module is ZCodeUsageModule ? Visibility.Visible : Visibility.Collapsed;
         DshBalancePanel.Visibility = module is DshUsageModule ? Visibility.Visible : Visibility.Collapsed;
+        ClaudeActivityPanel.Visibility = module is ClaudeCodeUsageModule ? Visibility.Visible : Visibility.Collapsed;
         ResetSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         PlanSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         ClearReserveUsageDisplay();
@@ -1547,6 +1549,11 @@ public partial class MainWindow : Window
         if (module is DshUsageModule dshModule)
         {
             ApplyDshBalanceSummary(dshModule);
+        }
+
+        if (module is ClaudeCodeUsageModule claudeModule)
+        {
+            ApplyClaudeActivitySummary(claudeModule);
         }
 
         if (!show)

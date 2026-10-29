@@ -207,6 +207,38 @@
                 </StackPanel>
             </Grid>
         </Border>
+        <Border x:Name="ClaudeActivityPanel" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,10" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.2*" /><ColumnDefinition Width="1.2*" /><ColumnDefinition Width="1.3*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width=".9*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,16,0" ToolTip="Claude 订阅按 5 小时区块计量：首个请求所在整点开始，5 小时后重置。由本地日志推算，不读取账号额度。">
+                    <TextBlock Text="当前 5h 区块" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ClaudeBlockValue" Text="--" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="ClaudeBlockDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="0,0,16,0" ToolTip="区块内各模型按 Claude Code 价格分组的美元 API 单价估算；“+套餐”表示另有按套餐单位计价的模型（如 MiMo Credits）未计入，“*”表示含未配置价格的模型。速率按区块内首末请求间隔计算">
+                    <TextBlock Text="区块费用 · API 等价" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ClaudeBlockCostValue" Text="-" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="ClaudeBlockCostDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Margin="0,0,16,0">
+                    <TextBlock Text="今日模型" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ClaudeModelValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    <TextBlock x:Name="ClaudeModelDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" Margin="0,0,16,0" ToolTip="今天加之前 6 个已缓存的自然日">
+                    <TextBlock Text="近 7 天" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ClaudeWeekValue" Text="--" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="ClaudeWeekDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="4">
+                    <TextBlock Text="最近请求" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ClaudeLastActivityValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" />
+                    <TextBlock x:Name="ClaudeLastActivityDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+            </Grid>
+        </Border>
         <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,6" Margin="0,0,0,10">
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="统计范围" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,12,0" />

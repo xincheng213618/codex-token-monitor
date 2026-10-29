@@ -189,6 +189,7 @@ internal static partial class MainWindowProbe
             await RenderContentAsync(window, Path.Combine(outputRoot, "wpf-architecture-probe.png"));
             await CheckRealPriceCardsAsync(window, modules);
             await CheckDayTimeZoneAsync(window, modules[UsageSource.ClaudeCode]);
+            await CheckClaudeActivityPanelAsync(window, modules);
             await CheckStatusSpeedAsync(window, modules);
             Require(!mainWasLoaded, "main Loaded lifecycle never entered");
 

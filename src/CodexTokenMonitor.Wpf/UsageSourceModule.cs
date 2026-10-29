@@ -153,6 +153,9 @@ internal sealed class ClaudeCodeUsageModule : UsageSourceModule
         : base(UsageSource.ClaudeCode)
     {
     }
+
+    /// <summary>The live 5h block, today's model mix and 7-day total shown by the header panel.</summary>
+    public ClaudeCodeActivitySnapshot? CurrentActivity { get; set; }
 }
 
 internal sealed class ZCodeUsageModule : UsageSourceModule

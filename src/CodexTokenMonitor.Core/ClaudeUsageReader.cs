@@ -415,8 +415,13 @@ internal static class ClaudeUsageReader
     private static IEnumerable<string> GetLogRoots()
     {
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        // Claude Code moves its whole config tree, transcripts included, when
+        // CLAUDE_CONFIG_DIR is set; the speed monitor already follows it.
+        var configDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") is { Length: > 0 } custom
+            ? custom
+            : Path.Combine(profile, ".claude");
         var projects = UsageLogPaths.GetOverrideRoot(UsageSource.ClaudeCode) ??
-                       Path.Combine(profile, ".claude", "projects");
+                       Path.Combine(configDir, "projects");
         if (Directory.Exists(projects))
         {
             yield return projects;
