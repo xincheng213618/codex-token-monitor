@@ -49,9 +49,9 @@ internal static partial class MainWindowProbe
             blocks[^1].StartLocal, blocks[^1].EndLocal, Since(blocks[^1].StartLocal), null, true);
         claude.CurrentActivity = new ClaudeCodeActivitySnapshot(now, blocks, today, week, 3, FiveHourWindow: inferred);
         Invoke(window, "ApplyClaudeActivitySummary", claude);
-        Require(Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text == "未录入", "capacity waits for a /usage reading");
-        Require(Get<TextBlock>(window, "ClaudeBlockDetail").Text.StartsWith("推算 · 13:12–18:12", StringComparison.Ordinal),
-            "inferred window opens at its first request, not on the hour");
+        Require(Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text == "待估算", "capacity waits for an automatic reading");
+        Require(Get<TextBlock>(window, "ClaudeBlockValue").Text == "未获取",
+            "inferred token blocks are not presented as official quota");
 
         // Two 5h windows ($80 and $100 at full) and one week reading.
         foreach (var reading in new[]
@@ -61,33 +61,39 @@ internal static partial class MainWindowProbe
                      ClaudeQuotaEstimator.CreateReading(ClaudeQuotaWindowKind.Week, 12, SeedDay.AddDays(4).AddHours(20), now, rows) with { CostUsd = 96m, Tokens = 140_000_000 }
                  })
         {
-            ClaudeQuotaReadingStore.Add(reading);
+            ClaudeQuotaReadingStore.Add(reading with { Source = ClaudeQuotaReadingSource.Official });
         }
         claude.QuotaReadings = ClaudeQuotaReadingStore.Load();
         Invoke(window, "ApplyClaudeActivitySummary", claude);
-        Require(Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text == "$90" &&
-                Get<TextBlock>(window, "ClaudeWeekValue").Text == "$800",
-            "capacity cards show the median full-window dollars");
+        Require(Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text == "≈ $100" &&
+                Get<TextBlock>(window, "ClaudeWeekValue").Text == "未获取",
+            "capacity is separate from unknown official weekly quota");
 
         // Official status-line windows replace the inferred block everywhere.
         claude.CurrentActivity = claude.CurrentActivity with
         {
             FiveHourWindow = new ClaudeQuotaWindowUsage(ClaudeQuotaWindowKind.FiveHour, ClaudeWindowSource.Official,
-                SeedDay.AddHours(13), SeedDay.AddHours(18), Since(SeedDay.AddHours(13)), 40, true),
+                SeedDay.AddHours(13), SeedDay.AddHours(18), Since(SeedDay.AddHours(13)), 40, true, now),
             WeekWindow = new ClaudeQuotaWindowUsage(ClaudeQuotaWindowKind.Week, ClaudeWindowSource.Official,
-                SeedDay.AddDays(-3).AddHours(20), SeedDay.AddDays(4).AddHours(20), week, 12, true)
+                SeedDay.AddDays(-3).AddHours(20), SeedDay.AddDays(4).AddHours(20), week, 12, true, now)
         };
         Invoke(window, "ApplyClaudeActivitySummary", claude);
-        Require(Get<TextBlock>(window, "ClaudeBlockValue").Text == "已用 40%" &&
-                Get<TextBlock>(window, "ClaudeFiveHourCapacityDetail").Text.Contains("已用 40%（官方）", StringComparison.Ordinal) &&
+        Require(Get<TextBlock>(window, "ClaudeBlockValue").Text == "剩余 60%" &&
+                Get<TextBlock>(window, "ClaudeWeekValue").Text == "剩余 88%" &&
+                Get<TextBlock>(window, "ClaudeFiveHourCapacityDetail").Text.Contains("Token", StringComparison.Ordinal) &&
+                Get<TextBlock>(window, "ClaudeWeekCapacityDetail").Text.Contains("Token", StringComparison.Ordinal) &&
                 Get<TextBlock>(window, "ClaudeWeekDetail").Text.Contains("已用 12%（官方）", StringComparison.Ordinal),
             "official percentages drive the window and capacity cards");
-        var dialog = new ClaudeQuotaWindow(SeedDay.AddHours(18)) { Left = -20000, Top = -20000, ShowInTaskbar = false };
+        var dialog = new ClaudeQuotaWindow(() => claude.CurrentActivity, () => claude.QuotaReadings) { Left = -20000, Top = -20000, ShowInTaskbar = false };
         try
         {
             dialog.Show();
             await window.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Background);
-            Require(((DataGrid)dialog.FindName("HistoryGrid")).Items.Count == 3, "dialog lists every reading");
+            Require(dialog.FindName("FiveHourPercentBox") is null && dialog.FindName("WeekPercentBox") is null,
+                "manual quota editors are removed");
+            Require(((TextBlock)dialog.FindName("FiveHourTokensValue")).Text.Contains("Token", StringComparison.Ordinal) &&
+                    ((TextBlock)dialog.FindName("WeekTotalValue")).Text.StartsWith("≈ $", StringComparison.Ordinal),
+                "read-only dialog exposes both full-window amount and token references");
             await RenderDialogAsync(dialog, Path.Combine(outputRoot, "claude-quota-dialog.png"));
         }
         finally
@@ -97,14 +103,14 @@ internal static partial class MainWindowProbe
 
         Require(Get<TextBlock>(window, "ClaudeModelValue").Text.StartsWith("Opus 5.5 ", StringComparison.Ordinal),
             "dominant model leads the model mix");
-        Require(!Get<TextBlock>(window, "ClaudeBlockCostValue").Text.Contains("Credits", StringComparison.Ordinal),
+        Require(!Get<TextBlock>(window, "ClaudeFiveHourCapacityValue").Text.Contains("Credits", StringComparison.Ordinal),
             "plan-unit prices are not added into the dollar headline");
         await RenderContentAsync(window, Path.Combine(outputRoot, "claude-activity.png"));
         await RenderContentAsync(window, Path.Combine(outputRoot, "claude-activity-narrow.png"), 1060, height: 800);
 
         claude.CurrentActivity = new ClaudeCodeActivitySnapshot(SeedDay.AddDays(1).AddHours(2), ClaudeCodeBlockCalculator.Build(rows), new TokenUsageBucket(), week, 3);
         Invoke(window, "ApplyClaudeActivitySummary", claude);
-        Require(Get<TextBlock>(window, "ClaudeBlockValue").Text == "空闲", "an expired block reads as idle");
+        Require(Get<TextBlock>(window, "ClaudeBlockValue").Text == "未获取", "expired local blocks do not invent an official quota");
         await RenderContentAsync(window, Path.Combine(outputRoot, "claude-activity-idle.png"));
 
         Invoke(window, "ApplyQuotaSummary", modules[UsageSource.Codex], null);
@@ -113,13 +119,17 @@ internal static partial class MainWindowProbe
 
         static async Task RenderDialogAsync(Window dialog, string path)
         {
-            dialog.Measure(new Size(860, 720));
-            dialog.Arrange(new Rect(0, 0, 860, 720));
+            dialog.Measure(new Size(860, 540));
+            dialog.Arrange(new Rect(0, 0, 860, 540));
             dialog.UpdateLayout();
             await dialog.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
             var content = (FrameworkElement)dialog.Content;
             var image = new System.Windows.Media.Imaging.RenderTargetBitmap((int)content.ActualWidth, (int)content.ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-            image.Render(content);
+            var visual = new System.Windows.Media.DrawingVisual();
+            using (var drawing = visual.RenderOpen())
+                drawing.DrawRectangle(new System.Windows.Media.VisualBrush(content), null,
+                    new Rect(0, 0, content.ActualWidth, content.ActualHeight));
+            image.Render(visual);
             var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
             encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));
             using var stream = File.Create(path);

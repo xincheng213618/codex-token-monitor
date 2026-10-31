@@ -26,11 +26,13 @@ internal static class ClaudeUsageReader
 
     public static bool ClearCache()
     {
+        ClaudeCodeActivityReader.ResetHistoryMemo();
         return UsageCacheStore.Delete(CacheFolder);
     }
 
     public static bool ClearCachedDay(DateOnly date)
     {
+        ClaudeCodeActivityReader.ResetHistoryMemo();
         return UsageCacheStore.DeleteDay(CacheFolder, date);
     }
 

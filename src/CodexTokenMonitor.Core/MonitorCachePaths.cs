@@ -7,6 +7,8 @@ internal static class MonitorCachePaths
     public static string LocalAppData =>
         CurrentScope.Value?.Root ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
+    internal static bool IsIsolated => CurrentScope.Value is not null;
+
     // Dispose nested scopes in LIFO order within each execution context.
     internal static IDisposable PushLocalAppDataRoot(string path)
     {

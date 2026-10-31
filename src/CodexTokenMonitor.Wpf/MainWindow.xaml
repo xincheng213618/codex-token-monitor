@@ -212,33 +212,33 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1.2*" /><ColumnDefinition Width="1.2*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="88" />
                 </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" Margin="0,0,16,0" ToolTip="Claude 订阅按 5 小时窗口计量。优先使用状态栏采集的官方额度（rate_limits），其次用录入的 /usage 读数，否则从首个请求起推算 5 小时。">
-                    <TextBlock Text="当前 5h 窗口" Style="{StaticResource QuotaCaption}" />
+                <StackPanel Grid.Column="0" Margin="0,0,16,0" ToolTip="使用 Claude Desktop 或 CLI 的订阅登录读取官方 5h 剩余额度和重置时间，自动刷新。">
+                    <TextBlock Text="5h 额度" Style="{StaticResource QuotaCaption}" />
                     <TextBlock x:Name="ClaudeBlockValue" Text="--" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
                     <TextBlock x:Name="ClaudeBlockDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <StackPanel Grid.Column="1" Margin="0,0,16,0" ToolTip="区块内各模型按 Claude Code 价格分组的美元 API 单价估算；“+套餐”表示另有按套餐单位计价的模型（如 MiMo Credits）未计入，“*”表示含未配置价格的模型。速率按区块内首末请求间隔计算">
-                    <TextBlock Text="窗口费用 · API 等价" Style="{StaticResource QuotaCaption}" />
-                    <TextBlock x:Name="ClaudeBlockCostValue" Text="-" Style="{StaticResource QuotaValue}" />
-                    <TextBlock x:Name="ClaudeBlockCostDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
-                </StackPanel>
-                <StackPanel Grid.Column="2" Margin="0,0,16,0" ToolTip="由 /usage 手动读数推算：窗口内 Claude 模型的 API 等价花费 ÷ 已用百分比">
-                    <TextBlock Text="5h 满额估算" Style="{StaticResource QuotaCaption}" />
+                <StackPanel Grid.Column="1" Margin="0,0,16,0" ToolTip="本机已记录的 API 等价费用和 Token ÷ 同时刻官方已用比例，粗估整个 5h 满额容量。">
+                    <TextBlock Text="5h 总额度 · 估算" Style="{StaticResource QuotaCaption}" />
                     <TextBlock x:Name="ClaudeFiveHourCapacityValue" Text="-" Style="{StaticResource QuotaValue}" />
                     <TextBlock x:Name="ClaudeFiveHourCapacityDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <StackPanel Grid.Column="3" Margin="0,0,16,0" ToolTip="由 /usage 手动读数推算；“近 7 天”为今天加之前 6 个已缓存自然日">
-                    <TextBlock Text="7d 满额估算" Style="{StaticResource QuotaCaption}" />
+                <StackPanel Grid.Column="2" Margin="0,0,16,0" ToolTip="官方周额度，与 Claude Desktop /usage 使用同一数据源。以服务端重置时间为准。">
+                    <TextBlock Text="7d 额度" Style="{StaticResource QuotaCaption}" />
                     <TextBlock x:Name="ClaudeWeekValue" Text="--" Style="{StaticResource QuotaValue}" />
                     <TextBlock x:Name="ClaudeWeekDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" Margin="0,0,16,0" ToolTip="本机已记录的 API 等价费用和 Token ÷ 同时刻官方已用比例，粗估整个 7d 满额容量。">
+                    <TextBlock Text="7d 总额度 · 估算" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ClaudeWeekCapacityValue" Text="-" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="ClaudeWeekCapacityDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
                 <StackPanel Grid.Column="4" Margin="0,0,16,0">
                     <TextBlock Text="今日模型" Style="{StaticResource QuotaCaption}" />
                     <TextBlock x:Name="ClaudeModelValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                     <TextBlock x:Name="ClaudeModelDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <Button x:Name="ClaudeQuotaButton" Grid.Column="5" Style="{StaticResource PrimaryButton}" Content="额度估算" VerticalAlignment="Center"
-                        ToolTip="录入 /usage 的已用百分比，估算 5h / 7d 满额能用多少美元和 Token" Click="ClaudeQuotaButton_Click" />
+                <Button x:Name="ClaudeQuotaButton" Grid.Column="5" Style="{StaticResource PrimaryButton}" Content="额度详情" VerticalAlignment="Center"
+                        ToolTip="查看自动估算的 5h / 7d 满额金额和 Token 总量" Click="ClaudeQuotaButton_Click" />
             </Grid>
         </Border>
         <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,6" Margin="0,0,0,10">

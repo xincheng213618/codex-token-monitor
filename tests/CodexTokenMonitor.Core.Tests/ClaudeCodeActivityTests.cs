@@ -166,6 +166,22 @@ public sealed class ClaudeCodeActivityTests : IDisposable
     }
 
     [Fact]
+    public void OfficialCalibrationPairsCostWithItsObservationTime()
+    {
+        var now = DateTimeOffset.UtcNow.ToOffset(Beijing);
+        WriteLog(now.AddHours(-2), "before_snapshot", 1_000_000);
+        WriteLog(now.AddMinutes(-30), "after_snapshot", 9_000_000);
+        WriteRateLimits(now.AddHours(-1), 50, now.AddHours(2), 20, now.AddHours(12));
+        var snapshot = ClaudeCodeActivityReader.ReadCurrent(now);
+        ClaudeQuotaEstimator.RecordOfficial(snapshot, Array.Empty<ClaudeQuotaReading>());
+        var reading = ClaudeQuotaReadingStore.Load().Single(item => item.Kind == ClaudeQuotaWindowKind.FiveHour);
+        Assert.Equal(10_000_000, snapshot.FiveHourWindow!.Usage.TotalTokens);
+        Assert.Equal(1_000_000, reading.Tokens);
+        Assert.Equal(8m, reading.CapacityUsd);
+        Assert.Equal(now.AddHours(-1), reading.RecordedLocal, TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public void RateLimitLog_KeepsNewestOpenWindowAndSkipsBrokenLines()
     {
         var now = Day.AddHours(12);

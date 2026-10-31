@@ -21,23 +21,25 @@ public partial class MainWindow
         isQuotaRefreshing = true;
         try
         {
-            var (snapshot, readings) = await Task.Run(
-                () =>
+            var (snapshot, readings, quotaFailure) = await Task.Run(
+                async () =>
                 {
+                    var live = await claudeModule.OfficialQuota.ReadAsync(runtime.LifetimeToken);
                     var readings = ClaudeQuotaReadingStore.Load();
-                    var snapshot = ClaudeCodeActivityReader.ReadCurrent(BeijingClock.Now, readings, runtime.LifetimeToken);
+                    var snapshot = ClaudeCodeActivityReader.ReadCurrent(BeijingClock.Now, readings, runtime.LifetimeToken, live.Snapshot);
                     if (ClaudeQuotaEstimator.RecordOfficial(snapshot, readings))
                     {
                         readings = ClaudeQuotaReadingStore.Load();
                     }
 
-                    return (snapshot, readings);
+                    return (snapshot, readings, live.Failure);
                 },
                 runtime.LifetimeToken);
             if (!isClosed && CurrentModule() is ClaudeCodeUsageModule current && ReferenceEquals(current, claudeModule))
             {
                 claudeModule.CurrentActivity = snapshot;
                 claudeModule.QuotaReadings = readings;
+                claudeModule.QuotaFailure = quotaFailure;
                 ApplyClaudeActivitySummary(claudeModule);
             }
         }
@@ -60,121 +62,52 @@ public partial class MainWindow
 
     private void ApplyClaudeActivitySummary(ClaudeCodeUsageModule module)
     {
-        var fiveHour = ClaudeQuotaEstimator.Summarize(module.QuotaReadings, ClaudeQuotaWindowKind.FiveHour);
-        var week = ClaudeQuotaEstimator.Summarize(module.QuotaReadings, ClaudeQuotaWindowKind.Week);
-        if (module.CurrentActivity is not { } activity)
-        {
-            ClaudeBlockValue.Text = "--";
-            ClaudeBlockDetail.Text = "读取 Claude Code 本地日志…";
-            ClaudeBlockCostValue.Text = "-";
-            ClaudeBlockCostDetail.Text = null;
-            ClaudeModelValue.Text = "-";
-            ClaudeModelDetail.Text = null;
-            ApplyClaudeCapacity(ClaudeFiveHourCapacityValue, ClaudeFiveHourCapacityDetail, fiveHour, null);
-            ApplyClaudeCapacity(ClaudeWeekValue, ClaudeWeekDetail, week, null);
-            return;
-        }
+        var activity = module.CurrentActivity;
+        ApplyOfficial(ClaudeBlockValue, ClaudeBlockDetail, activity?.FiveHourWindow);
+        ApplyOfficial(ClaudeWeekValue, ClaudeWeekDetail, activity?.WeekWindow);
+        ApplyClaudeReference(ClaudeFiveHourCapacityValue, ClaudeFiveHourCapacityDetail,
+            ClaudeQuotaReferenceCalculator.Estimate(ClaudeQuotaWindowKind.FiveHour, activity?.FiveHourWindow, module.QuotaReadings));
+        ApplyClaudeReference(ClaudeWeekCapacityValue, ClaudeWeekCapacityDetail,
+            ClaudeQuotaReferenceCalculator.Estimate(ClaudeQuotaWindowKind.Week, activity?.WeekWindow, module.QuotaReadings));
+        if (activity is not null) ApplyClaudeModelMix(activity.Today);
 
-        var now = activity.NowLocal;
-        var window = activity.FiveHourWindow;
-        if (window is not null)
+        void ApplyOfficial(TextBlock value, TextBlock detail, ClaudeQuotaWindowUsage? window)
         {
-            var remaining = $"{FormatDuration(window.ResetLocal - now)}后重置";
-            if (window.OfficialPercent is { } percent)
+            if (window?.OfficialPercent is { } percent)
             {
-                ClaudeBlockValue.Text = $"已用 {percent:0.#}%";
-                ClaudeBlockDetail.Text = $"官方 · {window.ResetLocal:HH:mm} 重置 · {remaining} · 本机 {FormatTokenAdaptive(window.Usage.TotalTokens)}";
+                value.Text = $"剩余 {100 - percent:0.#}%";
+                detail.Text = OfficialDetail(window, module.QuotaFailure);
             }
             else
             {
-                ClaudeBlockValue.Text = FormatTokenAdaptive(window.Usage.TotalTokens);
-                ClaudeBlockDetail.Text = $"{(window.Source == ClaudeWindowSource.Manual ? "按录入" : "推算")} · {window.StartLocal:HH:mm}–{window.ResetLocal:HH:mm} · {remaining} · {window.Usage.Events:N0} 次请求";
+                value.Text = activity is null ? "--" : "未获取";
+                detail.Text = module.QuotaFailure ?? "等待 Claude 官方额度";
             }
-
-            ClaudeBlockCostValue.Text = FormatClaudeCost(window.Usage);
-            ClaudeBlockCostDetail.Text = activity.CurrentBlock is { TokensPerMinute: { } rate } block
-                ? $"{FormatTokenAdaptive((long)rate)}/分钟 · 照此到 {block.EndLocal:HH:mm} 约 {FormatTokenAdaptive(block.ProjectedTotalTokens(now) ?? block.Usage.TotalTokens)}"
-                : "本窗口内的 API 等价费用";
         }
-        else
-        {
-            ClaudeBlockValue.Text = "空闲";
-            ClaudeBlockDetail.Text = activity.LastBlock is { } last
-                ? $"上个区块 {last.StartLocal:MM-dd HH:mm} · {FormatTokenAdaptive(last.Usage.TotalTokens)} · 最后请求 {last.LastActivityLocal:HH:mm}"
-                : "下次请求开启新的 5h 窗口";
-            ClaudeBlockCostValue.Text = activity.LastBlock is { } previous ? FormatClaudeCost(previous.Usage) : "-";
-            ClaudeBlockCostDetail.Text = activity.LastBlock is null ? "近 24 小时没有请求" : "上个区块费用";
-        }
-
-        ApplyClaudeCapacity(ClaudeFiveHourCapacityValue, ClaudeFiveHourCapacityDetail, fiveHour, window);
-        ApplyClaudeCapacity(ClaudeWeekValue, ClaudeWeekDetail, week, activity.WeekWindow);
-        if (activity.WeekWindow is null && (week is null || activity.WeekActiveDays > 0))
-        {
-            // Without a known weekly reset there is no window to measure; the
-            // calendar total is shown as context only, never extrapolated.
-            var prefix = week is null ? "" : $"{ClaudeWeekDetail.Text} · ";
-            ClaudeWeekDetail.Text = prefix + $"近 7 天 {FormatTokenAdaptive(activity.Week.TotalTokens)} · {FormatClaudeCost(activity.Week)}" +
-                                    (activity.WeekIsComplete ? $" · 活跃 {activity.WeekActiveDays} 天" : " · 数据不完整");
-        }
-
-        ApplyClaudeModelMix(activity.Today);
     }
 
-    /// <summary>
-    /// Shows the median full-window capacity and how much of the live window
-    /// is used: the official percentage when known, otherwise the window's
-    /// Claude-model spend over capacity. An incomplete window is not
-    /// extrapolated.
-    /// </summary>
-    private static void ApplyClaudeCapacity(TextBlock value, TextBlock detail, ClaudeQuotaCapacity? capacity, ClaudeQuotaWindowUsage? window)
-    {
-        var used = window switch
-        {
-            null => null,
-            { OfficialPercent: { } percent } => $"已用 {percent:0.#}%（官方）",
-            { IsComplete: false } => "数据不完整，暂不外推",
-            _ when capacity is { CapacityUsd: > 0 } =>
-                $"约用 {ClaudeQuotaEstimator.UsdCost(window.ClaudeUsage) / capacity.CapacityUsd * 100:N0}%",
-            _ => null
-        };
-        var reset = window is null ? null : $"{window.ResetLocal:MM-dd HH:mm} 重置";
+    private static string OfficialDetail(ClaudeQuotaWindowUsage window, string? failure) =>
+        $"已用 {window.OfficialPercent:0.#}%（官方） · {window.ResetLocal:MM-dd HH:mm} 重置" +
+        (window.ObservedLocal is { } at ? $" · 更新 {at:HH:mm:ss}" : "") +
+        (failure is null ? "" : $" · {failure}，显示上次读数");
 
-        if (capacity is null)
+    private static void ApplyClaudeReference(TextBlock value, TextBlock detail, ClaudeQuotaReference? reference)
+    {
+        if (reference is null)
         {
-            value.Text = "未录入";
-            detail.Text = string.Join(" · ", new[] { used, used is null ? "点“额度估算”录入 /usage" : reset }.Where(part => part is not null));
+            value.Text = "待估算";
+            detail.Text = "有官方已用比例和 Token 后自动估算";
             return;
         }
-
-        value.Text = ClaudeQuotaWindow.FormatUsd(capacity.CapacityUsd) + (capacity.IsTentative ? "?" : "");
-        detail.Text = string.Join(" · ", new[]
-        {
-            $"≈ {FormatTokenAdaptive(capacity.CapacityTokens)} Token",
-            used,
-            $"{capacity.Windows} 个窗口"
-        }.Where(part => part is not null));
+        value.Text = "≈ " + ClaudeQuotaWindow.FormatUsd(reference.TotalCostUsd);
+        detail.Text = $"≈ {FormatTokenAdaptive(reference.TotalTokens)} Token · " +
+            (!reference.IsCurrentWindow ? "历史参考" : reference.IsTentative ? "大致估算" : "自动外推");
     }
 
     private void ClaudeQuotaButton_Click(object sender, RoutedEventArgs e)
     {
-        if (CurrentModule() is not ClaudeCodeUsageModule module)
-        {
-            return;
-        }
-
-        var window = new ClaudeQuotaWindow(
-            module.CurrentActivity?.FiveHourWindow?.ResetLocal,
-            module.CurrentActivity?.WeekWindow?.ResetLocal)
-        {
-            Owner = this
-        };
-        window.ShowDialog();
-        if (window.Changed)
-        {
-            module.QuotaReadings = ClaudeQuotaReadingStore.Load();
-            ApplyClaudeActivitySummary(module);
-            _ = RefreshQuotaSummaryAsync();
-        }
+        if (CurrentModule() is not ClaudeCodeUsageModule module) return;
+        new ClaudeQuotaWindow(() => module.CurrentActivity, () => module.QuotaReadings) { Owner = this }.ShowDialog();
     }
 
     private void ApplyClaudeModelMix(TokenUsageBucket today)
@@ -217,18 +150,4 @@ public partial class MainWindow
         return parts.Length == 1 ? family : $"{family} {string.Join('.', parts.Skip(1))}";
     }
 
-    /// <summary>
-    /// Headline cost in USD API-equivalent only. Plan presets priced in other
-    /// units (MiMo Credits) cannot be added to dollars, so they are named
-    /// beside the figure instead of being summed into an unreadable total.
-    /// </summary>
-    private static string FormatClaudeCost(TokenUsageBucket usage)
-    {
-        var estimate = CodexModelCost.Estimate(usage, PricePresetGroups.ClaudeCode);
-        var usd = estimate.CostTotals.Where(total => total.CurrencySymbol == "$").Sum(total => total.Amount);
-        var otherUnits = estimate.CostTotals.Any(total => total.CurrencySymbol != "$");
-        var unpriced = estimate.Models.Any(line => line.Cost is null) || estimate.MissingModelEvents > 0;
-        var text = otherUnits && usd == 0 ? "按套餐计" : ModelCostEstimate.FormatAmount(usd, "$", "N2");
-        return text + (otherUnits && usd > 0 ? "+套餐" : "") + (unpriced ? "*" : "");
-    }
 }

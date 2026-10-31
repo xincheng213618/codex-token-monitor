@@ -90,7 +90,7 @@ internal static class ClaudeCodeBlockCalculator
 }
 
 /// <summary>One official rate-limit window as Claude Code reports it to the status line.</summary>
-internal sealed record ClaudeRateLimitWindow(double UsedPercent, DateTimeOffset ResetLocal);
+internal sealed record ClaudeRateLimitWindow(double UsedPercent, DateTimeOffset ResetLocal, DateTimeOffset? ObservedLocal = null);
 
 internal sealed record ClaudeRateLimitSnapshot(
     DateTimeOffset RecordedLocal,
@@ -104,23 +104,51 @@ internal sealed record ClaudeRateLimitSnapshot(
 /// </summary>
 internal static class ClaudeRateLimitLog
 {
+    public static string CurrentFilePath =>
+        Path.Combine(MonitorCachePaths.LocalAppData, "ClaudeCodeTokenMonitor", "official-quota.json");
+
+    public static void SaveCurrent(ClaudeRateLimitSnapshot snapshot)
+    {
+        object? Window(ClaudeRateLimitWindow? window) => window is null ? null : new
+        {
+            used_percentage = window.UsedPercent,
+            resets_at = window.ResetLocal.ToUnixTimeSeconds()
+        };
+        var temp = CurrentFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(CurrentFilePath)!);
+            File.WriteAllText(temp, JsonSerializer.Serialize(new
+            {
+                recorded_at = snapshot.RecordedLocal.ToUnixTimeSeconds(),
+                five_hour = Window(snapshot.FiveHour), seven_day = Window(snapshot.SevenDay)
+            }));
+            File.Move(temp, CurrentFilePath, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        finally
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
     public static string FilePath =>
         Path.Combine(MonitorCachePaths.LocalAppData, "ClaudeCodeTokenMonitor", "rate-limits.jsonl");
 
     /// <summary>The newest still-open 5h and 7d windows; a window is dropped once its reset passes.</summary>
     public static ClaudeRateLimitSnapshot? ReadLatest(DateTimeOffset nowLocal)
     {
-        string[] lines;
+        var lines = new List<string>();
         try
         {
-            if (!File.Exists(FilePath))
+            if (File.Exists(CurrentFilePath)) lines.Add(File.ReadAllText(CurrentFilePath));
+            if (File.Exists(FilePath))
             {
-                return null;
+                using var stream = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                lines.AddRange(reader.ReadToEnd().Split('\n'));
             }
-
-            using var stream = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-            lines = reader.ReadToEnd().Split('\n');
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -142,8 +170,8 @@ internal static class ClaudeRateLimitLog
 
         return new ClaudeRateLimitSnapshot(
             new[] { fiveHour?.RecordedLocal, sevenDay?.RecordedLocal }.Max()!.Value,
-            fiveHour?.FiveHour,
-            sevenDay?.SevenDay);
+            fiveHour?.FiveHour is { } five ? five with { ObservedLocal = fiveHour.RecordedLocal } : null,
+            sevenDay?.SevenDay is { } week ? week with { ObservedLocal = sevenDay.RecordedLocal } : null);
     }
 
     public static IReadOnlyList<ClaudeRateLimitSnapshot> Parse(IEnumerable<string> lines)
@@ -218,7 +246,9 @@ internal sealed record ClaudeQuotaWindowUsage(
     DateTimeOffset ResetLocal,
     TokenUsageBucket Usage,
     double? OfficialPercent,
-    bool IsComplete)
+    bool IsComplete,
+    DateTimeOffset? ObservedLocal = null,
+    TokenUsageBucket? UsageAtObservation = null)
 {
     public TokenUsageBucket ClaudeUsage => ClaudeQuotaEstimator.ClaudeModelUsage(new[] { Usage }, StartLocal, DateTimeOffset.MaxValue);
 }
@@ -263,11 +293,13 @@ internal static class ClaudeCodeActivityReader
     public static ClaudeCodeActivitySnapshot ReadCurrent(
         DateTimeOffset nowLocal,
         IReadOnlyList<ClaudeQuotaReading>? readings = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        ClaudeRateLimitSnapshot? liveQuota = null)
     {
         nowLocal = nowLocal.ToOffset(CodexUsageReader.BeijingOffset);
         var todayStart = ClaudeCodeActivitySnapshot.StartOfDay(nowLocal);
-        var official = ClaudeRateLimitLog.ReadLatest(nowLocal);
+        var official = liveQuota is null ? ClaudeRateLimitLog.ReadLatest(nowLocal)
+            : ClaudeRateLimitLog.Latest(new[] { liveQuota }, nowLocal);
 
         // The official reset is the truth for the block chain; otherwise reuse
         // the block start saved by earlier refreshes.
@@ -293,18 +325,26 @@ internal static class ClaudeCodeActivityReader
         var snapshot = new ClaudeCodeActivitySnapshot(nowLocal, blocks, today, week,
             history.ActiveDays + (today.Events > 0 ? 1 : 0), history.IsComplete && rowsComplete);
 
-        ClaudeQuotaWindowUsage? Window(ClaudeQuotaWindowKind kind, ClaudeWindowSource source, DateTimeOffset reset, double? percent)
+        ClaudeQuotaWindowUsage? Window(ClaudeQuotaWindowKind kind, ClaudeWindowSource source, DateTimeOffset reset, double? percent, DateTimeOffset? observed = null)
         {
             var start = reset - ClaudeQuotaEstimator.Length(kind);
             var (usage, complete) = UsageSince(start, nowLocal, lookbackStart, rows, rowsComplete, todayStart, cancellationToken);
-            return new ClaudeQuotaWindowUsage(kind, source, start, reset, usage, percent, complete);
+            TokenUsageBucket? atObservation = null;
+            if (observed is { } at)
+            {
+                var captured = UsageSince(start, at < nowLocal ? at : nowLocal, lookbackStart, rows, rowsComplete, todayStart, cancellationToken);
+                atObservation = captured.Usage;
+                complete &= captured.IsComplete;
+            }
+            return new ClaudeQuotaWindowUsage(kind, source, start, reset, usage, percent, complete, observed, atObservation);
         }
 
         ClaudeQuotaWindowUsage? Resolve(ClaudeQuotaWindowKind kind, ClaudeRateLimitWindow? officialWindow)
         {
             if (officialWindow is not null)
             {
-                return Window(kind, ClaudeWindowSource.Official, officialWindow.ResetLocal, officialWindow.UsedPercent);
+                return Window(kind, ClaudeWindowSource.Official, officialWindow.ResetLocal, officialWindow.UsedPercent,
+                    officialWindow.ObservedLocal ?? official!.RecordedLocal);
             }
 
             var manual = readings?
@@ -336,6 +376,11 @@ internal static class ClaudeCodeActivityReader
         DateTimeOffset todayStart,
         CancellationToken cancellationToken)
     {
+        if (nowLocal < todayStart)
+        {
+            var historical = ReadHistory(start, nowLocal.AddTicks(1), cancellationToken);
+            return (historical.Usage, historical.IsComplete);
+        }
         if (start >= lookbackStart)
         {
             return (Merge(rows.Where(row => row.StartLocal >= start && row.StartLocal <= nowLocal), start), rowsComplete);
@@ -366,7 +411,7 @@ internal static class ClaudeCodeActivityReader
         lock (HistoryGate)
         {
             if (HistoryMemo.TryGetValue(key, out var cached) &&
-                (cached.IsComplete || BeijingClock.Now - cached.ReadAt < IncompleteRetry))
+                BeijingClock.Now - cached.ReadAt < IncompleteRetry)
             {
                 return cached;
             }

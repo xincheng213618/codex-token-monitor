@@ -139,7 +139,9 @@ internal static class ClaudeQuotaEstimator
                 continue;
             }
 
-            var claude = window.ClaudeUsage;
+            var claude = window.UsageAtObservation is { } captured
+                ? ClaudeModelUsage(new[] { captured }, window.StartLocal, DateTimeOffset.MaxValue)
+                : window.ClaudeUsage;
             var cost = UsdCost(claude);
             if (cost <= 0)
             {
@@ -153,7 +155,7 @@ internal static class ClaudeQuotaEstimator
                 continue;
             }
 
-            var reading = new ClaudeQuotaReading(window.Kind, snapshot.NowLocal, percent, window.StartLocal, window.ResetLocal,
+            var reading = new ClaudeQuotaReading(window.Kind, window.ObservedLocal ?? snapshot.NowLocal, percent, window.StartLocal, window.ResetLocal,
                 cost, claude.TotalTokens, claude.Events, ClaudeQuotaReadingSource.Official);
             ClaudeQuotaReadingStore.Replace(existing, reading);
             changed = true;
@@ -195,6 +197,52 @@ internal static class ClaudeQuotaEstimator
         var sorted = values.Order().ToList();
         var middle = sorted.Count / 2;
         return sorted.Count % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+}
+
+/// <summary>A rough 100% reference from one automatic reading and its matching local usage.</summary>
+internal sealed record ClaudeQuotaReference(
+    decimal TotalCostUsd,
+    long TotalTokens,
+    decimal RecordedCostUsd,
+    long RecordedTokens,
+    double UsedPercent,
+    DateTimeOffset RecordedLocal,
+    bool IsCurrentWindow,
+    bool IsIncomplete)
+{
+    public bool IsTentative => UsedPercent < ClaudeQuotaEstimator.ReliablePercent || IsIncomplete;
+}
+
+internal static class ClaudeQuotaReferenceCalculator
+{
+    public static ClaudeQuotaReference? Estimate(ClaudeQuotaWindowKind kind, ClaudeQuotaWindowUsage? window,
+        IReadOnlyList<ClaudeQuotaReading> readings)
+    {
+        if (window is { Source: ClaudeWindowSource.Official, OfficialPercent: >= 1 and <= 100 } &&
+            window.ObservedLocal is { } observed)
+        {
+            var sample = window.UsageAtObservation ?? window.Usage;
+            var usage = ClaudeQuotaEstimator.ClaudeModelUsage(new[] { sample }, window.StartLocal, DateTimeOffset.MaxValue);
+            var cost = ClaudeQuotaEstimator.UsdCost(usage);
+            if (usage.TotalTokens > 0 && cost > 0)
+                return Calculate(cost, usage.TotalTokens, window.OfficialPercent.Value, observed, true, !window.IsComplete);
+        }
+
+        // Keep a reference during a fresh/empty window without reviving old manual entries.
+        var previous = readings.Where(item => item.Kind == kind && item.Source == ClaudeQuotaReadingSource.Official &&
+                item.UsedPercent >= 1 && item.UsedPercent <= 100 && item.CostUsd > 0 && item.Tokens > 0)
+            .MaxBy(item => item.RecordedLocal);
+        return previous is null ? null : Calculate(previous.CostUsd, previous.Tokens, previous.UsedPercent,
+            previous.RecordedLocal, false, false);
+    }
+
+    private static ClaudeQuotaReference Calculate(decimal cost, long tokens, double percent, DateTimeOffset at,
+        bool current, bool incomplete)
+    {
+        var fraction = (decimal)percent / 100m;
+        return new ClaudeQuotaReference(cost / fraction, (long)Math.Min(long.MaxValue, tokens / fraction),
+            cost, tokens, percent, at, current, incomplete);
     }
 }
 

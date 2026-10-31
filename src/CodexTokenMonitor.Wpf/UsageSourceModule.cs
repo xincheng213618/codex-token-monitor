@@ -149,6 +149,9 @@ internal sealed class CodexUsageModule : UsageSourceModule
 
 internal sealed class ClaudeCodeUsageModule : UsageSourceModule
 {
+    public ClaudeQuotaReader OfficialQuota { get; } = new();
+    public string? QuotaFailure { get; set; }
+
     public ClaudeCodeUsageModule()
         : base(UsageSource.ClaudeCode)
     {
