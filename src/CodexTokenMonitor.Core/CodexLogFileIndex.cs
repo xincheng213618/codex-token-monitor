@@ -79,6 +79,21 @@ internal sealed class CodexLogFileIndex : IDisposable
         catch (UnauthorizedAccessException) { return false; }
     }
 
+    // Windows can preserve a rollout's original mtime while its open handle
+    // keeps appending. Only the verified content signature/range may exclude it.
+    public bool MightContainRangeOrChanged(string file, DateTimeOffset start, DateTimeOffset end)
+    {
+        if (!entries.TryGetValue(file, out var entry)) return true;
+        try
+        {
+            using var stream = Open(file);
+            return entry.Signature != Identify(file, stream) ||
+                entry.First is not null && entry.Last >= start && entry.First < end;
+        }
+        catch (IOException) { return true; }
+        catch (UnauthorizedAccessException) { return true; }
+    }
+
     private static FileStream Open(string file) =>
         new(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 

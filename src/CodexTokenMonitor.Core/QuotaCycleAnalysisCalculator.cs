@@ -105,15 +105,61 @@ internal static class QuotaCycleAnalysisCalculator
 
         var samples = BuildSamples(start, usageRows, timeline);
         var analysis = BuildFromSamples(period, samples, bandSizePercent, cancellationToken);
-        var calibrationAnalysis = cacheOnly || bandSizePercent == DefaultBandSizePercent
-            ? null
-            : BuildFromSamples(period, samples, DefaultBandSizePercent, cancellationToken);
+        var calibrationAnalysis = BuildCalibrationFromSamples(period, samples, cancellationToken);
         return analysis with
         {
             CalibrationAnalysis = calibrationAnalysis,
             // Forecast throughput uses original event times, not the accumulated
             // usage assigned to a later quota anchor by the cost analysis.
             UsageSamples = usageRows.Select(QuotaCycleUsageSample.From).ToArray()
+        };
+    }
+
+    // A displayed 0% -> 1% movement includes the rounded reset boundary. Usage
+    // after the last increase has no measured denominator yet. Neither edge is
+    // independent capacity evidence. Start at the first interior percentage,
+    // stop at the last increase below 100%, and group from that starting point.
+    internal static QuotaCycleAnalysisResult BuildCalibrationFromSamples(
+        CodexQuotaCycle period,
+        IReadOnlyList<QuotaCycleAnalysisSample> source,
+        CancellationToken cancellationToken = default,
+        IEnumerable<PricePreset>? priceCatalog = null)
+    {
+        var samples = source.Where(item => item.Usage is not null)
+            .OrderBy(item => item.TimestampLocal).ToArray();
+        var first = Array.FindIndex(samples, item => item.UsedPercent >= 1m && item.UsedPercent < 100m);
+        if (first < 0)
+            return QuotaCycleAnalysisResult.Empty(period, "尚无完整的内部额度区间，暂用历史校准");
+        var accepted = samples[first].UsedPercent;
+        var last = first;
+        for (var i = first + 1; i < samples.Length; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (samples[i].UsedPercent >= 100m) break;
+            if (samples[i].UsedPercent > accepted + MinimumQuotaMovement)
+            {
+                accepted = samples[i].UsedPercent;
+                last = i;
+            }
+        }
+        if (last == first)
+            return QuotaCycleAnalysisResult.Empty(period, "尚无完整的内部额度区间，暂用历史校准");
+        var offset = samples[first].UsedPercent;
+        var evidence = samples.Skip(first).Take(last - first + 1)
+            .Select((item, i) => item with
+            {
+                UsedPercent = item.UsedPercent - offset,
+                Usage = i == 0 ? new TokenUsageBucket { StartLocal = item.TimestampLocal } : item.Usage
+            }).ToArray();
+        var analysis = BuildFromSamples(period, evidence, DefaultBandSizePercent,
+            cancellationToken, priceCatalog);
+        return analysis with
+        {
+            Bands = analysis.Bands.Select(b => b with
+            {
+                UsedFromPercent = b.UsedFromPercent + offset,
+                UsedToPercent = b.UsedToPercent + offset
+            }).ToArray()
         };
     }
 

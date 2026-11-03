@@ -17,6 +17,7 @@ internal sealed class CodexUsageReader
     internal CodexAppServerQuotaReader AppServerQuota => AppServerQuotaReader;
 
     private LiveFileTailReader UsageTailReader = new();
+    private readonly ConcurrentDictionary<string, byte> RepeatedUsageKeys = new(StringComparer.Ordinal);
     private LiveFileTailReader QuotaTailReader = new();
     private readonly CodexQuotaCycleReader CycleReader = new();
     private readonly CodexAppServerQuotaReader AppServerQuotaReader = new();
@@ -1412,7 +1413,7 @@ internal sealed class CodexUsageReader
             var date = DateOnly.FromDateTime(dayStart.DateTime);
             // Deduplication is scoped to a day, matching usage_events' key and
             // the existing per-day reader when a turn continues past midnight.
-            var events = UsageEventMerger.Merge(cache.GetDetailEvents(date, cancellationToken)
+            var events = MergeUsageEvents(cache.GetDetailEvents(date, cancellationToken)
                 .Concat(eventsByDay[date]));
             eventsByDay.Remove(date);
             var dayEnd = dayStart.AddDays(1);
@@ -1591,7 +1592,7 @@ internal sealed class CodexUsageReader
                         detailEnd,
                         useLiveCursor: true,
                         cancellationToken: cancellationToken);
-                    detailEvents = UsageEventMerger.Merge(cache.GetDetailEvents(date, cancellationToken)
+                    detailEvents = MergeUsageEvents(cache.GetDetailEvents(date, cancellationToken)
                         .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1)));
                     mergedBucket = CreateBucketFromMergedEvents(dayStart, detailEvents);
@@ -1697,10 +1698,11 @@ internal sealed class CodexUsageReader
                         scanEnd,
                         useLiveCursor: true,
                         cancellationToken: cancellationToken);
-                    var mergedEvents = UsageEventMerger.Merge(cachedEvents
+                    var mergedEvents = MergeUsageEvents(cachedEvents
                         .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
                     var mergedBucket = CreateBucketFromMergedEvents(dayStart, mergedEvents);
+                    replaceDetails |= cachedEvents.Any(e => RepeatedUsageKeys.ContainsKey(UsageIdentity(e)));
                     var isComplete = dayStart < todayStart && scanEnd >= dayEnd && newEventsResult.IsComplete;
                     cache.Put(
                         mergedBucket,
@@ -1719,7 +1721,7 @@ internal sealed class CodexUsageReader
         }
 
         var fullEventsResult = ReadEventsUncached(startLocal, endLocal, cancellationToken: cancellationToken);
-        var fullEvents = UsageEventMerger.Merge(cachedEvents.Concat(fullEventsResult.Events));
+        var fullEvents = MergeUsageEvents(cachedEvents.Concat(fullEventsResult.Events));
         var fullBucket = CreateBucketFromMergedEvents(dayStart, fullEvents);
         var completeHistoricalDay = dayStart < todayStart && startLocal == dayStart && endLocal >= dayEnd && fullEventsResult.IsComplete;
         if (startLocal == dayStart)
@@ -1839,7 +1841,7 @@ internal sealed class CodexUsageReader
             }
         }
 
-        return new UsageEventScanResult(UsageEventMerger.Merge(events), isComplete);
+        return new UsageEventScanResult(MergeUsageEvents(events), isComplete);
     }
 
     private bool ReadEventFile(
@@ -1855,12 +1857,7 @@ internal sealed class CodexUsageReader
             var replayFilter = new SubagentReplayFilter();
             return fileIndex.Read(file, startLocal, endLocal, line =>
             {
-                if (!replayFilter.ShouldReadTokenCount(line))
-                {
-                    return;
-                }
-
-                var usageEvent = TryReadUsageEvent(line, startLocal, endLocal, replayFilter.ModelId, replayFilter.ServiceTier);
+                var usageEvent = ReadFilteredUsageEvent(line, startLocal, endLocal, replayFilter);
                 if (usageEvent is not null)
                 {
                     events.Add(usageEvent);
@@ -1893,12 +1890,7 @@ internal sealed class CodexUsageReader
                 return false;
             }
 
-            if (!replayFilter.ShouldReadTokenCount(line))
-            {
-                return true;
-            }
-
-            var usageEvent = TryReadUsageEvent(line, startLocal, endLocal, replayFilter.ModelId, replayFilter.ServiceTier);
+            var usageEvent = ReadFilteredUsageEvent(line, startLocal, endLocal, replayFilter);
             if (usageEvent is not null)
             {
                 events.Add(usageEvent);
@@ -2038,12 +2030,11 @@ internal sealed class CodexUsageReader
         DateTimeOffset startLocal,
         DateTimeOffset endLocal)
     {
-        // Session contents can extend beyond their preserved file mtime (including
-        // copied history). Historical batches enumerate all files, then the
-        // content-range index skips verified unchanged, unrelated files. Only
-        // live tail polling uses mtime to narrow the candidates.
+        // Live writers can retain the creation-time mtime for days. Discover
+        // candidates by verified content ranges and signatures, just as history
+        // does, then let the tail cursor read only newly appended bytes.
         var incremental = IsLiveRange(startLocal, endLocal);
-        var startUtc = startLocal.Subtract(TimeSpan.FromDays(1)).UtcDateTime;
+        using var fileIndex = incremental ? new CodexLogFileIndex() : null;
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -2058,19 +2049,7 @@ internal sealed class CodexUsageReader
                 continue;
             }
 
-            FileInfo info;
-            try
-            {
-                info = new FileInfo(file);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (info.LastWriteTimeUtc >= startUtc ||
-                UsageTailReader.IsTracked(file) ||
-                QuotaTailReader.IsTracked(file))
+            if (fileIndex!.MightContainRangeOrChanged(file, startLocal, endLocal))
             {
                 yield return file;
             }
@@ -2216,10 +2195,9 @@ internal sealed class CodexUsageReader
             return;
         }
 
-        // Keep the same one-day look-back used by EnumerateJsonlFiles. A file
-        // appended after this point will get a fresh mtime and be discovered on
-        // the next pass, while inactive historical files no longer pin state.
-        var cutoffUtc = startLocal.Subtract(TimeSpan.FromDays(1)).UtcDateTime;
+        // An old mtime does not mean an inactive writer. Keep cursors and model /
+        // cumulative context for existing files so each poll reads only the tail.
+        var cutoffUtc = DateTime.MinValue;
         UsageTailReader.PruneBeforeUtc(cutoffUtc);
         QuotaTailReader.PruneBeforeUtc(cutoffUtc);
         PruneReplayFiltersBeforeUtc(UsageReplayFilters, cutoffUtc);
@@ -2481,7 +2459,7 @@ internal sealed class CodexUsageReader
 
     internal static bool IsWeeklyWindow(int windowMinutes) => windowMinutes == WeeklyWindowMinutes;
 
-    private static bool ReadFile(
+    private bool ReadFile(
         string file,
         DateTimeOffset startLocal,
         DateTimeOffset endLocal,
@@ -2495,12 +2473,8 @@ internal sealed class CodexUsageReader
             var replayFilter = new SubagentReplayFilter();
             return fileIndex.Read(file, startLocal, endLocal, line =>
             {
-                if (!replayFilter.ShouldReadTokenCount(line))
-                {
-                    return;
-                }
-
-                ReadLine(line, startLocal, endLocal, summary, dailyBuckets, replayFilter.ModelId, replayFilter.ServiceTier);
+                var usageEvent = ReadFilteredUsageEvent(line, startLocal, endLocal, replayFilter);
+                if (usageEvent is not null) AddUsageEvent(usageEvent, summary, dailyBuckets);
             }, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -2513,20 +2487,11 @@ internal sealed class CodexUsageReader
         }
     }
 
-    private static void ReadLine(
-        string line,
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
+    private static void AddUsageEvent(
+        TokenUsageEvent usageEvent,
         TokenUsageSummary summary,
-        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
-        string? modelId, string? serviceTier)
+        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets)
     {
-        var usageEvent = TryReadUsageEvent(line, startLocal, endLocal, modelId, serviceTier);
-        if (usageEvent is null)
-        {
-            return;
-        }
-
         summary.Add(usageEvent);
 
         var dayKey = DateOnly.FromDateTime(usageEvent.Timestamp.DateTime);
@@ -2540,6 +2505,25 @@ internal sealed class CodexUsageReader
         }
 
         bucket.Add(usageEvent);
+    }
+
+    private IReadOnlyList<TokenUsageEvent> MergeUsageEvents(IEnumerable<TokenUsageEvent> events) =>
+        UsageEventMerger.Merge(events.Where(e => !RepeatedUsageKeys.ContainsKey(UsageIdentity(e))));
+
+    private static string UsageIdentity(TokenUsageEvent e) => UsageEventMerger.GetStableKey(e with { Key = null });
+
+    private TokenUsageEvent? ReadFilteredUsageEvent(string line, DateTimeOffset start, DateTimeOffset end,
+        SubagentReplayFilter filter)
+    {
+        var accepted = filter.ShouldReadUsage(line);
+        if (!accepted && !filter.IsRepeatedUsage) return null;
+        var usage = TryReadUsageEvent(line, start, end, filter.ModelId, filter.ServiceTier);
+        if (usage is not null && filter.IsRepeatedUsage)
+        {
+            RepeatedUsageKeys.TryAdd(UsageIdentity(usage), 0);
+            return null;
+        }
+        return usage;
     }
 
     private static TokenUsageEvent? TryReadUsageEvent(

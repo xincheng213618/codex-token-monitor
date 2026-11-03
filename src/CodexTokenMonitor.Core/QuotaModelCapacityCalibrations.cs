@@ -258,9 +258,13 @@ internal static class QuotaModelCapacityEstimator
 
     public static decimal? FitFullQuotaCost(
         QuotaCycleAnalysisBand band,
+        IReadOnlyCollection<QuotaModelCapacityEstimate> estimates) => FitFullQuotaCost(band.Models, estimates);
+
+    public static decimal? FitFullQuotaCost(
+        IReadOnlyList<QuotaCycleModelShare> models,
         IReadOnlyCollection<QuotaModelCapacityEstimate> estimates)
     {
-        if (band.Models.Any(item => !item.IsPriced && item.QuotaSharePercent > 0m))
+        if (models.Any(item => !item.IsPriced && (item.Tokens > 0 || item.QuotaSharePercent > 0m)))
         {
             return null;
         }
@@ -269,7 +273,7 @@ internal static class QuotaModelCapacityEstimator
             .Where(item => item.AverageFullQuotaCost > 0m)
             .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First().AverageFullQuotaCost, StringComparer.OrdinalIgnoreCase);
-        var modelCosts = band.Models
+        var modelCosts = models
             .Where(item => item.IsPriced && item.EquivalentCost > 0m)
             .GroupBy(item => CodexModelCost.ModelKey(item.ModelId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.Sum(item => item.EquivalentCost), StringComparer.OrdinalIgnoreCase);
@@ -322,7 +326,8 @@ internal static class QuotaModelCapacityCalibrationService
         var saved = ReadSaved(period, result);
         if (diagnostics.Warnings.Count > 0)
             return new QuotaModelCapacityReport(planName, Array.Empty<QuotaModelCapacityEstimate>());
-        var pureEstimates = QuotaModelCapacityEstimator.EstimatePureModels(result);
+        var evidence = result.CalibrationAnalysis ?? result;
+        var pureEstimates = QuotaModelCapacityEstimator.EstimatePureModels(evidence);
         QuotaModelCapacityCalibrationStore.Upsert(planName, period, pureEstimates);
 
         var currentModels = result.Models
@@ -382,7 +387,7 @@ internal static class QuotaModelCapacityCalibrationService
             .Where(item => item is not null)
             .Cast<QuotaModelCapacityEstimate>()
             .ToList();
-        var inferred = QuotaModelCapacityEstimator.InferMixedModels(result, approved)
+        var inferred = QuotaModelCapacityEstimator.InferMixedModels(evidence, approved)
             .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
         var baselines = approved
             .Concat(inferred.Values)
@@ -390,12 +395,12 @@ internal static class QuotaModelCapacityCalibrationService
         // A cycle consisting of mixed bands can still identify capacities when
         // its model proportions vary. It does not require an older pure band.
         var mixedBaselines = currentModels.Any(model => baselines.All(item => item.ModelId != model))
-            ? RobustQuotaModelCapacityEstimator.EstimateMixedBaselines(result, cancellationToken)
+            ? RobustQuotaModelCapacityEstimator.EstimateMixedBaselines(evidence, cancellationToken)
             : Array.Empty<QuotaModelCapacityEstimate>();
         baselines.AddRange(mixedBaselines.Where(item =>
             baselines.All(existing => !string.Equals(existing.ModelId, item.ModelId, StringComparison.OrdinalIgnoreCase))));
         var regressed = RobustQuotaModelCapacityEstimator.RegressCurrentPeriod(
-                result,
+                evidence,
                 baselines,
                 cancellationToken)
             .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);
@@ -404,7 +409,7 @@ internal static class QuotaModelCapacityCalibrationService
         if (regressed.Count == 0)
         {
             regressed = QuotaModelCapacityEstimator.BlendMixedModels(
-                    result,
+                    evidence,
                     baselines,
                     baselines.Select(item => item.ModelId).ToList())
                 .ToDictionary(item => item.ModelId, StringComparer.OrdinalIgnoreCase);

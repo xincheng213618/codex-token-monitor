@@ -19,6 +19,62 @@ internal sealed class SubagentReplayFilter
     private bool waitingForLiveTaskStart;
     private bool liveTrafficStarted = true;
     private DateTimeOffset? lastReplayTimestamp;
+    private UsageCounters? previousTotal;
+    private UsageCounters? previousLast;
+    private string? usageSessionId;
+    public bool IsRepeatedUsage { get; private set; }
+
+    // Quota-only updates repeat the last request's usage with an unchanged
+    // cumulative counter. Keep those updates for quota scanning, but not tokens.
+    public bool ShouldReadUsage(string line)
+    {
+        IsRepeatedUsage = false;
+        var accepted = ShouldReadTokenCount(line);
+        if (!accepted && !line.Contains("\"session_meta\"", StringComparison.Ordinal)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("payload", out var payload) ||
+                payload.ValueKind != JsonValueKind.Object) return accepted;
+            if (!accepted)
+            {
+                if (payload.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+                {
+                    var next = id.GetString();
+                    if (usageSessionId is not null && next != usageSessionId)
+                        (previousTotal, previousLast) = (null, null);
+                    usageSessionId = next;
+                }
+                return false;
+            }
+            if (!payload.TryGetProperty("info", out var info) || info.ValueKind != JsonValueKind.Object)
+                return true;
+            var total = UsageCounters.Read(info, "total_token_usage");
+            var last = UsageCounters.Read(info, "last_token_usage");
+            IsRepeatedUsage = total is not null && last is not null && total == previousTotal &&
+                (last == previousLast || last.Value.Input == 0 && last.Value.Output == 0);
+            if (total is not null)
+                (previousTotal, previousLast) = (total, last);
+            return !IsRepeatedUsage;
+        }
+        catch (JsonException) { return accepted; }
+    }
+
+    private readonly record struct UsageCounters(long Input, long Cached, long CacheWrite,
+        long Output, long Reasoning, long Total)
+    {
+        public static UsageCounters? Read(JsonElement info, string name)
+        {
+            if (!info.TryGetProperty(name, out var usage) || usage.ValueKind != JsonValueKind.Object ||
+                !usage.TryGetProperty("total_tokens", out var total) || total.ValueKind != JsonValueKind.Number ||
+                !total.TryGetInt64(out _)) return null;
+            long Get(string key) => usage.TryGetProperty(key, out var v) &&
+                v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : 0;
+            return new(Get("input_tokens"), Get("cached_input_tokens"), Get("cache_write_input_tokens"),
+                Get("output_tokens"), Get("reasoning_output_tokens"), Get("total_tokens"));
+        }
+    }
 
     public bool ShouldReadTokenCount(string line)
     {

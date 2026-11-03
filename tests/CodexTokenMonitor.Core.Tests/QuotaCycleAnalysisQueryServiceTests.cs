@@ -184,7 +184,7 @@ public sealed class QuotaCycleAnalysisQueryServiceTests
         {
             CalibrationCalls++;
             PreviousPeriod = previousPeriod;
-            CalibratedBandSizePercent = analysis.BandSizePercent;
+            CalibratedBandSizePercent = (analysis.CalibrationAnalysis ?? analysis).BandSizePercent;
             DuringCalibration?.Invoke();
             return Capacities;
         }

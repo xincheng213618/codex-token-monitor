@@ -238,11 +238,12 @@ public partial class QuotaCycleAnalysisWindow : Window
         EquivalentCostNote.ToolTip = result.UnattributedTokens > 0
             ? $"包含显示 0% 后的 {result.UnattributedTokens / 1_000_000d:N3}M Token / {FormatMoney(result.UnattributedCost)}；总用量继续累计，这部分没有可观测的百分比变化，不参与额度分段和拟合。"
             : null;
-        FullEstimateValue.Text = FormatMoney(result.EstimatedFullQuotaCost);
-        FullEstimateNote.Text = result.Period.IsCurrent
-            ? "含当前未跳点用量 · 与顶部 7d 同步"
-            : "全部分段按额度跌幅加权";
-        if (result.PostZeroUsage is not null) FullEstimateNote.Text = "按可见额度跌幅 · 0% 后单独统计";
+        var calibratedCapacity = QuotaModelCapacityEstimator.FitFullQuotaCost(result.Models, capacities.Estimates);
+        FullEstimateCaption.Text = calibratedCapacity is not null ? "100% 容量估算" : "本期直接外推（待校准）";
+        FullEstimateValue.Text = FormatMoney(calibratedCapacity ?? result.EstimatedFullQuotaCost);
+        FullEstimateNote.Text = $"本期直接外推 {FormatMoney(result.EstimatedFullQuotaCost)} · 已用 {result.ObservedQuotaDropPercent:N1}%";
+        FullEstimateValue.ToolTip = "容量估算按当前模型构成结合历史与本期完整区间校准。" +
+            "本期直接外推 = 已记录代价 ÷ 可见额度跌幅 × 100%，包含首段与尚未跳点用量，周期初期可能明显偏离。";
         VolatilityValue.Text = $"{result.VolatilityPercent:N0}%";
         VolatilityNote.Text = $"{VolatilityLabel(result.VolatilityPercent)} · {FormatMoney(result.MinimumBandEstimate)}–{FormatMoney(result.MaximumBandEstimate)}";
         DominantModelValue.Text = QuotaCycleModelPalette.ShortName(result.CostDominantModel);

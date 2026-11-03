@@ -71,9 +71,8 @@ internal sealed class QuotaCycleAnalysisQueryService(
         token.ThrowIfCancellationRequested();
         // A reader may preserve its old fallback contract and return partial
         // samples. Stop before any calibration writes, even when HasData is true.
-        var calibrationAnalysis = analysis.CalibrationAnalysis ?? analysis;
-        var capacities = analysis.HasData && calibrationAnalysis.HasData && diagnostics.Warnings.Count == 0
-            ? source.BuildCapacities(range.Period, calibrationAnalysis, previousPeriod, token)
+        var capacities = analysis.HasData && diagnostics.Warnings.Count == 0
+            ? source.BuildCapacities(range.Period, analysis, previousPeriod, token)
             : EmptyCapacities();
         token.ThrowIfCancellationRequested();
         return new(analysis, capacities, range.Reason);

@@ -350,6 +350,10 @@ internal static class AnalysisProbe
                 QuotaModelCapacitySource.CurrentPeriodApproved, period.PeriodStart)
         });
         Invoke(window, "ApplyResult", analysis, capacities);
+        Require(Get<TextBlock>(window, "FullEstimateCaption").Text == "100% 容量估算" &&
+                Get<TextBlock>(window, "FullEstimateValue").Text == $"${1344m:N0}" &&
+                Get<TextBlock>(window, "FullEstimateNote").Text.Contains($"${800m:N0}"),
+            "calibrated capacity and direct period extrapolation remain distinct and visible");
         var capacityText = Get<TextBlock>(window, "ModelTokenCapacityValue").Text;
         Require(capacityText.Contains("600.0M Token") && capacityText.Contains("140.0M Token") &&
                 !capacityText.Contains('×'), "full quota tokens render without a reference model or multiplier");

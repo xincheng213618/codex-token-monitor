@@ -1098,6 +1098,9 @@ internal sealed partial class UsageCacheStore
                 UPDATE usage_days SET is_complete = 0
                 WHERE events > 0 AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'service-tier-v1');
                 INSERT OR IGNORE INTO cache_maintenance VALUES ('service-tier-v1');
+                UPDATE usage_days SET is_complete = 0, scanned_through_local = NULL
+                WHERE events > 0 AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'codex-live-content-and-usage-v1');
+                INSERT OR IGNORE INTO cache_maintenance VALUES ('codex-live-content-and-usage-v1');
                 """);
         }
         // ZCode logs carry model.modelId; re-scan days whose zcode events were

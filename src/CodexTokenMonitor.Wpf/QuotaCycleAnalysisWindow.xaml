@@ -95,7 +95,7 @@
             </Border>
             <Border Grid.Column="2" Style="{StaticResource Card}" Margin="6,0">
                 <StackPanel>
-                    <TextBlock Style="{StaticResource MetricLabel}" Text="100% → 0% 折算" />
+                    <TextBlock x:Name="FullEstimateCaption" Style="{StaticResource MetricLabel}" Text="100% 容量估算" />
                     <TextBlock x:Name="FullEstimateValue" Style="{StaticResource MetricValue}" Text="-" />
                     <TextBlock x:Name="FullEstimateNote" Style="{StaticResource MetricNote}" Text="按全部可归因区间加权" />
                 </StackPanel>

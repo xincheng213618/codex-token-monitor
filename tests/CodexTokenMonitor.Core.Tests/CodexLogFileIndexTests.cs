@@ -8,6 +8,20 @@ public sealed class CodexLogFileIndexTests
     private static readonly DateTimeOffset Day = new(2000, 1, 1, 0, 0, 0, TimeSpan.FromHours(8));
 
     [Fact]
+    public void LiveCandidatesFollowContentAndDetectAppendWithUnchangedMtime()
+    {
+        using var env = new EnvironmentScope();
+        File.WriteAllText(env.Log, Line(Day) + "\n");
+        var mtime = File.GetLastWriteTimeUtc(env.Log);
+        using var index = new CodexLogFileIndex();
+        Read(index, env.Log, Day);
+        Assert.False(index.MightContainRangeOrChanged(env.Log, Day.AddDays(1), Day.AddDays(2)));
+        File.AppendAllText(env.Log, Line(Day.AddDays(1)) + "\n");
+        File.SetLastWriteTimeUtc(env.Log, mtime);
+        Assert.True(index.MightContainRangeOrChanged(env.Log, Day.AddDays(1), Day.AddDays(2)));
+    }
+
+    [Fact]
     public void RestartSkipsUnchangedUnrelatedFileButRetainsCrossDayRecords()
     {
         using var env = new EnvironmentScope();
