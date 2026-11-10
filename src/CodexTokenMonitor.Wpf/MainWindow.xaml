@@ -280,13 +280,26 @@
             <UniformGrid Columns="9" Rows="1">
                 <Border Style="{StaticResource MetricTile}" ToolTip="Input · 包含缓存读取和缓存写入的总输入"><StackPanel><TextBlock Text="输入" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="InputValue" Text="{Binding Snapshot.Input}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" ToolTip="Cached · 缓存命中的输入"><StackPanel><TextBlock Text="缓存读取" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CachedValue" Text="{Binding Snapshot.Cached}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Border Style="{StaticResource MetricTile}" ToolTip="Cache Write · 创建缓存的输入"><StackPanel><TextBlock Text="缓存写入" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CacheWriteValue" Text="{Binding Snapshot.CacheWrite}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Border x:Name="CacheWriteTile" Style="{StaticResource MetricTile}" Visibility="Collapsed" ToolTip="Cache Write · 创建缓存的输入"><StackPanel><TextBlock Text="缓存写入" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CacheWriteValue" Text="{Binding Snapshot.CacheWrite}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" ToolTip="Uncached · 未命中缓存的输入"><StackPanel><TextBlock Text="未缓存" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="UncachedValue" Text="{Binding Snapshot.Uncached}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" ToolTip="Output · 输出 Token"><StackPanel><TextBlock Text="输出" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="OutputValue" Text="{Binding Snapshot.Output}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" ToolTip="Reasoning · 推理输出 Token"><StackPanel><TextBlock Text="推理" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="ReasoningValue" Text="{Binding Snapshot.Reasoning}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" ToolTip="Cache Ratio · 缓存读取占总输入的比例"><StackPanel><TextBlock Text="缓存命中" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CacheRatioValue" Text="{Binding Snapshot.CacheRatio}" Style="{StaticResource MetricValue}" Foreground="{StaticResource AccentBrush}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" ToolTip="Events · 用量事件数"><StackPanel><TextBlock Text="事件数" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="EventsValue" Text="{Binding Snapshot.Events}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" BorderThickness="0" ToolTip="Coding Time · 以 10 分钟空闲间隔计算的活跃时长"><StackPanel><TextBlock Text="活跃时长" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CodingTimeValue" Text="{Binding Snapshot.CodingTime}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
+                <Button x:Name="InteractionCountButton" Style="{StaticResource ToolButton}" Click="InteractionCountButton_Click"
+                        Background="{StaticResource AccentSoftBrush}" BorderThickness="1,0,0,0" Padding="12,7"
+                        HorizontalContentAlignment="Stretch" AutomationProperties.Name="交互次数，打开 Codex 使用节律">
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock Text="›" DockPanel.Dock="Right" Foreground="{StaticResource AccentBrush}" />
+                            <TextBlock Text="交互次数" Style="{StaticResource MetricCaption}" />
+                        </DockPanel>
+                        <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left">
+                            <TextBlock x:Name="InteractionCountValue" Text="—" Style="{StaticResource MetricValue}" Foreground="{StaticResource AccentBrush}" />
+                        </Viewbox>
+                    </StackPanel>
+                </Button>
             </UniformGrid>
         </Border>
         <Grid x:Name="UsageDetailsPanel" Grid.Row="6" Visibility="{Binding ShowContent, Converter={StaticResource UsageVisibility}}" TextElement.FontWeight="Normal">
@@ -318,6 +331,8 @@
                 <TextBlock x:Name="EmptyUsageTitle" Text="{Binding Snapshot.EmptyTitle}" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock x:Name="EmptyUsagePeriod" Text="{Binding Snapshot.EmptyPeriod}" Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" />
                 <TextBlock x:Name="EmptyUsageHint" Text="{Binding Snapshot.EmptyHint}" Margin="0,14,0,0" Foreground="{StaticResource MutedBrush}" FontSize="13" TextWrapping="Wrap" />
+                <Button x:Name="EmptyRhythmButton" Style="{StaticResource ToolButton}" Content="查看 Codex 使用节律"
+                        Click="InteractionCountButton_Click" HorizontalAlignment="Center" Margin="0,12,0,0" />
             </StackPanel>
         </Border>
         <DockPanel Grid.Row="7" Margin="2,10,0,0" LastChildFill="True">

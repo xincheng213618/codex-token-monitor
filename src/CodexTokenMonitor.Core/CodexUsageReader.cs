@@ -1999,31 +1999,8 @@ internal sealed class CodexUsageReader
         return first <= second ? first : second;
     }
 
-    private static IEnumerable<string> GetLogRoots()
-    {
-        var codexHome = UsageLogPaths.GetOverrideRoot(UsageSource.Codex);
-        if (string.IsNullOrWhiteSpace(codexHome))
-        {
-            codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
-        }
-        if (string.IsNullOrWhiteSpace(codexHome))
-        {
-            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            codexHome = Path.Combine(profile, ".codex");
-        }
-
-        var sessions = Path.Combine(codexHome, "sessions");
-        if (Directory.Exists(sessions))
-        {
-            yield return sessions;
-        }
-
-        var archived = Path.Combine(codexHome, "archived_sessions");
-        if (Directory.Exists(archived))
-        {
-            yield return archived;
-        }
-    }
+    private static IEnumerable<string> GetLogRoots() =>
+        UsageLogPaths.GetCodexLogRoots(UsageLogPaths.GetCodexHome());
 
     private IEnumerable<string> EnumerateJsonlFiles(
         string root,

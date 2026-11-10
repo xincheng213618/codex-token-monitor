@@ -105,8 +105,22 @@ internal static class ClaudeOAuthCredentials
 
     private static IEnumerable<string> DesktopRoots()
     {
-        if (!OperatingSystem.IsWindows()) yield break;
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return OperatingSystem.IsWindows()
+            ? DesktopRoots(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData))
+            : [];
+    }
+
+    internal static IEnumerable<string> DesktopRoots(string local, string roaming)
+    {
+        // Newer MSIX builds move their Electron profile out of the package cache.
+        var desktopData = Path.Combine(local, "Claude-Data");
+        if (Directory.Exists(desktopData))
+        {
+            foreach (var root in Directory.EnumerateDirectories(desktopData, "claude_*"))
+                if (File.Exists(Path.Combine(root, "config.json"))) yield return root;
+        }
+
         var packages = Path.Combine(local, "Packages");
         if (Directory.Exists(packages))
         {
@@ -116,7 +130,7 @@ internal static class ClaudeOAuthCredentials
                 if (File.Exists(Path.Combine(root, "config.json"))) yield return root;
             }
         }
-        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Claude");
+        yield return Path.Combine(roaming, "Claude");
     }
 
     internal static byte[] DecryptElectron(byte[] encrypted, byte[] key)

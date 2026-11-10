@@ -1518,6 +1518,7 @@ public partial class MainWindow : Window
             tablePresets,
             includeModels: SupportsModelCost(source),
             includeQuota: source == UsageSource.Codex,
+            includeCacheWrite: source != UsageSource.Codex,
             rows);
         breakdownDisplay = new BreakdownDisplay(range, source, buckets, rows, quotaSnapshots, priceSettings);
     }
@@ -2053,6 +2054,7 @@ public partial class MainWindow : Window
         CycleBox.Visibility = module.Mode == RangeMode.Cycle ? Visibility.Visible : Visibility.Collapsed;
         var now = RangeNow(module);
         var range = GetSelectedRange();
+        UpdateInteractionCount(module.Source, range);
         if (module.Mode == RangeMode.Cycle)
         {
             PreviousButton.IsEnabled = CycleBox.SelectedIndex >= 0 && CycleBox.SelectedIndex < CycleBox.Items.Count - 1;

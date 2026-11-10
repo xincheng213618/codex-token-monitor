@@ -25,7 +25,8 @@ internal sealed class BreakdownGridAdapter : IDisposable
             eventBreakdown: false,
             Array.Empty<PricePreset>(),
             includeModels: true,
-            includeQuota: true);
+            includeQuota: true,
+            includeCacheWrite: false);
     }
 
     public BreakdownScrollAnchor? CaptureAnchor()
@@ -52,6 +53,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
         IReadOnlyList<PricePreset> tablePresets,
         bool includeModels,
         bool includeQuota,
+        bool includeCacheWrite,
         IReadOnlyList<BreakdownRow> rows)
     {
         if (disposed)
@@ -60,7 +62,7 @@ internal sealed class BreakdownGridAdapter : IDisposable
         }
 
         var anchor = CaptureAnchor();
-        ApplyColumns(range, eventBreakdown, tablePresets, includeModels, includeQuota);
+        ApplyColumns(range, eventBreakdown, tablePresets, includeModels, includeQuota, includeCacheWrite);
         grid.ItemsSource = rows;
         RestoreAnchor(anchor);
     }
@@ -95,9 +97,10 @@ internal sealed class BreakdownGridAdapter : IDisposable
         bool eventBreakdown,
         IReadOnlyList<PricePreset> tablePresets,
         bool includeModels,
-        bool includeQuota)
+        bool includeQuota,
+        bool includeCacheWrite)
     {
-        var expected = BuildColumnDefinitions(range, eventBreakdown, tablePresets, includeModels, includeQuota);
+        var expected = BuildColumnDefinitions(range, eventBreakdown, tablePresets, includeModels, includeQuota, includeCacheWrite);
         if (ColumnsMatch(expected))
         {
             ApplyColumnWidths(expected);
@@ -126,7 +129,8 @@ internal sealed class BreakdownGridAdapter : IDisposable
         bool eventBreakdown,
         IReadOnlyList<PricePreset> tablePresets,
         bool includeModels,
-        bool includeQuota)
+        bool includeQuota,
+        bool includeCacheWrite)
     {
         var columns = new List<BreakdownColumnDefinition>
         {
@@ -134,10 +138,11 @@ internal sealed class BreakdownGridAdapter : IDisposable
             new("Total", nameof(BreakdownRow.Total), 78, true),
             new("Input", nameof(BreakdownRow.Input), 78, true),
             new("Cached", nameof(BreakdownRow.Cached), 82, true),
-            new("Cache Write", nameof(BreakdownRow.CacheWrite), 92, true),
             new("Uncached", nameof(BreakdownRow.Uncached), 88, true),
             new("Output", nameof(BreakdownRow.Output), 76, true)
         };
+        if (includeCacheWrite)
+            columns.Insert(4, new("Cache Write", nameof(BreakdownRow.CacheWrite), 92, true));
 
         if (includeModels)
         {

@@ -1,0 +1,90 @@
+<Window x:Class="CodexTokenMonitor.CodexRhythmWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:plot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
+        Title="Codex 使用节律" Width="980" Height="700" MinWidth="760" MinHeight="555"
+        WindowStartupLocation="CenterOwner" Background="{StaticResource CanvasBrush}"
+        Foreground="{StaticResource TextBrush}" FontFamily="Microsoft YaHei UI" FontSize="12"
+        UseLayoutRounding="True" ShowInTaskbar="False">
+    <Window.Resources>
+        <Style x:Key="RhythmGrid" TargetType="DataGrid" BasedOn="{StaticResource BaseDataGrid}">
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="AutoGenerateColumns" Value="False" />
+            <Setter Property="CanUserAddRows" Value="False" />
+            <Setter Property="CanUserResizeRows" Value="False" />
+        </Style>
+    </Window.Resources>
+    <Grid Margin="20,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <DockPanel Margin="0,0,0,12">
+            <Button x:Name="RefreshButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="更新统计"
+                    Click="Refresh_Click" VerticalAlignment="Center" Margin="14,0,0,0" />
+            <StackPanel>
+                <TextBlock Text="Codex 使用节律" FontSize="21" FontWeight="SemiBold" />
+                <TextBlock x:Name="SourceText" Text="点击「更新统计」读取本机会话。"
+                           Style="{StaticResource SectionDescription}" Margin="0,5,0,0" />
+            </StackPanel>
+        </DockPanel>
+        <Border Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="14,10" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock x:Name="CoverageText" Text="等待首次更新" FontWeight="SemiBold" TextWrapping="Wrap" />
+                <TextBlock x:Name="SilenceText" Text="更新后可查看每月交互情况、静默起点分布和逐日明细。"
+                           Style="{StaticResource SectionDescription}" Margin="0,5,0,0" />
+            </StackPanel>
+        </Border>
+        <TabControl Grid.Row="2" x:Name="RhythmTabs" Background="{StaticResource SurfaceBrush}">
+            <TabItem Header="月度概览">
+                <DataGrid x:Name="MonthGrid" Style="{StaticResource RhythmGrid}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="月份" Binding="{Binding Month, StringFormat=yyyy-MM}" Width="*" />
+                        <DataGridTextColumn Header="有效天数" Binding="{Binding Days}" Width="*" />
+                        <DataGridTextColumn Header="日交互次数中位" Binding="{Binding DailyMessages, StringFormat=0.#}" Width="1.3*" />
+                        <DataGridTextColumn Header="有消息的钟点数中位" Binding="{Binding ClockHours, StringFormat=0.#}" Width="1.6*" />
+                        <DataGridTextColumn Header="估算交互时长中位（小时）" Binding="{Binding InteractionHours, StringFormat=F1}" Width="2*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem Header="静默起点">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="1.25*" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <TextBlock Text="每个点代表一天最长静默的开始钟点。周表显示落点最集中的 6 小时范围内实际观测到的起止钟点。"
+                               Style="{StaticResource SectionDescription}" Margin="4,0,4,6" />
+                    <plot:WpfPlot x:Name="SilencePlot" Grid.Row="1" AutomationProperties.Name="每天最长静默的起点钟点分布" />
+                    <DataGrid x:Name="WeekGrid" Grid.Row="2" Style="{StaticResource RhythmGrid}" Margin="0,8,0,0">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="当周起始日" Binding="{Binding Monday, StringFormat=yyyy-MM-dd}" Width="*" />
+                            <DataGridTextColumn Header="起点最集中的时段" Binding="{Binding Window}" Width="1.5*" />
+                            <DataGridTextColumn Header="落在该时段的天数 / 样本" Binding="{Binding Coverage}" Width="1.5*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+            <TabItem Header="逐日明细">
+                <DataGrid x:Name="DayGrid" Style="{StaticResource RhythmGrid}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="日期" Binding="{Binding Date, StringFormat=yyyy-MM-dd}" Width="*" />
+                        <DataGridTextColumn Header="交互次数" Binding="{Binding Messages, TargetNullValue=—}" Width="*" />
+                        <DataGridTextColumn Header="有消息的钟点" Binding="{Binding ClockHours, TargetNullValue=—}" Width="*" />
+                        <DataGridTextColumn Header="交互时长（小时）" Binding="{Binding InteractionHours, StringFormat=F2, TargetNullValue=—}" Width="1.2*" />
+                        <DataGridTextColumn Header="最长静默起点" Binding="{Binding LongestSilence.Start, StringFormat=MM-dd HH:mm, FallbackValue=—}" Width="1.2*" />
+                        <DataGridTextColumn Header="最长静默终点" Binding="{Binding LongestSilence.End, StringFormat=MM-dd HH:mm, FallbackValue=—}" Width="1.2*" />
+                        <DataGridTextColumn Header="静默（小时）" Binding="{Binding LongestSilence.Hours, StringFormat=F2, FallbackValue=—}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+            <TabItem x:Name="LongGapsTab" Header="超过 24 小时">
+                <DataGrid x:Name="LongGapsGrid" Style="{StaticResource RhythmGrid}">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="静默起点" Binding="{Binding Start, StringFormat=yyyy-MM-dd HH:mm}" Width="*" />
+                        <DataGridTextColumn Header="静默终点" Binding="{Binding End, StringFormat=yyyy-MM-dd HH:mm}" Width="*" />
+                        <DataGridTextColumn Header="静默（小时）" Binding="{Binding Hours, StringFormat=F2}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+        </TabControl>
+        <TextBlock Grid.Row="3" Style="{StaticResource SectionDescription}" Margin="2,10,2,0"
+                   Text="按完整自然日汇总，排除记录首尾日期和缺少覆盖证据的日期。相邻消息间隔 ≤ 30 分钟计入交互时长，跨午夜按日拆分。最长静默按起点日期归属，跨记录缺口的间隔剔除。时长反映 Codex 消息节律，实际工作和睡眠需另行记录。" />
+    </Grid>
+</Window>

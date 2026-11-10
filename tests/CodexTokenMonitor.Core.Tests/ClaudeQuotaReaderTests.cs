@@ -122,6 +122,26 @@ public sealed class ClaudeQuotaReaderTests : IDisposable
     public void InvalidOrAbsentWindowsDoNotBecomeZeroQuota(string json) => Assert.Null(ClaudeQuotaReader.Parse(json, Now));
 
     [Fact]
+    public void MigratedDesktopProfileTakesPrecedenceOverLegacyLocations()
+    {
+        var local = Path.Combine(root, "Local");
+        var roaming = Path.Combine(root, "Roaming");
+        var migrated = Path.Combine(local, "Claude-Data", "claude_publisher");
+        var legacy = Path.Combine(local, "Packages", "Claude_publisher", "LocalCache", "Roaming", "Claude");
+        var standalone = Path.Combine(roaming, "Claude");
+        foreach (var profile in new[] { migrated, legacy, standalone })
+        {
+            Directory.CreateDirectory(profile);
+            File.WriteAllText(Path.Combine(profile, "config.json"), "{}");
+        }
+
+        Assert.Equal(new[] { migrated, legacy, standalone }, ClaudeOAuthCredentials.DesktopRoots(local, roaming));
+
+        File.Delete(Path.Combine(migrated, "config.json"));
+        Assert.Equal(new[] { legacy, standalone }, ClaudeOAuthCredentials.DesktopRoots(local, roaming));
+    }
+
+    [Fact]
     public void DesktopCredentialSelectionRequiresTheActiveAccountAndFirstPartyInferenceScope()
     {
         object Entry(string token) => new { token, expiresAt = Now.AddDays(1).ToUnixTimeMilliseconds() };

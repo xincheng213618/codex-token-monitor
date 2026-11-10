@@ -191,6 +191,7 @@ internal static partial class MainWindowProbe
             await CheckDayTimeZoneAsync(window, modules[UsageSource.ClaudeCode]);
             await CheckClaudeActivityPanelAsync(window, modules);
             await CheckStatusSpeedAsync(window, modules);
+            await CheckUsageRhythmAsync(window, codex);
             Require(!mainWasLoaded, "main Loaded lifecycle never entered");
 
             // Closing must keep the dispatcher alive while registered work
