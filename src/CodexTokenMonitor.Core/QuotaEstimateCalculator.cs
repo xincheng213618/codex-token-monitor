@@ -353,7 +353,7 @@ internal static class QuotaEstimateCalculator
         var usedCost = modelCost.QuotaEquivalentCost;
         var estimatedLimit = CodexModelCost.EstimateQuotaValue(window.Usage, window.UsedPercent);
         var detail = $"标准 API 等价 {modelCost.Format()}\n" +
-            $"订阅基准（含 Fast）{modelCost.FormatQuotaCost()}\n" +
+            $"订阅基准折算 {modelCost.FormatQuotaCost()}\n" +
             $"订阅折算 100% {FormatNullableMoney(estimatedLimit)}";
         var planText = plan.HasRecords
             ? $"{plan.PlanNames} · {FormatCny(plan.AmountCny)}"

@@ -151,11 +151,14 @@ internal sealed class ClaudeCodeUsageModule : UsageSourceModule
 {
     public ClaudeQuotaReader OfficialQuota { get; } = new();
     public string? QuotaFailure { get; set; }
+    public ClaudeFableResetReminder? FableReset { get; set; } = ClaudeFableResetReminder.Load();
 
     public ClaudeCodeUsageModule()
         : base(UsageSource.ClaudeCode)
     {
     }
+
+    public override bool SupportsCycle => QuotaCycles.Count > 0;
 
     /// <summary>The live 5h block, today's model mix and 7-day total shown by the header panel.</summary>
     public ClaudeCodeActivitySnapshot? CurrentActivity { get; set; }

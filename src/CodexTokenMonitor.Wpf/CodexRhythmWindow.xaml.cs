@@ -7,70 +7,42 @@ namespace CodexTokenMonitor;
 
 public partial class CodexRhythmWindow : Window
 {
-    private readonly Func<TimeSpan> offset;
-    private readonly Action<CodexMessageHistory> accept;
-    private CancellationTokenSource? refresh;
+    private readonly Func<Task> refresh;
     private CodexMessageHistory? current;
+    private TimeSpan currentOffset;
 
-    internal CodexRhythmWindow(
-        Func<TimeSpan> offset, CodexMessageHistory? history, Action<CodexMessageHistory> accept)
+    internal CodexRhythmWindow(Func<Task> refresh)
     {
-        this.offset = offset;
-        this.accept = accept;
+        this.refresh = refresh;
         InitializeComponent();
         SilencePlot.UserInputProcessor.Disable();
         SilencePlot.Visibility = Visibility.Collapsed;
-        if (history is not null)
-            Apply(history, CodexUsageRhythm.Calculate(history, offset()), offset());
     }
 
-    protected override void OnClosed(EventArgs e)
+    private async void Refresh_Click(object sender, RoutedEventArgs e) => await refresh();
+
+    internal void ShowRefreshStatus(bool refreshing, string? error)
     {
-        refresh?.Cancel();
-        base.OnClosed(e);
+        RefreshButton.IsEnabled = !refreshing;
+        SourceText.ToolTip = error;
+        var status = refreshing ? "正在更新…" : error is not null ? "更新失败，可重试" : "每小时更新";
+        SourceText.Text = current is null ? status :
+            $"{current.Source} · {DayTimeZoneSettings.Format(currentOffset)} · 更新于 {current.UpdatedAt.ToOffset(currentOffset):yyyy-MM-dd HH:mm:ss} · {status}";
     }
 
-    private async void Refresh_Click(object sender, RoutedEventArgs e)
+    internal void ShowHistory(CodexMessageHistory history, TimeSpan reportingOffset)
     {
-        if (refresh is not null) return;
-        using var cancellation = new CancellationTokenSource();
-        refresh = cancellation;
-        var token = cancellation.Token;
-        var reportingOffset = offset();
-        RefreshButton.IsEnabled = false;
-        SourceText.Text = "正在读取本机会话…";
-        try
-        {
-            var (history, rhythm) = await Task.Run(() =>
-            {
-                var loaded = CodexRhythmReader.Read(DateTimeOffset.UtcNow, token);
-                return (loaded, CodexUsageRhythm.Calculate(loaded, reportingOffset));
-            }, token);
-            if (token.IsCancellationRequested) return;
-            Apply(history, rhythm, reportingOffset);
-            accept(history);
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception error) when (error is Microsoft.Data.Sqlite.SqliteException or IOException or UnauthorizedAccessException)
-        {
-            if (!token.IsCancellationRequested)
-            {
-                SourceText.Text = current is null ? "读取失败，可再次更新。" : "读取失败，当前显示上次成功的统计。";
-                SourceText.ToolTip = error.Message;
-            }
-        }
-        finally
-        {
-            refresh = null;
-            if (!token.IsCancellationRequested) RefreshButton.IsEnabled = true;
-        }
-    }
-
-    private void Apply(CodexMessageHistory history, CodexUsageRhythm rhythm, TimeSpan reportingOffset)
-    {
+        var previous = current;
+        var previousOffset = currentOffset;
         current = history;
-        SourceText.ToolTip = null;
-        SourceText.Text = $"{history.Source} · {DayTimeZoneSettings.Format(reportingOffset)} · 更新于 {history.UpdatedAt.ToOffset(reportingOffset):yyyy-MM-dd HH:mm:ss}";
+        currentOffset = reportingOffset;
+        ShowRefreshStatus(!RefreshButton.IsEnabled, SourceText.ToolTip as string);
+        if (previous is not null && previousOffset == reportingOffset && previous.Skipped == history.Skipped &&
+            previous.Messages.AsSpan().SequenceEqual(history.Messages) &&
+            previous.TurnStarts.AsSpan().SequenceEqual(history.TurnStarts))
+            return;
+
+        var rhythm = CodexUsageRhythm.Calculate(history, reportingOffset);
         var validDays = rhythm.Days.Count(day => day.Messages.HasValue);
         CoverageText.Text = rhythm.Days.Length == 0
             ? history.Messages.Length == 0 ? "未找到人工消息记录。" : $"已读取 {history.Messages.Length:N0} 次交互，完整自然日不足。"

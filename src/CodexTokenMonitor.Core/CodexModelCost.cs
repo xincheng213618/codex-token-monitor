@@ -21,10 +21,14 @@ internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens,
     public IReadOnlyList<ModelCostTotal> CostTotals { get; init; } = Array.Empty<ModelCostTotal>();
     public decimal QuotaBaseCost { get; init; } = KnownCost;
     public decimal FastSurcharge { get; init; }
+    public decimal UltrafastSurcharge { get; init; }
     public long FastEvents { get; init; }
+    public long UltrafastEvents { get; init; }
     public long UnknownTierEvents { get; init; }
     public long UnknownFastRateEvents { get; init; }
-    public decimal QuotaEquivalentCost => QuotaBaseCost > decimal.MaxValue - FastSurcharge ? decimal.MaxValue : QuotaBaseCost + FastSurcharge;
+    public long UnknownUltrafastRateEvents { get; init; }
+    public decimal QuotaEquivalentCost =>
+        CodexModelCost.AddCosts(CodexModelCost.AddCosts(QuotaBaseCost, FastSurcharge), UltrafastSurcharge);
     public bool IsComplete => UnpricedTokens == 0 && UnpricedEvents == 0;
     public bool HasMixedUnits => EffectiveCostTotals.Count > 1;
     public decimal? CompleteCost => IsComplete && !HasMixedUnits ? KnownCost : null;
@@ -45,12 +49,15 @@ internal sealed record ModelCostEstimate(decimal KnownCost, long UnpricedTokens,
         var details = new List<string>();
         if (!IsComplete) details.Add(MissingSummary);
         if (UnknownFastRateEvents > 0) details.Add("Fast 倍率待补");
+        if (UnknownUltrafastRateEvents > 0) details.Add("Ultrafast 倍率待补");
         return $"{CurrencySymbol}{QuotaEquivalentCost.ToString(format, CultureInfo.InvariantCulture)}" +
             (details.Count > 0 ? $"（{string.Join("、", details)}）" : "");
     }
     public string SpeedDescription => $"Fast / priority {FastEvents:N0} 条，按 ChatGPT Fast 倍率增加参考费用 ${FastSurcharge:N2}。" +
+        (UltrafastEvents > 0 ? $" Ultrafast {UltrafastEvents:N0} 条，按 ChatGPT Ultrafast 倍率增加参考费用 ${UltrafastSurcharge:N2}。" : "") +
         (UnknownTierEvents > 0 ? $" {UnknownTierEvents:N0} 条没有明确速度记录，默认按普速 1x 估算；Token 已计入，若另一台电脑有速度标记，同步可补全。" : "") +
         (UnknownFastRateEvents > 0 ? $" {UnknownFastRateEvents:N0} 条 Fast 记录尚无对应倍率，暂按普速基准估算。" : "") +
+        (UnknownUltrafastRateEvents > 0 ? $" {UnknownUltrafastRateEvents:N0} 条 Ultrafast 记录尚无对应倍率，暂按普速基准估算。" : "") +
         " 此项用于额度消耗比较；API Priority 单价是另一种计费口径。\n" + CodexSubscriptionPricing.Description;
 
     public string MissingPriceDescription
@@ -98,12 +105,19 @@ internal static class CodexModelCost
     private const string LunaModelId = "gpt-5.6-luna";
 
     public static bool IsFastTier(string tier) => tier is "fast" or "priority";
-    // ChatGPT quota credits, not API Priority billing. Current official rates:
-    // https://learn.chatgpt.com/docs/agent-configuration/speed
+    private static bool IsUltrafastTier(string tier) => tier is "ultrafast" or "ultra_fast";
+
+    // Rates for included ChatGPT usage: https://learn.chatgpt.com/docs/pricing.md
     public static decimal? FastQuotaMultiplier(string modelId) => ModelKey(modelId) switch
     {
         "gpt-6-astra" or "gpt-6.1-sol" or "gpt-6.1-terra" or "gpt-6-sol" or "gpt-6-luna" or "gpt-5.6-sol" or "gpt-5.6-terra" or "gpt-5.6-luna" or "gpt-5.5" or ReserveModelId => 2.5m,
-        "gpt-5.4" => 2m,
+        "gpt-6.2-sol" or "gpt-6.2-astra" or "gpt-5.4" => 2m,
+        _ => null
+    };
+
+    private static decimal? UltrafastQuotaMultiplier(string modelId) => ModelKey(modelId) switch
+    {
+        "gpt-6.2-sol" or "gpt-6.2-astra" => 6m,
         _ => null
     };
     public const string PlaceholderPriceSource = "新模型默认 0x（待填写）；当前按 0 费用统计";
@@ -140,8 +154,9 @@ internal static class CodexModelCost
     {
         long pricedTokens = 0, pricedEvents = 0;
         decimal quotaBaseCost = 0;
-        decimal fastSurcharge = 0;
-        long fastEvents = 0, knownTierEvents = 0, unknownFastRateEvents = 0;
+        decimal fastSurcharge = 0, ultrafastSurcharge = 0;
+        long fastEvents = 0, ultrafastEvents = 0, knownTierEvents = 0;
+        long unknownFastRateEvents = 0, unknownUltrafastRateEvents = 0;
         var models = new List<ModelCostLine>();
         var costTotals = new List<ModelCostTotal>();
         foreach (var (model, tokens) in usage.ModelUsage.OrderBy(p => p.Key, StringComparer.OrdinalIgnoreCase))
@@ -152,17 +167,34 @@ internal static class CodexModelCost
             var quotaProfile = pending ? null : CodexSubscriptionPricing.GetProfile(model, preset!.ToProfile());
             foreach (var (tier, tierUsage) in tokens.ServiceTierUsage)
             {
-                if (tier is "fast" or "priority" or "default" or "standard")
+                var fast = IsFastTier(tier);
+                var ultrafast = IsUltrafastTier(tier);
+                if (fast || ultrafast || tier is "default" or "standard")
                     knownTierEvents = TokenCountMath.AddNonNegative(knownTierEvents, tierUsage.Events);
-                if (!IsFastTier(tier)) continue;
-                fastEvents = TokenCountMath.AddNonNegative(fastEvents, tierUsage.Events);
-                if (FastQuotaMultiplier(model) is not { } factor)
-                    unknownFastRateEvents = TokenCountMath.AddNonNegative(unknownFastRateEvents, tierUsage.Events);
-                else if (amount is not null)
+                if (!fast && !ultrafast) continue;
+
+                var factor = fast ? FastQuotaMultiplier(model) : UltrafastQuotaMultiplier(model);
+                var surcharge = 0m;
+                if (factor is { } multiplier && quotaProfile is not null)
                 {
-                    var baseline = tierUsage.EstimateCost(quotaProfile!);
-                    var extra = baseline > decimal.MaxValue / (factor - 1) ? decimal.MaxValue : baseline * (factor - 1);
-                    fastSurcharge = fastSurcharge > decimal.MaxValue - extra ? decimal.MaxValue : fastSurcharge + extra;
+                    var baseline = tierUsage.EstimateCost(quotaProfile);
+                    var extraFactor = multiplier - 1;
+                    surcharge = baseline > decimal.MaxValue / extraFactor ? decimal.MaxValue : baseline * extraFactor;
+                }
+
+                if (fast)
+                {
+                    fastEvents = TokenCountMath.AddNonNegative(fastEvents, tierUsage.Events);
+                    fastSurcharge = AddCosts(fastSurcharge, surcharge);
+                    if (factor is null)
+                        unknownFastRateEvents = TokenCountMath.AddNonNegative(unknownFastRateEvents, tierUsage.Events);
+                }
+                else
+                {
+                    ultrafastEvents = TokenCountMath.AddNonNegative(ultrafastEvents, tierUsage.Events);
+                    ultrafastSurcharge = AddCosts(ultrafastSurcharge, surcharge);
+                    if (factor is null)
+                        unknownUltrafastRateEvents = TokenCountMath.AddNonNegative(unknownUltrafastRateEvents, tierUsage.Events);
                 }
             }
             models.Add(new ModelCostLine(model, tokens, amount,
@@ -171,7 +203,7 @@ internal static class CodexModelCost
             if (amount is null) continue;
             AddCostTotal(costTotals, preset!.CurrencySymbol, preset.UnitLabel, amount.Value);
             var quotaAmount = tokens.EstimateCost(quotaProfile!);
-            quotaBaseCost = quotaBaseCost > decimal.MaxValue - quotaAmount ? decimal.MaxValue : quotaBaseCost + quotaAmount;
+            quotaBaseCost = AddCosts(quotaBaseCost, quotaAmount);
             pricedTokens = TokenCountMath.AddNonNegative(pricedTokens, tokens.TotalTokens);
             pricedEvents = TokenCountMath.AddNonNegative(pricedEvents, tokens.Events);
         }
@@ -184,11 +216,17 @@ internal static class CodexModelCost
             CostTotals = costTotals,
             QuotaBaseCost = hasMixedUnits ? 0m : quotaBaseCost,
             FastSurcharge = hasMixedUnits ? 0m : fastSurcharge,
+            UltrafastSurcharge = hasMixedUnits ? 0m : ultrafastSurcharge,
             FastEvents = fastEvents,
+            UltrafastEvents = ultrafastEvents,
             UnknownTierEvents = TokenCountMath.SubtractNonNegative(usage.Events, knownTierEvents),
-            UnknownFastRateEvents = unknownFastRateEvents
+            UnknownFastRateEvents = unknownFastRateEvents,
+            UnknownUltrafastRateEvents = unknownUltrafastRateEvents
         };
     }
+
+    internal static decimal AddCosts(decimal total, decimal amount) =>
+        total > decimal.MaxValue - amount ? decimal.MaxValue : total + amount;
 
     private static void AddCostTotal(List<ModelCostTotal> totals, string currencySymbol, string unitLabel, decimal amount)
     {
@@ -204,7 +242,7 @@ internal static class CodexModelCost
         var current = totals[index];
         totals[index] = current with
         {
-            Amount = current.Amount > decimal.MaxValue - amount ? decimal.MaxValue : current.Amount + amount
+            Amount = AddCosts(current.Amount, amount)
         };
     }
 
@@ -263,6 +301,8 @@ internal static class CodexModelCost
     public static string DefaultModelId(string provider, string model) =>
         string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase) ? model switch
         {
+            "GPT-6.2 Sol" => "gpt-6.2-sol",
+            "GPT-6.2 Astra" => "gpt-6.2-astra",
             "GPT-6.1 Sol" => "gpt-6.1-sol",
             "GPT-6.1 Terra" => "gpt-6.1-terra",
             "GPT-6 Sol" => "gpt-6-sol",
@@ -275,6 +315,7 @@ internal static class CodexModelCost
         } : model switch
         {
             "Fable 5.1 API" => "claude-fable-5-1",
+            "Fable 5.2 API" => "claude-fable-5-2",
             "Opus 5.5 API" => "claude-opus-5-5",
             "Opus 5 API" => "claude-opus-5",
             "Sonnet 5 API" => "claude-sonnet-5",
@@ -291,7 +332,11 @@ internal static class CodexModelCost
         var models = usage.ModelUsage.OrderBy(m => m.Key, StringComparer.OrdinalIgnoreCase).Select(pair =>
         {
             var fast = pair.Value.ServiceTierUsage.Where(p => IsFastTier(p.Key)).Sum(p => p.Value.Events);
-            return fast == 0 ? pair.Key : fast == pair.Value.Events ? $"{pair.Key} · Fast" : $"{pair.Key} · Fast {fast:N0} 条";
+            var ultrafast = pair.Value.ServiceTierUsage.Where(p => IsUltrafastTier(p.Key)).Sum(p => p.Value.Events);
+            var name = pair.Key;
+            if (fast > 0) name += fast == pair.Value.Events ? " · Fast" : $" · Fast {fast:N0} 条";
+            if (ultrafast > 0) name += ultrafast == pair.Value.Events ? " · Ultrafast" : $" · Ultrafast {ultrafast:N0} 条";
+            return name;
         }).ToList();
         var identified = usage.ModelUsage.Values.Aggregate(0L, (n, b) => TokenCountMath.AddNonNegative(n, b.Events));
         if (identified < usage.Events) models.Add("未识别");

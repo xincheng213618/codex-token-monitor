@@ -201,7 +201,7 @@ internal sealed class QuotaCostCurveControl : System.Windows.Controls.UserContro
         var symbol = "$";
         plot.Axes.Left.Label.Text = string.Equals(symbol, "Credits", StringComparison.OrdinalIgnoreCase)
             ? "累计等价费用 (Credits)"
-            : $"订阅基准折算 · 含 Fast ({symbol})";
+            : $"订阅基准折算 ({symbol})";
         plot.Axes.Bottom.Label.Text = "7d 已用额度 (%)";
         plot.Axes.Left.Label.FontName = "Microsoft YaHei UI";
         plot.Axes.Bottom.Label.FontName = "Microsoft YaHei UI";

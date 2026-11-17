@@ -133,6 +133,7 @@ public partial class MainWindow : Window
             backgroundCacheWarmer.Start();
         });
         Closing += MainWindow_Closing;
+        InitializeRhythmRefresh();
         InitializeSpeedStatus();
         Closed += (_, _) =>
         {
@@ -784,7 +785,10 @@ public partial class MainWindow : Window
                         ? ReadPriceSettingsForUsage(source, queried, runtime.LifetimeToken)
                         : Array.Empty<CacheWarning>();
                     using var diagnostics = CacheOperationDiagnostics.Begin();
-                    var canCache = queried.CacheWarnings.Count == 0 && priceWarnings.Count == 0 && usageQueryService.CanCacheCycleResult(
+                    // Claude cycle detail is a transient log scan, so completeness
+                    // of the application's daily cache cannot validate that result.
+                    var canCache = source != UsageSource.ClaudeCode &&
+                        queried.CacheWarnings.Count == 0 && priceWarnings.Count == 0 && usageQueryService.CanCacheCycleResult(
                         cachedQueries, range, includeLiveToday, runtime.LifetimeToken);
                     var warnings = queried.CacheWarnings.Concat(priceWarnings).Concat(diagnostics.Warnings).Distinct().ToArray();
                     return (queried with { CacheWarnings = warnings }, canCache && warnings.Length == 0);
@@ -1227,6 +1231,13 @@ public partial class MainWindow : Window
 
     private static void RestoreModuleRange(UsageSourceModule module, SelectedRange range)
     {
+        if (module is ClaudeCodeUsageModule && range.Mode == RangeMode.Cycle)
+        {
+            var reset = range.Start.AddDays(7);
+            var cycle = new CodexQuotaCycle(range.Start, reset, reset, 0, null, range.FollowsCurrent);
+            module.QuotaCycles = [cycle];
+            module.SelectedCycle = cycle;
+        }
         module.Mode = range.Mode;
         module.CustomStartLocal = range.IsCustomStart ? range.Start : null;
         module.PickerValue = range.Mode switch
@@ -1404,7 +1415,7 @@ public partial class MainWindow : Window
         if (isCodex)
         {
             lines.Add(estimate.SpeedDescription);
-            lines.Add($"订阅基准折算（含 Fast）：{estimate.FormatQuotaCost()}");
+            lines.Add($"订阅基准折算：{estimate.FormatQuotaCost()}");
         }
         else if (priceGroup == PricePresetGroups.Kimi)
         {
@@ -2003,12 +2014,16 @@ public partial class MainWindow : Window
     private SelectedRange GetSelectedRange()
     {
         var module = CurrentModule();
+        var now = BeijingClock.Now;
+        var cycle = SelectedCycle();
+        if (module is ClaudeCodeUsageModule && cycle is { IsCurrent: true } && cycle.ResetAt <= now)
+            cycle = cycle with { IsCurrent = false };
         return UsageRangePolicy.ResolveSelectedRange(
             module.Mode,
             module.PickerValue,
             module.CustomStartLocal,
-            SelectedCycle(),
-            DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset),
+            cycle,
+            now,
             dayTimeZone.Offset);
     }
     private void MoveToCurrentPeriod(UsageSourceModule module)
@@ -2052,6 +2067,7 @@ public partial class MainWindow : Window
         };
         DatePicker.Visibility = module.Mode is RangeMode.Cycle or RangeMode.Week ? Visibility.Collapsed : Visibility.Visible;
         CycleBox.Visibility = module.Mode == RangeMode.Cycle ? Visibility.Visible : Visibility.Collapsed;
+        if (CycleBox.ContextMenu is { } cycleMenu) cycleMenu.IsEnabled = module is not ClaudeCodeUsageModule;
         var now = RangeNow(module);
         var range = GetSelectedRange();
         UpdateInteractionCount(module.Source, range);
@@ -2117,6 +2133,11 @@ public partial class MainWindow : Window
     {
         using var diagnostics = CacheOperationDiagnostics.Begin();
         var module = CurrentModule();
+        if (module is ClaudeCodeUsageModule)
+        {
+            ApplyCycleOptions(module, module.QuotaCycles, keepSelection);
+            return;
+        }
         if (module is CodexUsageModule codexModule)
         {
             var quota = codexModule.CurrentQuotaEstimate;
@@ -2728,6 +2749,7 @@ public partial class MainWindow : Window
         var cost = CodexModelCost.Estimate(window.Usage);
         return estimatedLimit is { } limit
             ? $"订阅折算 ≈${limit:N0}" + (cost.FastEvents > 0 ? " · 含 Fast" : "") +
+                (cost.UltrafastEvents > 0 ? " · 含 Ultrafast" : "") +
                 (!cost.IsComplete ? " · 部分未计价" : "")
             : "费用超出范围";
     }

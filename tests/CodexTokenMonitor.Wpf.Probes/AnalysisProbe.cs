@@ -70,6 +70,7 @@ internal static class AnalysisProbe
         Require(Path.GetFullPath(MonitorCachePaths.LocalAppData) == isolatedRoot, "isolated application cache root");
         foreach (var source in Enum.GetValues<UsageSource>())
             Require(UsageLogPaths.GetOverrideRoot(source)!.StartsWith(logRoot, StringComparison.OrdinalIgnoreCase), "isolated log root");
+        CheckModelPalette();
 
         // The shared reader instance owns the attempt timestamp now that the
         // app-server quota reader is instance-scoped.
@@ -93,6 +94,30 @@ internal static class AnalysisProbe
         Require(Windows.All(ClosedWindows.Contains), "all shown windows reached real Closed");
         Results.Add(new { check = "isolation-and-exit", isolatedRoot, logRoot, mainWindowConstructed = false,
             appServerReads = 0, sharingServerStarted = false, windowsShown = Windows.Count, allClosed = true });
+    }
+
+    private static void CheckModelPalette()
+    {
+        var models = new[]
+        {
+            (Id: "gpt-6.2-sol", PreviousId: "gpt-6.1-sol", Label: "6.2 sol"),
+            (Id: "gpt-6.2-astra", PreviousId: "gpt-6-astra", Label: "6.2 astra")
+        };
+        foreach (var model in models)
+        {
+            var snapshot = $"openai/{model.Id.ToUpperInvariant()}-2026-11-18";
+            var color = QuotaCycleModelPalette.GetColor(model.Id);
+            Require(QuotaCycleModelPalette.ShortName(model.Id) == model.Label &&
+                    QuotaCycleModelPalette.ShortName(snapshot) == model.Label,
+                $"{model.Label} identifies both base and provider-prefixed snapshot IDs");
+            Require(QuotaCycleModelPalette.GetColor(snapshot) == color &&
+                    QuotaCycleModelPalette.GetColor(model.PreviousId) != color,
+                $"{model.Label} has a distinct color from its previous generation across its IDs");
+        }
+
+        Require(models.Select(model => QuotaCycleModelPalette.GetColor(model.Id)).Distinct().Count() == models.Length,
+            "GPT-6.2 Sol and Astra use different colors");
+        Results.Add(new { check = "gpt-6.2-model-palette" });
     }
 
     private static async Task CheckCachedWindowsAndResolvedPeriodsAsync(

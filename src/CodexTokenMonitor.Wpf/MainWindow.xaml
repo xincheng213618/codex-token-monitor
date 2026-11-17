@@ -210,7 +210,8 @@
         <Border x:Name="ClaudeActivityPanel" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,10" Visibility="Collapsed">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="1.2*" /><ColumnDefinition Width="1.2*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="88" />
+                    <ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="88" />
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,16,0" ToolTip="使用 Claude Desktop 或 CLI 的订阅登录读取官方 5h 剩余额度和重置时间，自动刷新。">
                     <TextBlock Text="5h 额度" Style="{StaticResource QuotaCaption}" />
@@ -232,13 +233,23 @@
                     <TextBlock x:Name="ClaudeWeekCapacityValue" Text="-" Style="{StaticResource QuotaValue}" />
                     <TextBlock x:Name="ClaudeWeekCapacityDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <StackPanel Grid.Column="4" Margin="0,0,16,0">
+                <StackPanel Grid.Column="4" Margin="0,0,12,0" ToolTip="Fable 系列共用的周额度，百分比以 Fable 自身上限为分母。">
+                    <TextBlock Text="Fable 周额度" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ClaudeFableWeekValue" Text="--" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="ClaudeFableWeekDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="5" Margin="0,0,12,0" ToolTip="本地提醒，可在「额度详情」登记剩余次数和到期时间。">
+                    <TextBlock Text="Fable 重置卡" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="ClaudeFableResetValue" Text="--" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="ClaudeFableResetDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="6" Margin="0,0,12,0">
                     <TextBlock Text="今日模型" Style="{StaticResource QuotaCaption}" />
                     <TextBlock x:Name="ClaudeModelValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                     <TextBlock x:Name="ClaudeModelDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                 </StackPanel>
-                <Button x:Name="ClaudeQuotaButton" Grid.Column="5" Style="{StaticResource PrimaryButton}" Content="额度详情" VerticalAlignment="Center"
-                        ToolTip="查看自动估算的 5h / 7d 满额金额和 Token 总量" Click="ClaudeQuotaButton_Click" />
+                <Button x:Name="ClaudeQuotaButton" Grid.Column="7" Style="{StaticResource PrimaryButton}" Content="额度详情" VerticalAlignment="Center"
+                        ToolTip="查看 5h / 7d 满额参考和 Fable 周额度，管理本地重置提醒" Click="ClaudeQuotaButton_Click" />
             </Grid>
         </Border>
         <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,6" Margin="0,0,0,10">
@@ -287,16 +298,19 @@
                 <Border Style="{StaticResource MetricTile}" ToolTip="Cache Ratio · 缓存读取占总输入的比例"><StackPanel><TextBlock Text="缓存命中" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CacheRatioValue" Text="{Binding Snapshot.CacheRatio}" Style="{StaticResource MetricValue}" Foreground="{StaticResource AccentBrush}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" ToolTip="Events · 用量事件数"><StackPanel><TextBlock Text="事件数" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="EventsValue" Text="{Binding Snapshot.Events}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
                 <Border Style="{StaticResource MetricTile}" BorderThickness="0" ToolTip="Coding Time · 以 10 分钟空闲间隔计算的活跃时长"><StackPanel><TextBlock Text="活跃时长" Style="{StaticResource MetricCaption}" /><Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock x:Name="CodingTimeValue" Text="{Binding Snapshot.CodingTime}" Style="{StaticResource MetricValue}" /></Viewbox></StackPanel></Border>
-                <Button x:Name="InteractionCountButton" Style="{StaticResource ToolButton}" Click="InteractionCountButton_Click"
-                        Background="{StaticResource AccentSoftBrush}" BorderThickness="1,0,0,0" Padding="12,7"
-                        HorizontalContentAlignment="Stretch" AutomationProperties.Name="交互次数，打开 Codex 使用节律">
+                <Button x:Name="InteractionCountButton" Click="InteractionCountButton_Click"
+                        Cursor="Hand" AutomationProperties.Name="交互次数，打开 Codex 使用节律">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Tile" Style="{StaticResource MetricTile}" BorderThickness="1,0,0,0" Background="Transparent">
+                                <ContentPresenter />
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
                     <StackPanel>
-                        <DockPanel>
-                            <TextBlock Text="›" DockPanel.Dock="Right" Foreground="{StaticResource AccentBrush}" />
-                            <TextBlock Text="交互次数" Style="{StaticResource MetricCaption}" />
-                        </DockPanel>
+                        <TextBlock Text="交互次数" Style="{StaticResource MetricCaption}" />
                         <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left">
-                            <TextBlock x:Name="InteractionCountValue" Text="—" Style="{StaticResource MetricValue}" Foreground="{StaticResource AccentBrush}" />
+                            <TextBlock x:Name="InteractionCountValue" Text="—" Style="{StaticResource MetricValue}" />
                         </Viewbox>
                     </StackPanel>
                 </Button>

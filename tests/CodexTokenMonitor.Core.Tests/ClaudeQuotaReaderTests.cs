@@ -22,7 +22,16 @@ public sealed class ClaudeQuotaReaderTests : IDisposable
     private static string Response(double five = 39) => JsonSerializer.Serialize(new
     {
         five_hour = new { utilization = five, resets_at = Now.AddHours(3).ToString("O") },
-        seven_day = new { utilization = 4, resets_at = Now.AddDays(4).ToString("O") }
+        seven_day = new { utilization = 4, resets_at = Now.AddDays(4).ToString("O") },
+        limits = new[]
+        {
+            new { kind = "weekly_scoped", scope = new { model = new { display_name = "Sonnet" } },
+                percent = 27, resets_at = Now.AddDays(4).ToString("O") },
+            new { kind = "weekly_scoped", scope = new { model = new { display_name = "Fable 5.1" } },
+                percent = 14, resets_at = Now.AddDays(4).ToString("O") },
+            new { kind = "weekly_scoped", scope = new { model = new { display_name = "Fable" } },
+                percent = 5, resets_at = Now.AddDays(4).ToString("O") }
+        }
     });
 
     [Fact]
@@ -43,12 +52,51 @@ public sealed class ClaudeQuotaReaderTests : IDisposable
         Assert.Null(result.Failure);
         Assert.Equal(39, result.Snapshot!.FiveHour!.UsedPercent);
         Assert.Equal(4, result.Snapshot.SevenDay!.UsedPercent);
+        Assert.Equal(5, result.Snapshot.FableWeek!.UsedPercent);
         Assert.Equal(Now, result.Snapshot.FiveHour.ObservedLocal);
         Assert.Same(result, await reader.ReadAsync());
         Assert.Equal(1, requests);
         var persisted = File.ReadAllText(ClaudeRateLimitLog.CurrentFilePath);
         Assert.DoesNotContain("test-bearer", persisted);
         Assert.Equal(39, ClaudeRateLimitLog.ReadLatest(Now)!.FiveHour!.UsedPercent);
+        Assert.Equal(5, ClaudeRateLimitLog.ReadLatest(Now)!.FableWeek!.UsedPercent);
+        Assert.Null(ClaudeRateLimitLog.ReadLatest(Now.AddDays(4)));
+    }
+
+    [Fact]
+    public void FableOnlySnapshotCanReportZeroUsedButOtherModelsCannotStandInForIt()
+    {
+        const string body = """
+            {"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":0,"resets_at":"2026-11-01T00:00:00Z"}]}
+            """;
+        var snapshot = Assert.IsType<ClaudeRateLimitSnapshot>(ClaudeQuotaReader.Parse(body, Now));
+        Assert.Null(snapshot.SevenDay);
+        Assert.Equal(0, snapshot.FableWeek!.UsedPercent);
+        Assert.Null(ClaudeQuotaReader.Parse(body.Replace("Fable", "Sonnet"), Now));
+        Assert.Null(ClaudeQuotaReader.Parse(body.Replace("\"percent\":0", "\"percent\":101"), Now));
+    }
+
+    [Fact]
+    public void WeeklyHistoryKeepsLatestReadingEvenWhenUsageFallsAndPreservesThePreviousWeek()
+    {
+        var reset = Now.AddDays(4);
+        ClaudeRateLimitLog.SaveCurrent(new(Now, null, new(51, reset.AddSeconds(-1)), new(45, reset)));
+        ClaudeRateLimitLog.SaveCurrent(new(Now.AddHours(1), null, new(37, reset), new(1, reset)));
+        ClaudeRateLimitLog.SaveCurrent(new(reset.AddHours(1), null, new(2, reset.AddDays(7))));
+
+        Assert.Collection(ClaudeRateLimitLog.ReadWeeklyHistory(),
+            previous =>
+            {
+                Assert.Equal(reset, previous.ResetAt);
+                Assert.Equal(37, previous.UsedPercent);
+                Assert.Equal(1, previous.FableUsedPercent);
+            },
+            current =>
+            {
+                Assert.Equal(reset.AddDays(7), current.ResetAt);
+                Assert.Equal(2, current.UsedPercent);
+                Assert.Null(current.FableUsedPercent);
+            });
     }
 
     [Fact]

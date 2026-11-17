@@ -106,7 +106,7 @@
                         <DataGridTextColumn Header="应%" Binding="{Binding ExpectedPercent}" Width="62" ElementStyle="{StaticResource NumericColumn}" />
                         <DataGridTextColumn Header="节奏" Binding="{Binding Rhythm}" Width="116" />
                         <DataGridTextColumn Header="Tokens" Binding="{Binding Tokens}" Width="104" ElementStyle="{StaticResource NumericColumn}" />
-                        <DataGridTextColumn Header="订阅折算 $（含 Fast）" Binding="{Binding UsedCost}" Width="168"><DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource NumericColumn}"><Setter Property="ToolTip" Value="{Binding CostDetail}" /></Style></DataGridTextColumn.ElementStyle></DataGridTextColumn>
+                        <DataGridTextColumn Header="订阅折算 $（按速度）" Binding="{Binding UsedCost}" Width="168"><DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource NumericColumn}"><Setter Property="ToolTip" Value="{Binding CostDetail}" /></Style></DataGridTextColumn.ElementStyle></DataGridTextColumn>
                         <DataGridTextColumn Header="已识别 Fast" Binding="{Binding FastCount}" Width="94"><DataGridTextColumn.ElementStyle><Style TargetType="TextBlock" BasedOn="{StaticResource NumericColumn}"><Setter Property="ToolTip" Value="{Binding CostDetail}" /></Style></DataGridTextColumn.ElementStyle></DataGridTextColumn>
                         <DataGridTextColumn Header="订阅折算 100% $" Binding="{Binding EstimatedLimit}" Width="138" ElementStyle="{StaticResource NumericColumn}" />
                         <DataGridTextColumn Header="套餐" Binding="{Binding PlanNames}" Width="96" />

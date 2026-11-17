@@ -88,7 +88,7 @@
             </Border>
             <Border Grid.Column="1" Style="{StaticResource Card}" Margin="6,0">
                 <StackPanel>
-                    <TextBlock Style="{StaticResource MetricLabel}" Text="这段换算代价（含 Fast）" />
+                    <TextBlock Style="{StaticResource MetricLabel}" Text="这段换算代价（按速度）" />
                     <TextBlock x:Name="EquivalentCostValue" Style="{StaticResource MetricValue}" Text="-" />
                     <TextBlock x:Name="EquivalentCostNote" Style="{StaticResource MetricNote}" Text="订阅额度比较口径" />
                 </StackPanel>

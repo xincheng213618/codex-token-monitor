@@ -23,14 +23,14 @@
                     Click="Refresh_Click" VerticalAlignment="Center" Margin="14,0,0,0" />
             <StackPanel>
                 <TextBlock Text="Codex 使用节律" FontSize="21" FontWeight="SemiBold" />
-                <TextBlock x:Name="SourceText" Text="点击「更新统计」读取本机会话。"
+                <TextBlock x:Name="SourceText"
                            Style="{StaticResource SectionDescription}" Margin="0,5,0,0" />
             </StackPanel>
         </DockPanel>
         <Border Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="14,10" Margin="0,0,0,12">
             <StackPanel>
                 <TextBlock x:Name="CoverageText" Text="等待首次更新" FontWeight="SemiBold" TextWrapping="Wrap" />
-                <TextBlock x:Name="SilenceText" Text="更新后可查看每月交互情况、静默起点分布和逐日明细。"
+                <TextBlock x:Name="SilenceText"
                            Style="{StaticResource SectionDescription}" Margin="0,5,0,0" />
             </StackPanel>
         </Border>

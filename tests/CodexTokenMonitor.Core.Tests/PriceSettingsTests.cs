@@ -243,11 +243,14 @@ public sealed class PriceSettingsTests
     }
 
     [Theory]
+    [InlineData("OpenAI", "GPT-6.2 Sol", "gpt-6.2-sol", 2, .10, 2.50, 10)]
+    [InlineData("OpenAI", "GPT-6.2 Astra", "gpt-6.2-astra", 8, .40, 10, 40)]
     [InlineData("OpenAI", "GPT-6.1 Sol", "gpt-6.1-sol", 2, .10, 2.50, 10)]
     [InlineData("OpenAI", "GPT-6.1 Terra", "gpt-6.1-terra", 1, .05, 1.25, 5)]
     [InlineData("OpenAI", "GPT-6 Sol", "gpt-6-sol", 2, .20, 2.50, 10)]
     [InlineData("OpenAI", "GPT-6 Luna", "gpt-6-luna", .10, .01, .125, .50)]
     [InlineData("Claude", "Fable 5.1 API", "claude-fable-5-1", 10, .25, 12.50, 50)]
+    [InlineData("Claude", "Fable 5.2 API", "claude-fable-5-2", 8, .20, 10, 40)]
     [InlineData("Claude", "Opus 5.5 API", "claude-opus-5-5", 4, .20, 5, 20)]
     [InlineData("Claude", "Opus 5 API", "claude-opus-5", 5, .50, 6.25, 25)]
     [InlineData("Claude", "Sonnet 5 API", "claude-sonnet-5", 2, .20, 2.50, 10)]
@@ -282,12 +285,25 @@ public sealed class PriceSettingsTests
         var normalized = PriceSettingsStore.Normalize(settings);
 
         Assert.Equal(21, normalized.DisplayOrderVersion);
-        Assert.Equal("GPT-6.1 Sol", normalized.CodexPresets[0].Model);
+        Assert.Equal("GPT-6.2 Sol", normalized.CodexPresets[0].Model);
         Assert.Equal("Fable 5.1 API", normalized.ClaudeCodePresets[0].Model);
         Assert.Equal(3m, normalized.ClaudeCodePresets.Single(item => item.Model == "Fable 5 API").CachedInput);
         Assert.Equal("用户报价", normalized.ClaudeCodePresets.Single(item => item.Model == "Fable 5 API").Source);
         Assert.Single(normalized.CodexPresets, item => item.ModelId == "gpt-6-sol");
         Assert.Single(normalized.ClaudeCodePresets, item => item.ModelId == "claude-opus-5-5");
+    }
+
+    [Fact]
+    public void Normalize_ExistingClaudeCatalogGetsFable52WithoutChangingDisplaySlots()
+    {
+        var settings = PriceSettingsStore.Defaults();
+        settings.ClaudeCodePresets.RemoveAll(item => item.ModelId == "claude-fable-5-2");
+        var displayBefore = settings.DisplaySlotsForGroup(PricePresetGroups.ClaudeCode).ToArray();
+
+        var normalized = PriceSettingsStore.Normalize(settings);
+
+        Assert.Single(normalized.ClaudeCodePresets, item => item.ModelId == "claude-fable-5-2");
+        Assert.Equal(displayBefore, normalized.DisplaySlotsForGroup(PricePresetGroups.ClaudeCode).ToArray());
     }
 
     [Theory]
@@ -382,7 +398,9 @@ public sealed class PriceSettingsTests
     [Theory]
     [InlineData("gpt-6.1-sol", "GPT-6.1 Sol", 2, .1, 2.5, 10)]
     [InlineData("gpt-6.1-terra", "GPT-6.1 Terra", 1, .05, 1.25, 5)]
-    public void Gpt61_UpgradesUntouchedDiscoveredPlaceholderAndRetainsItsSlot(string id, string name, double input, double cached, double write, double output)
+    [InlineData("gpt-6.2-sol", "GPT-6.2 Sol", 2, .1, 2.5, 10)]
+    [InlineData("gpt-6.2-astra", "GPT-6.2 Astra", 8, .4, 10, 40)]
+    public void Normalize_UpgradesUntouchedOpenAiPlaceholderAndRetainsItsSlot(string id, string name, double input, double cached, double write, double output)
     {
         var settings = PriceSettingsStore.Defaults();
         var placeholder = new PricePreset
@@ -406,6 +424,47 @@ public sealed class PriceSettingsTests
         var edited = PriceSettingsStore.Normalize(settings);
         Assert.Equal(17m, edited.CodexPresets.First(item => item.ModelId == id).Output);
         Assert.Equal(placeholder.SelectionKey, edited.DisplaySlotsForGroup(PricePresetGroups.Codex)[0]);
+    }
+
+    [Theory]
+    [InlineData("gpt-6.2-sol", .62, 1.22)]
+    [InlineData("gpt-6.2-astra", 2.48, 4.88)]
+    public void Gpt62_ExistingCatalogPricesDatedUsageWithoutChangingDisplaySlots(string modelId, double standard, double fastQuota)
+    {
+        var settings = PriceSettingsStore.Defaults();
+        settings.CodexPresets.RemoveAll(item => item.ModelId == modelId);
+        settings.DisplaySlots[PricePresetGroups.Codex] = new();
+        var normalized = PriceSettingsStore.Normalize(settings);
+        var usage = new TokenUsageBucket();
+        usage.Add(new TokenUsageEvent(DateTimeOffset.UtcNow, 200_000, 100_000, 40_000, 0, 240_000,
+            CacheWriteInputTokens: 20_000, ModelId: $"openai/{modelId}-2026-11-17", ServiceTier: "priority"));
+
+        var estimate = CodexModelCost.Estimate(usage, normalized.CodexPresets);
+
+        Assert.Empty(normalized.DisplayPresetsForGroup(PricePresetGroups.Codex));
+        Assert.True(estimate.IsComplete);
+        Assert.Equal((decimal)standard, estimate.KnownCost);
+        Assert.Equal((decimal)fastQuota, estimate.QuotaEquivalentCost);
+    }
+
+    [Fact]
+    public void Gpt62_DatedPlaceholderKeepsTheBaseModelCustomPrice()
+    {
+        const string modelId = "gpt-6.2-sol";
+        const string datedId = "gpt-6.2-sol-2026-11-17";
+        var settings = PriceSettingsStore.Defaults();
+        settings.CodexPresets.Single(item => item.ModelId == modelId).UncachedInput = 3m;
+        settings.CodexPresets.Insert(0, new PricePreset
+        {
+            Provider = "OpenAI", Model = datedId, ModelId = datedId,
+            CurrencySymbol = "$", UnitLabel = "USD / 1M tokens",
+            Source = CodexModelCost.PlaceholderPriceSource
+        });
+
+        var normalized = PriceSettingsStore.Normalize(settings);
+
+        Assert.Equal(3m, Assert.Single(normalized.CodexPresets, item => item.ModelId == modelId).UncachedInput);
+        Assert.Equal(2m, Assert.Single(normalized.CodexPresets, item => item.ModelId == datedId).UncachedInput);
     }
 
     [Fact]
@@ -434,6 +493,7 @@ public sealed class PriceSettingsTests
     }
 
     [Theory]
+    [InlineData("Codex", "OpenAI", "GPT-6.2 Sol")]
     [InlineData("Claude Code", "Claude", "Fable 5.1 API")]
     [InlineData("WorkBuddy", "Kimi（月之暗面）", "K3")]
     public void Defaults_PromoteNewestModelForRelevantSource(string group, string provider, string model)

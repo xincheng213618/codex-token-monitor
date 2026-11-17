@@ -94,10 +94,10 @@ internal sealed class CodexLogFileIndex : IDisposable
         catch (UnauthorizedAccessException) { return true; }
     }
 
-    private static FileStream Open(string file) =>
+    internal static FileStream Open(string file) =>
         new(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
-    private static Signature Identify(string file, FileStream stream)
+    internal static Signature Identify(string file, FileStream stream)
     {
         var info = new FileInfo(file);
         var length = stream.Length;

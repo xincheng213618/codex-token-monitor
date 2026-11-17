@@ -260,16 +260,45 @@ internal sealed class ClaudeQuotaReader
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object) return null;
-        ClaudeRateLimitWindow? Window(string name)
+        ClaudeRateLimitWindow? Window(JsonElement window, string percentKey)
         {
-            if (!root.TryGetProperty(name, out var window) || window.ValueKind != JsonValueKind.Object ||
-                !window.TryGetProperty("utilization", out var percent) || percent.ValueKind != JsonValueKind.Number || !percent.TryGetDouble(out var used) || !double.IsFinite(used) || used < 0 || used > 100 ||
+            if (window.ValueKind != JsonValueKind.Object ||
+                !window.TryGetProperty(percentKey, out var percent) || percent.ValueKind != JsonValueKind.Number || !percent.TryGetDouble(out var used) || !double.IsFinite(used) || used < 0 || used > 100 ||
                 !window.TryGetProperty("resets_at", out var reset) || reset.ValueKind != JsonValueKind.String ||
                 !DateTimeOffset.TryParse(reset.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out var at)) return null;
             return at > observed ? new ClaudeRateLimitWindow(used, at.ToOffset(CodexUsageReader.BeijingOffset), observed.ToOffset(CodexUsageReader.BeijingOffset)) : null;
         }
-        var five = Window("five_hour");
-        var week = Window("seven_day");
-        return five is null && week is null ? null : new ClaudeRateLimitSnapshot(observed.ToOffset(CodexUsageReader.BeijingOffset), five, week);
+
+        var five = Window(AgentSpeedJson.Object(root, "five_hour"), "utilization");
+        var week = Window(AgentSpeedJson.Object(root, "seven_day"), "utilization");
+        ClaudeRateLimitWindow? fable = null;
+        if (root.TryGetProperty("limits", out var limits) && limits.ValueKind == JsonValueKind.Array)
+        {
+            ClaudeRateLimitWindow? versioned = null;
+            var versionedCount = 0;
+            foreach (var limit in limits.EnumerateArray())
+            {
+                if (AgentSpeedJson.Text(limit, "kind") != "weekly_scoped") continue;
+                var scope = AgentSpeedJson.Object(limit, "scope");
+                var name = AgentSpeedJson.Text(AgentSpeedJson.Object(scope, "model"), "display_name");
+                if (string.Equals(name, "Fable", StringComparison.OrdinalIgnoreCase) && Window(limit, "percent") is { } shared)
+                {
+                    fable = shared;
+                    break;
+                }
+                if (name?.StartsWith("Fable ", StringComparison.OrdinalIgnoreCase) == true &&
+                    Window(limit, "percent") is { } single)
+                {
+                    versioned = single;
+                    versionedCount++;
+                }
+            }
+            // Prefer the family-wide limit. If there are several model-specific
+            // limits, none represents the shared Fable allowance on its own.
+            if (fable is null && versionedCount == 1) fable = versioned;
+        }
+
+        return five is null && week is null && fable is null ? null :
+            new ClaudeRateLimitSnapshot(observed.ToOffset(CodexUsageReader.BeijingOffset), five, week, fable);
     }
 }

@@ -37,6 +37,7 @@ public partial class MainWindow
             }
             var previousToday = DateTimeOffset.UtcNow.ToOffset(dayTimeZone.Offset).Date;
             dayTimeZone = updated;
+            if (messageHistory is not null) rhythmWindow?.ShowHistory(messageHistory, dayTimeZone.Offset);
             foreach (var module in usageModules.Values.Where(module => module.Mode == RangeMode.Day && module.CustomStartLocal is null))
             {
                 if (module.PickerValue.Date == previousToday) module.PickerValue = RangeNow(module).Date;

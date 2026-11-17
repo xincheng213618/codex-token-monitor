@@ -41,6 +41,11 @@ internal static partial class MainWindowProbe
             "Codex shows an unrefreshed interaction tile in place of cache write");
 
         var button = Get<Button>(window, "InteractionCountButton");
+        button.ApplyTemplate();
+        var tile = (Border)button.Template.FindName("Tile", button);
+        Require(tile.Background == Brushes.Transparent &&
+                Equals(count.Foreground, Get<TextBlock>(window, "InputValue").Foreground),
+            "interaction tile uses the same surface and value color as neighboring metrics");
         button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         var detail = window.OwnedWindows.OfType<CodexRhythmWindow>().Single();
         try
@@ -63,7 +68,26 @@ internal static partial class MainWindowProbe
             await detail.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
             Require(Get<FrameworkElement>(detail, "SilencePlot").IsVisible, "longest silence chart displays");
             RenderRhythm(detail, "rhythm-silence.png");
-            Results.Add(new { check = "manual-codex-rhythm", interactions = 2, months = 1, weeks = 1 });
+
+            await File.AppendAllLinesAsync(log, [Entry(SeedDay.AddHours(10), "third")]);
+            SourceFixtureHashes[log] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(log)));
+            var timer = Get<DispatcherTimer>(window, "rhythmTimer");
+            Require(timer.Interval == TimeSpan.FromHours(1), "rhythm refresh has a one-hour cadence");
+            timer.Interval = TimeSpan.FromMilliseconds(20);
+            timer.Start();
+            try
+            {
+                while (count.Text != "3" || !update.IsEnabled) await Task.Delay(15, timeout.Token);
+            }
+            finally
+            {
+                timer.Stop();
+                timer.Interval = TimeSpan.FromHours(1);
+            }
+            var saved = CodexRhythmReader.ReadSaved();
+            Require(saved?.CountInRange(SeedDay, SeedDay.AddDays(1)) == 3,
+                "automatic update persists the new count");
+            Results.Add(new { check = "codex-rhythm", manualInteractions = 2, automaticInteractions = 3, persisted = true });
         }
         finally { detail.Close(); }
     }

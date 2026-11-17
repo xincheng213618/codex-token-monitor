@@ -56,7 +56,7 @@
             <Grid>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                 <TextBlock Style="{StaticResource SectionDescription}" VerticalAlignment="Center" Margin="0,0,20,0"
-                       Text="每种颜色代表一个周期，绿色粗线为当前周期。订阅基准中 Sol 按输入 $5 / 缓存 $0.50 / 输出 $30 每百万 Token 折算，不随 API 降价变化；Fast 另乘倍率，无速度标记默认 1x。折算值用于比较周期，不是官方美元余额。" />
+                       Text="每种颜色代表一个周期，绿色粗线为当前周期。GPT-5.6 Sol 按输入 $5 / 缓存 $0.50 / 输出 $30 每百万 Token 折算，使用固定单价。按记录的速度应用对应倍率，缺少速度标记时按 1x 估算。折算值用于比较周期。" />
                 <Button Grid.Column="1" Style="{StaticResource ToolButton}" MinWidth="88" Content="关闭" Click="CloseButton_Click" VerticalAlignment="Bottom" />
             </Grid>
         </Border>

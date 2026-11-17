@@ -69,22 +69,30 @@ internal static partial class MainWindowProbe
                 Get<TextBlock>(window, "ClaudeWeekValue").Text == "未获取",
             "capacity is separate from unknown official weekly quota");
 
-        // Official status-line windows replace the inferred block everywhere.
+        // Official windows replace the inferred block everywhere.
+        claude.FableReset = new ClaudeFableResetReminder(1, BeijingClock.Now.AddDays(6));
         claude.CurrentActivity = claude.CurrentActivity with
         {
             FiveHourWindow = new ClaudeQuotaWindowUsage(ClaudeQuotaWindowKind.FiveHour, ClaudeWindowSource.Official,
                 SeedDay.AddHours(13), SeedDay.AddHours(18), Since(SeedDay.AddHours(13)), 40, true, now),
             WeekWindow = new ClaudeQuotaWindowUsage(ClaudeQuotaWindowKind.Week, ClaudeWindowSource.Official,
-                SeedDay.AddDays(-3).AddHours(20), SeedDay.AddDays(4).AddHours(20), week, 12, true, now)
+                SeedDay.AddDays(-3).AddHours(20), SeedDay.AddDays(4).AddHours(20), week, 12, true, now),
+            FableWeek = new ClaudeRateLimitWindow(5, SeedDay.AddDays(4).AddHours(20), now)
         };
         Invoke(window, "ApplyClaudeActivitySummary", claude);
         Require(Get<TextBlock>(window, "ClaudeBlockValue").Text == "剩余 60%" &&
                 Get<TextBlock>(window, "ClaudeWeekValue").Text == "剩余 88%" &&
+                Get<TextBlock>(window, "ClaudeFableWeekValue").Text == "剩余 95%" &&
+                Get<TextBlock>(window, "ClaudeFableResetValue").Text == "1 次剩余" &&
                 Get<TextBlock>(window, "ClaudeFiveHourCapacityDetail").Text.Contains("Token", StringComparison.Ordinal) &&
                 Get<TextBlock>(window, "ClaudeWeekCapacityDetail").Text.Contains("Token", StringComparison.Ordinal) &&
                 Get<TextBlock>(window, "ClaudeWeekDetail").Text.Contains("已用 12%（官方）", StringComparison.Ordinal),
             "official percentages drive the window and capacity cards");
-        var dialog = new ClaudeQuotaWindow(() => claude.CurrentActivity, () => claude.QuotaReadings) { Left = -20000, Top = -20000, ShowInTaskbar = false };
+        var dialog = new ClaudeQuotaWindow(() => claude.CurrentActivity, () => claude.QuotaReadings, claude.FableReset, reminder =>
+        {
+            claude.FableReset = reminder;
+            Invoke(window, "ApplyClaudeActivitySummary", claude);
+        }) { Left = -20000, Top = -20000, ShowInTaskbar = false };
         try
         {
             dialog.Show();
@@ -93,8 +101,27 @@ internal static partial class MainWindowProbe
                 "manual quota editors are removed");
             Require(((TextBlock)dialog.FindName("FiveHourTokensValue")).Text.Contains("Token", StringComparison.Ordinal) &&
                     ((TextBlock)dialog.FindName("WeekTotalValue")).Text.StartsWith("≈ $", StringComparison.Ordinal),
-                "read-only dialog exposes both full-window amount and token references");
+                "dialog exposes both full-window amount and token references");
+            Require(Get<TextBlock>(dialog, "FableQuotaText").Text.Contains("官方已用 5%", StringComparison.Ordinal),
+                "Fable has its own official readout");
+            await Wait(() => Get<Button>(dialog, "RefreshHistoryButton").IsEnabled, "Claude weekly history loads in the background");
+            var historical = dialog.Cycles.Single(cycle => !cycle.IsCurrent);
+            Require(historical.OfficialIsSample && historical.Official?.UsedPercent == 12 &&
+                historical.UsageIsPartial && Get<Button>(dialog, "OpenCycleButton").IsEnabled,
+                "Claude weekly history identifies saved samples and shows the cycle action");
             await RenderDialogAsync(dialog, Path.Combine(outputRoot, "claude-quota-dialog.png"));
+            Invoke(window, "SelectClaudeCycle", claude, dialog.Cycles, historical);
+            var selected = (SelectedRange)Invoke(window, "GetSelectedRange")!;
+            Require(selected.Mode == RangeMode.Cycle && selected.Start == historical.Start && selected.End == historical.Reset,
+                "opening a historical Claude week selects its exact interval");
+            claude.Mode = RangeMode.Day;
+            claude.QuotaCycles = [];
+            claude.SelectedCycle = null;
+            Invoke(window, "UpdateRangeControls");
+            Get<TextBox>(dialog, "FableResetCount").Text = "0";
+            Invoke(dialog, "SaveFableReset_Click", dialog, new RoutedEventArgs());
+            Require(ClaudeFableResetReminder.Load()?.Remaining == 0 &&
+                Get<TextBlock>(window, "ClaudeFableResetValue").Text == "0 次剩余", "local Fable reset saves and updates the header");
         }
         finally
         {
@@ -119,8 +146,8 @@ internal static partial class MainWindowProbe
 
         static async Task RenderDialogAsync(Window dialog, string path)
         {
-            dialog.Measure(new Size(860, 540));
-            dialog.Arrange(new Rect(0, 0, 860, 540));
+            dialog.Measure(new Size(1160, 790));
+            dialog.Arrange(new Rect(0, 0, 1160, 790));
             dialog.UpdateLayout();
             await dialog.Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
             var content = (FrameworkElement)dialog.Content;

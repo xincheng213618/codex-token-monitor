@@ -20,6 +20,8 @@ internal static class QuotaCycleModelPalette
     public static Color GetColor(string? modelId)
     {
         var normalized = CodexModelCost.NormalizeModelId(modelId);
+        if (MatchesModel(normalized, "gpt-6.2-sol")) return Color.FromRgb(14, 116, 144);
+        if (MatchesModel(normalized, "gpt-6.2-astra")) return Color.FromRgb(147, 51, 234);
         if (normalized.Contains("astra", StringComparison.Ordinal)) return Color.FromRgb(109, 76, 219);
         if (MatchesModel(normalized, "gpt-6-sol")) return Color.FromRgb(13, 148, 136);
         if (MatchesModel(normalized, "gpt-5.6-sol")) return Color.FromRgb(3, 105, 161);
@@ -57,6 +59,8 @@ internal static class QuotaCycleModelPalette
         }
 
         var normalized = CodexModelCost.NormalizeModelId(modelId);
+        if (MatchesModel(normalized, "gpt-6.2-sol")) return "6.2 sol";
+        if (MatchesModel(normalized, "gpt-6.2-astra")) return "6.2 astra";
         if (MatchesModel(normalized, "gpt-6.1-sol")) return "6.1 sol";
         if (MatchesModel(normalized, "gpt-6-sol")) return "6 sol";
         if (MatchesModel(normalized, "gpt-5.6-sol")) return "5.6 sol";

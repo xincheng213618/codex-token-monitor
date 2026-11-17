@@ -143,6 +143,33 @@ public sealed class CodexModelUsageTests
         Assert.Equal(2_100_000, merged.TotalTokens);
     }
 
+    [Theory]
+    [InlineData("GPT-6.2 Sol", "gpt-6.2-sol", "priority", "ultrafast", 2)]
+    [InlineData("GPT-6.2 Astra", "gpt-6.2-astra", "fast", "ultra_fast", 8)]
+    public void Gpt62QuotaUsesSeparateFastAndUltrafastMultipliers(string displayName, string model,
+        string fastTier, string ultrafastTier, int standardInputRate)
+    {
+        Assert.Equal(model, CodexModelCost.DefaultModelId("OpenAI", displayName));
+        var loggedModel = $"openai/{model}-2026-11-17";
+        var bucket = new TokenUsageBucket();
+        bucket.Add(new TokenUsageEvent(Day, 1_000_000, 0, 0, 0, 1_000_000, ModelId: loggedModel, ServiceTier: "default"));
+        bucket.Add(new TokenUsageEvent(Day.AddMinutes(1), 1_000_000, 0, 0, 0, 1_000_000, ModelId: loggedModel, ServiceTier: fastTier));
+        bucket.Add(new TokenUsageEvent(Day.AddMinutes(2), 1_000_000, 0, 0, 0, 1_000_000, ModelId: loggedModel, ServiceTier: ultrafastTier));
+
+        var result = CodexModelCost.Estimate(bucket, PricePreset.DefaultsForGroup(PricePresetGroups.Codex));
+
+        Assert.True(result.IsComplete);
+        Assert.Equal(3m * standardInputRate, result.KnownCost);
+        Assert.Equal(9m * standardInputRate, result.QuotaEquivalentCost);
+        Assert.Equal(standardInputRate, result.FastSurcharge);
+        Assert.Equal(5m * standardInputRate, result.UltrafastSurcharge);
+        Assert.Equal(1, result.FastEvents);
+        Assert.Equal(1, result.UltrafastEvents);
+        Assert.Equal(0, result.UnknownTierEvents);
+        Assert.Contains("Ultrafast 1 条", result.SpeedDescription);
+        Assert.Contains("· Fast 1 条 · Ultrafast 1 条", CodexModelCost.DescribeModels(bucket));
+    }
+
     [Fact]
     public void MissingSpeedAndUnknownModelMultiplierRemainExplicit()
     {
@@ -150,12 +177,15 @@ public sealed class CodexModelUsageTests
         var bucket = new TokenUsageBucket();
         bucket.Add(Event(Day, "fast", "gpt-future") with { ServiceTier = "fast" });
         bucket.Add(Event(Day.AddMinutes(1), "unknown", "gpt-future"));
+        bucket.Add(Event(Day.AddMinutes(2), "ultrafast", "gpt-future") with { ServiceTier = "ultrafast" });
         var cost = CodexModelCost.Estimate(bucket, new[] { preset });
         Assert.Equal(1, cost.UnknownTierEvents); Assert.Equal(1, cost.UnknownFastRateEvents);
+        Assert.Equal(1, cost.UnknownUltrafastRateEvents);
         Assert.Equal(cost.KnownCost, cost.QuotaEquivalentCost);
         Assert.DoesNotContain("速度未记录", cost.FormatQuotaCost());
         Assert.Contains("默认按普速 1x", cost.SpeedDescription);
         Assert.Contains("Fast 倍率待补", cost.FormatQuotaCost());
+        Assert.Contains("Ultrafast 倍率待补", cost.FormatQuotaCost());
     }
 
     [Theory]

@@ -41,6 +41,7 @@ public partial class MainWindow
                 claudeModule.QuotaReadings = readings;
                 claudeModule.QuotaFailure = quotaFailure;
                 ApplyClaudeActivitySummary(claudeModule);
+                AdvanceClaudeCycle(claudeModule, snapshot.WeekWindow);
             }
         }
         catch (OperationCanceledException) when (runtime.IsStopping || isClosed)
@@ -65,6 +66,20 @@ public partial class MainWindow
         var activity = module.CurrentActivity;
         ApplyOfficial(ClaudeBlockValue, ClaudeBlockDetail, activity?.FiveHourWindow);
         ApplyOfficial(ClaudeWeekValue, ClaudeWeekDetail, activity?.WeekWindow);
+        var fable = activity?.FableWeek;
+        ClaudeFableWeekValue.Text = fable is not null ? $"剩余 {100 - fable.UsedPercent:0.#}%" : activity is null ? "--" : "未获取";
+        ClaudeFableWeekDetail.Text = fable is not null
+            ? $"{fable.ResetLocal:MM-dd HH:mm} 重置"
+            : module.QuotaFailure ?? (activity is null ? "等待官方额度" : "官方响应未提供 Fable 额度");
+        ClaudeFableWeekValue.ToolTip = fable is not null
+            ? $"Fable 自身周额度已用 {fable.UsedPercent:0.#}% · {fable.ResetLocal:MM-dd HH:mm} 重置" +
+              (fable.ObservedLocal is { } at ? $" · 更新 {at:HH:mm:ss}" : "") +
+              (module.QuotaFailure is { } failure ? $" · {failure}，显示上次读数" : "")
+            : null;
+        var reminder = module.FableReset;
+        ClaudeFableResetValue.Text = reminder?.Status(BeijingClock.Now) ?? "未登记";
+        ClaudeFableResetDetail.Text = reminder is null ? "额度详情内登记"
+            : $"{reminder.ExpiresAt.ToOffset(CodexUsageReader.BeijingOffset):MM-dd HH:mm} 到期";
         ApplyClaudeReference(ClaudeFiveHourCapacityValue, ClaudeFiveHourCapacityDetail,
             ClaudeQuotaReferenceCalculator.Estimate(ClaudeQuotaWindowKind.FiveHour, activity?.FiveHourWindow, module.QuotaReadings));
         ApplyClaudeReference(ClaudeWeekCapacityValue, ClaudeWeekCapacityDetail,
@@ -104,10 +119,44 @@ public partial class MainWindow
             (!reference.IsCurrentWindow ? "历史参考" : reference.IsTentative ? "大致估算" : "自动外推");
     }
 
-    private void ClaudeQuotaButton_Click(object sender, RoutedEventArgs e)
+    private async void ClaudeQuotaButton_Click(object sender, RoutedEventArgs e)
     {
         if (CurrentModule() is not ClaudeCodeUsageModule module) return;
-        new ClaudeQuotaWindow(() => module.CurrentActivity, () => module.QuotaReadings) { Owner = this }.ShowDialog();
+        var dialog = new ClaudeQuotaWindow(() => module.CurrentActivity, () => module.QuotaReadings, module.FableReset, reminder =>
+        {
+            module.FableReset = reminder;
+            ApplyClaudeActivitySummary(module);
+        }) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.OpenCycle is not { } selected || isClosed) return;
+        await RunUiActionAsync(async () =>
+        {
+            SelectClaudeCycle(module, dialog.Cycles, selected);
+            await RefreshUsageAsync();
+        });
+    }
+
+    private void SelectClaudeCycle(ClaudeCodeUsageModule module, IReadOnlyList<ClaudeQuotaCycleUsage> cycles, ClaudeQuotaCycleUsage selected)
+    {
+        module.QuotaCycles = cycles.Select(cycle => new CodexQuotaCycle(
+            cycle.Start, cycle.Reset, cycle.Reset, cycle.Official is null ? 0 : 1, null, cycle.IsCurrent)).ToArray();
+        module.SelectedCycle = module.QuotaCycles.First(cycle => cycle.ResetAt == selected.Reset);
+        module.CustomStartLocal = null;
+        module.Mode = RangeMode.Cycle;
+        UpdateRangeControls();
+    }
+
+    private void AdvanceClaudeCycle(ClaudeCodeUsageModule module, ClaudeQuotaWindowUsage? window)
+    {
+        if (module.QuotaCycles.Count == 0 || window is not { Source: ClaudeWindowSource.Official }) return;
+        var reset = ClaudeQuotaCycleHistory.NormalizeReset(window.ResetLocal);
+        if (reset <= module.QuotaCycles[0].ResetAt) return;
+        var followCurrent = module.SelectedCycle?.IsCurrent == true;
+        var current = new CodexQuotaCycle(reset.AddDays(-7), reset, reset, 1, null, true);
+        module.QuotaCycles = module.QuotaCycles.Select(cycle => cycle with { IsCurrent = false }).Prepend(current).ToArray();
+        if (followCurrent) module.SelectedCycle = current;
+        if (module.Mode != RangeMode.Cycle) return;
+        UpdateRangeControls();
+        if (followCurrent) _ = RefreshUsageAsync(isAutomaticRefresh: true);
     }
 
     private void ApplyClaudeModelMix(TokenUsageBucket today)

@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace CodexTokenMonitor;
 
@@ -6,6 +8,61 @@ public partial class MainWindow
 {
     private CodexMessageHistory? messageHistory;
     private CodexRhythmWindow? rhythmWindow;
+    private readonly DispatcherTimer rhythmTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromHours(1) };
+    private bool rhythmRefreshInProgress;
+    private string? rhythmRefreshError;
+
+    private void InitializeRhythmRefresh()
+    {
+        rhythmTimer.Tick += async (_, _) => await RefreshRhythmAsync();
+        Loaded += async (_, _) =>
+        {
+            if (isClosed || rhythmTimer.IsEnabled) return;
+            rhythmTimer.Start();
+            await RefreshRhythmAsync();
+        };
+    }
+
+    private async Task RefreshRhythmAsync()
+    {
+        if (rhythmRefreshInProgress || isClosed || runtime.IsStopping) return;
+        rhythmRefreshInProgress = true;
+        rhythmRefreshError = null;
+        rhythmWindow?.ShowRefreshStatus(true, null);
+        try
+        {
+            await runtime.Run("Codex 使用节律", async token =>
+            {
+                if (messageHistory is null)
+                {
+                    var saved = await Task.Run(CodexRhythmReader.ReadSaved, token);
+                    if (isClosed) return;
+                    if (saved is not null) ApplyRhythmHistory(saved);
+                }
+
+                var refreshed = await Task.Run(() => CodexRhythmReader.Read(DateTimeOffset.UtcNow, token), token);
+                if (!isClosed) ApplyRhythmHistory(refreshed);
+            });
+        }
+        catch (OperationCanceledException) when (isClosed || runtime.IsStopping) { }
+        catch (Exception error)
+        {
+            Trace.TraceError($"Codex rhythm refresh: {error}");
+            rhythmRefreshError = error.Message;
+        }
+        finally
+        {
+            rhythmRefreshInProgress = false;
+            if (!isClosed) rhythmWindow?.ShowRefreshStatus(false, rhythmRefreshError);
+        }
+    }
+
+    private void ApplyRhythmHistory(CodexMessageHistory history)
+    {
+        messageHistory = history;
+        UpdateInteractionCount(CurrentSource(), GetSelectedRange());
+        rhythmWindow?.ShowHistory(history, dayTimeZone.Offset);
+    }
 
     private void UpdateInteractionCount(UsageSource source, SelectedRange range)
     {
@@ -18,7 +75,7 @@ public partial class MainWindow
         if (messageHistory is null)
         {
             InteractionCountValue.Text = "—";
-            InteractionCountButton.ToolTip = "打开 Codex 使用节律，在窗口中手动更新交互次数";
+            InteractionCountButton.ToolTip = "打开 Codex 使用节律。程序运行时每小时更新交互次数。";
             return;
         }
 
@@ -41,11 +98,9 @@ public partial class MainWindow
             return;
         }
 
-        var window = new CodexRhythmWindow(() => dayTimeZone.Offset, messageHistory, history =>
-        {
-            messageHistory = history;
-            UpdateInteractionCount(CurrentSource(), GetSelectedRange());
-        }) { Owner = this };
+        var window = new CodexRhythmWindow(RefreshRhythmAsync) { Owner = this };
+        if (messageHistory is not null) window.ShowHistory(messageHistory, dayTimeZone.Offset);
+        window.ShowRefreshStatus(rhythmRefreshInProgress, rhythmRefreshError);
         rhythmWindow = window;
         window.Closed += (_, _) => rhythmWindow = null;
         window.Show();

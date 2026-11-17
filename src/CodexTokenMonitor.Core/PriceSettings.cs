@@ -251,6 +251,10 @@ internal sealed class PricePreset
             Preset("DeepSeek", "V4.1 Flash", "¥", "CNY / 1M tokens", 1_000_000m, 1.00m, 0.02m, 4.00m, DeepSeekPriceSource, schedule: PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("DeepSeek", "V4 Pro", "¥", "CNY / 1M tokens", 1_000_000m, 4.50m, 0.15m, 13.50m, DeepSeekPriceSource, schedule: PriceSchedule.DeepSeekBeijingPeakDouble),
             Preset("Xiaomi", "MiMo V2.5 Pro", "Credits", "Credits / token", 1m, 300.00m, 2.50m, 600.00m, "MiMo token plan"),
+            Preset("OpenAI", "GPT-6.2 Sol", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.10m, 10m,
+                "https://developers.openai.com/api/docs/models/gpt-6.2-sol (Standard, ≤272K, 30m cache write)", cacheWrite: 2.50m),
+            Preset("OpenAI", "GPT-6.2 Astra", "$", "USD / 1M tokens", 1_000_000m, 8m, 0.40m, 40m,
+                "https://developers.openai.com/api/docs/models/gpt-6.2-astra (Standard, ≤272K, 30m cache write)", cacheWrite: 10m),
             Preset("OpenAI", "GPT-6 Astra", "$", "USD / 1M tokens", 1_000_000m, 10m, 1m, 50m, "https://developers.openai.com/api/docs/models/gpt-6-astra (Standard)", cacheWrite: 12.5m),
             Preset("OpenAI", "GPT-6 Sol", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.20m, 10m, Gpt6PriceSource, cacheWrite: 2.50m),
             Preset("OpenAI", "GPT-6.1 Sol", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.10m, 10m, Gpt61PriceSource, cacheWrite: 2.50m),
@@ -303,6 +307,8 @@ internal sealed class PricePreset
             Preset("腾讯混元", "Hy4 Preview", "¥", "CNY / 1M tokens", 1_000_000m, 6.00m, 0.30m, 18.00m, HunyuanHy4PriceSource),
             Preset("Claude", "Fable 5 API", "$", "USD / 1M tokens", 1_000_000m, 10.00m, 1.00m, 50.00m, "Anthropic pricing/cache read/write", cacheWrite: 12.50m),
             Preset("Claude", "Fable 5.1 API", "$", "USD / 1M tokens", 1_000_000m, 10m, 0.25m, 50m, ClaudePriceSource, cacheWrite: 12.50m),
+            Preset("Claude", "Fable 5.2 API", "$", "USD / 1M tokens", 1_000_000m, 8m, 0.20m, 40m,
+                "Anthropic 标准价（2026-11-11；5 分钟缓存写入）：https://platform.claude.com/docs/en/about-claude/pricing", cacheWrite: 10m),
             Preset("Claude", "Opus 5.5 API", "$", "USD / 1M tokens", 1_000_000m, 4m, 0.20m, 20m, ClaudePriceSource, cacheWrite: 5m),
             Preset("Claude", "Opus 5 API", "$", "USD / 1M tokens", 1_000_000m, 5m, 0.50m, 25m, ClaudePriceSource, cacheWrite: 6.25m),
             Preset("Claude", "Sonnet 5 API", "$", "USD / 1M tokens", 1_000_000m, 2m, 0.20m, 10m, ClaudePriceSource, cacheWrite: 2.50m),
@@ -405,7 +411,7 @@ internal sealed class PricePreset
             PricePresetGroups.Dsh => ("DeepSeek", "V4.1 Flash"),
             PricePresetGroups.Kimi => ("Kimi（月之暗面）", "K2.8 Preview"),
             PricePresetGroups.Qoder => ("通义千问", "Qwen3 Coder Plus <=32K"),
-            _ => ("OpenAI", "GPT-6.1 Sol")
+            _ => ("OpenAI", "GPT-6.2 Sol")
         };
         var ordered = new List<PricePreset>();
         var first = presets.FirstOrDefault(item =>
@@ -879,9 +885,10 @@ internal static class PriceSettingsStore
     {
         var preferred = new (string Group, string Provider, string Model)[]
         {
-            ("Codex", "OpenAI", "GPT-6.1 Sol"),
+            ("Codex", "OpenAI", "GPT-6.2 Sol"),
             ("Codex", "DeepSeek", "V4.1 Flash"),
             ("Codex", "Xiaomi", "MiMo V2.5 Pro"),
+            ("Codex", "OpenAI", "GPT-6.2 Astra"),
             ("Claude Code", "Claude", "Fable 5.1 API"),
             ("Claude Code", "DeepSeek", "V4.1 Flash"),
             ("Claude Code", "Xiaomi", "MiMo V2.5 Pro"),
@@ -973,12 +980,20 @@ internal static class PriceSettingsStore
         RefreshOldOpenAiDefault(normalized);
         // Earlier builds discover new model ids as zero-price placeholders.
         // Replace only untouched placeholders so they cannot shadow the published tariff.
-        if (normalized.Provider == "OpenAI" &&
-            CodexModelCost.NormalizeModelId(normalized.ModelId) is "gpt-6.1-sol" or "gpt-6.1-terra" &&
-            CodexModelCost.IsPending(normalized))
+        if (normalized.Provider == "OpenAI" && CodexModelCost.IsPending(normalized))
         {
-            normalized = PricePreset.Defaults().Single(item => item.ModelId == CodexModelCost.NormalizeModelId(normalized.ModelId)).Clone();
-            normalized.Group = PricePresetGroups.Normalize(group);
+            var modelId = CodexModelCost.ModelKey(normalized.ModelId);
+            if (modelId is "gpt-6.1-sol" or "gpt-6.1-terra" or "gpt-6.2-sol" or "gpt-6.2-astra")
+            {
+                var published = PricePreset.Defaults().Single(item => item.ModelId == modelId);
+                published.Group = normalized.Group;
+                if (CodexModelCost.NormalizeModelId(normalized.ModelId) != modelId)
+                {
+                    published.ModelId = normalized.ModelId;
+                    published.Model = normalized.Model;
+                }
+                normalized = published;
+            }
         }
         // Upgrade only the untouched placeholder; retain user prices and order.
         if (normalized.Group == PricePresetGroups.Kimi &&

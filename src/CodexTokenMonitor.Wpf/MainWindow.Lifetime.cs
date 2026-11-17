@@ -22,6 +22,7 @@ public partial class MainWindow
         displayViewModel.Stop();
         IsEnabled = false;
         refreshTimer.Stop();
+        rhythmTimer.Stop();
         StopAutomaticTodayUpload();
         backgroundCacheWarmer.Dispose();
         shutdownTask = Task.CompletedTask;

@@ -95,7 +95,8 @@ internal sealed record ClaudeRateLimitWindow(double UsedPercent, DateTimeOffset 
 internal sealed record ClaudeRateLimitSnapshot(
     DateTimeOffset RecordedLocal,
     ClaudeRateLimitWindow? FiveHour,
-    ClaudeRateLimitWindow? SevenDay);
+    ClaudeRateLimitWindow? SevenDay,
+    ClaudeRateLimitWindow? FableWeek = null);
 
 /// <summary>
 /// Reads the rate-limit log written by Scripts/claude-statusline.ps1. Claude
@@ -104,10 +105,17 @@ internal sealed record ClaudeRateLimitSnapshot(
 /// </summary>
 internal static class ClaudeRateLimitLog
 {
+    private static readonly object CurrentGate = new();
+
     public static string CurrentFilePath =>
         Path.Combine(MonitorCachePaths.LocalAppData, "ClaudeCodeTokenMonitor", "official-quota.json");
 
     public static void SaveCurrent(ClaudeRateLimitSnapshot snapshot)
+    {
+        lock (CurrentGate) SaveCurrentCore(snapshot);
+    }
+
+    private static void SaveCurrentCore(ClaudeRateLimitSnapshot snapshot)
     {
         object? Window(ClaudeRateLimitWindow? window) => window is null ? null : new
         {
@@ -118,10 +126,18 @@ internal static class ClaudeRateLimitLog
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(CurrentFilePath)!);
+            var history = ReadWeeklyHistory();
+            if (ClaudeWeeklyQuotaObservation.FromSnapshot(snapshot) is { } current)
+            {
+                history = history.Append(current).GroupBy(reading => reading.ResetAt)
+                    .Select(group => group.MaxBy(reading => reading.ObservedAt)!).OrderBy(reading => reading.ResetAt).ToArray();
+            }
             File.WriteAllText(temp, JsonSerializer.Serialize(new
             {
                 recorded_at = snapshot.RecordedLocal.ToUnixTimeSeconds(),
-                five_hour = Window(snapshot.FiveHour), seven_day = Window(snapshot.SevenDay)
+                five_hour = Window(snapshot.FiveHour), seven_day = Window(snapshot.SevenDay),
+                fable_week = Window(snapshot.FableWeek),
+                weekly_history = history
             }));
             File.Move(temp, CurrentFilePath, overwrite: true);
         }
@@ -133,10 +149,36 @@ internal static class ClaudeRateLimitLog
         }
     }
 
+    public static IReadOnlyList<ClaudeWeeklyQuotaObservation> ReadWeeklyHistory()
+    {
+        try
+        {
+            if (!File.Exists(CurrentFilePath)) return [];
+            var json = File.ReadAllText(CurrentFilePath);
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return [];
+            if (document.RootElement.TryGetProperty("weekly_history", out var history))
+            {
+                return (history.Deserialize<ClaudeWeeklyQuotaObservation[]>() ?? [])
+                    .Where(reading => reading is not null && reading.UsedPercent is >= 0 and <= 100 &&
+                        reading.ResetAt > DateTimeOffset.UnixEpoch.AddDays(7) && reading.ObservedAt < reading.ResetAt &&
+                        reading.ObservedAt >= reading.ResetAt.AddDays(-7)).ToArray();
+            }
+
+            // Older installs kept only the current official response.
+            return Parse([json]).FirstOrDefault() is { } snapshot &&
+                ClaudeWeeklyQuotaObservation.FromSnapshot(snapshot) is { } current ? [current] : [];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentOutOfRangeException)
+        {
+            return [];
+        }
+    }
+
     public static string FilePath =>
         Path.Combine(MonitorCachePaths.LocalAppData, "ClaudeCodeTokenMonitor", "rate-limits.jsonl");
 
-    /// <summary>The newest still-open 5h and 7d windows; a window is dropped once its reset passes.</summary>
+    /// <summary>The newest still-open quota windows; each is dropped once its reset passes.</summary>
     public static ClaudeRateLimitSnapshot? ReadLatest(DateTimeOffset nowLocal)
     {
         var lines = new List<string>();
@@ -163,15 +205,17 @@ internal static class ClaudeRateLimitLog
         var list = snapshots.OrderBy(item => item.RecordedLocal).ToList();
         var fiveHour = list.LastOrDefault(item => item.FiveHour is { } window && window.ResetLocal > nowLocal);
         var sevenDay = list.LastOrDefault(item => item.SevenDay is { } window && window.ResetLocal > nowLocal);
-        if (fiveHour is null && sevenDay is null)
+        var fableWeek = list.LastOrDefault(item => item.FableWeek is { } window && window.ResetLocal > nowLocal);
+        if (fiveHour is null && sevenDay is null && fableWeek is null)
         {
             return null;
         }
 
         return new ClaudeRateLimitSnapshot(
-            new[] { fiveHour?.RecordedLocal, sevenDay?.RecordedLocal }.Max()!.Value,
+            new[] { fiveHour?.RecordedLocal, sevenDay?.RecordedLocal, fableWeek?.RecordedLocal }.Max()!.Value,
             fiveHour?.FiveHour is { } five ? five with { ObservedLocal = fiveHour.RecordedLocal } : null,
-            sevenDay?.SevenDay is { } week ? week with { ObservedLocal = sevenDay.RecordedLocal } : null);
+            sevenDay?.SevenDay is { } week ? week with { ObservedLocal = sevenDay.RecordedLocal } : null,
+            fableWeek?.FableWeek is { } fable ? fable with { ObservedLocal = fableWeek.RecordedLocal } : null);
     }
 
     public static IReadOnlyList<ClaudeRateLimitSnapshot> Parse(IEnumerable<string> lines)
@@ -197,8 +241,9 @@ internal static class ClaudeRateLimitLog
                 var snapshot = new ClaudeRateLimitSnapshot(
                     ToLocal(recordedSeconds),
                     ReadWindow(root, "five_hour"),
-                    ReadWindow(root, "seven_day"));
-                if (snapshot.FiveHour is not null || snapshot.SevenDay is not null)
+                    ReadWindow(root, "seven_day"),
+                    ReadWindow(root, "fable_week"));
+                if (snapshot.FiveHour is not null || snapshot.SevenDay is not null || snapshot.FableWeek is not null)
                 {
                     result.Add(snapshot);
                 }
@@ -266,7 +311,8 @@ internal sealed record ClaudeCodeActivitySnapshot(
     int WeekActiveDays,
     bool WeekIsComplete = true,
     ClaudeQuotaWindowUsage? FiveHourWindow = null,
-    ClaudeQuotaWindowUsage? WeekWindow = null)
+    ClaudeQuotaWindowUsage? WeekWindow = null,
+    ClaudeRateLimitWindow? FableWeek = null)
 {
     public ClaudeCodeBlock? CurrentBlock => RecentBlocks.LastOrDefault(block => block.IsActiveAt(NowLocal));
     public ClaudeCodeBlock? LastBlock => RecentBlocks.LastOrDefault();
@@ -363,7 +409,8 @@ internal static class ClaudeCodeActivityReader
         return snapshot with
         {
             FiveHourWindow = Resolve(ClaudeQuotaWindowKind.FiveHour, official?.FiveHour),
-            WeekWindow = Resolve(ClaudeQuotaWindowKind.Week, official?.SevenDay)
+            WeekWindow = Resolve(ClaudeQuotaWindowKind.Week, official?.SevenDay),
+            FableWeek = official?.FableWeek
         };
     }
 
