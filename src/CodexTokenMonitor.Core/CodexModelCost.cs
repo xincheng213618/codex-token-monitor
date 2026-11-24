@@ -265,6 +265,8 @@ internal static class CodexModelCost
             // the model's published API id, so pricing needs the alias to hit.
             "deepseek-flash" => "deepseek-v4-flash",
             "deepseek-pro" => "deepseek-v4-pro",
+            "gemini-3-pro" or "gemini-3-pro-preview" => "gemini-3.1-pro-preview",
+            "gemini-3-flash" => "gemini-3-flash-preview",
             _ => value
         };
     }
@@ -324,6 +326,17 @@ internal static class CodexModelCost
             "MiMo V2.5 Pro" => "mimo-v2.5-pro",
             "V4.1 Flash" or "V4 Flash" when provider.Contains("DeepSeek", StringComparison.OrdinalIgnoreCase) => "deepseek-v4-flash",
             "V4 Pro" when provider.Contains("DeepSeek", StringComparison.OrdinalIgnoreCase) => "deepseek-v4-pro",
+            "Gemini 4 Carbon" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-4-carbon",
+            "Gemini 4 Argon" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-4-argon",
+            "Gemini 4 Neon" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-4-neon",
+            "Gemini 4 Hydrogen" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-4-hydrogen",
+            "Gemini 3.8 Flash" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-3.8-flash",
+            "Gemini 3.5 Flash-Lite" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-3.5-flash-lite",
+            "Gemini 3.1 Pro Preview" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-3.1-pro-preview",
+            "Gemini 3 Flash Preview" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-3-flash-preview",
+            "Gemini 2.5 Pro" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-2.5-pro",
+            "Gemini 2.5 Flash" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-2.5-flash",
+            "Gemini 2.5 Flash-Lite" when provider.Contains("Google", StringComparison.OrdinalIgnoreCase) => "gemini-2.5-flash-lite",
             _ => ""
         };
 
@@ -365,10 +378,49 @@ internal static class CodexModelCost
         return count;
     }
 
+    public static int AddMissingGeminiPresets(PriceSettings settings, IEnumerable<string> models)
+    {
+        var catalog = BuildCatalog(settings.GeminiPresets, openAiOnly: false);
+        var count = 0;
+        foreach (var model in models.Where(m => !string.IsNullOrWhiteSpace(m)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var key = NormalizeModelId(model);
+            if (catalog.ContainsKey(key) || catalog.ContainsKey(ModelKey(key)) || catalog.ContainsKey(FamilyKey(key))) continue;
+            var preset = new PricePreset
+            {
+                Group = PricePresetGroups.Gemini,
+                Provider = "Google",
+                Model = model,
+                ModelId = model,
+                CurrencySymbol = "$",
+                UnitLabel = "USD / 1M tokens",
+                Divisor = 1_000_000m,
+                UncachedInput = 0,
+                CachedInput = 0,
+                CacheWriteInput = 0,
+                Output = 0,
+                Source = PlaceholderPriceSource
+            };
+            settings.GeminiPresets.Add(preset);
+            catalog[key] = preset;
+            count++;
+        }
+        return count;
+    }
+
     internal static string ModelKey(string? model) => Regex.Replace(NormalizeModelId(model), @"-\d{4}-\d{2}-\d{2}$", "");
 
     // "hy3-preview-20260421" -> "hy3-preview" (ModelKey drops the date) -> "hy3".
-    private static string FamilyKey(string? model) => Regex.Replace(ModelKey(model), @"-preview(-.*)?$", "");
+    // Antigravity appends reasoning-effort suffixes ("gemini-4-carbon-medium" -> "gemini-4-carbon").
+    internal static string FamilyKey(string? model)
+    {
+        var stripped = Regex.Replace(ModelKey(model), @"-preview(-.*)?$", "");
+        if (stripped.StartsWith("gemini-", StringComparison.Ordinal))
+        {
+            stripped = Regex.Replace(stripped, @"-(minimal|low|medium|high|extra-high|xhigh|thinking)$", "");
+        }
+        return stripped;
+    }
 
     internal static bool IsPending(PricePreset? preset) => preset is null ||
         (preset.Source == PlaceholderPriceSource || preset.Source == NoPublicPriceSource) &&

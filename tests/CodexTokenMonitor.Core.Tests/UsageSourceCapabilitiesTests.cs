@@ -17,6 +17,7 @@ public sealed class UsageSourceCapabilitiesTests
     [InlineData((int)UsageSource.Dsh, "DshTokenMonitor")]
     [InlineData((int)UsageSource.Kimi, "KimiTokenMonitor")]
     [InlineData((int)UsageSource.Qoder, "QoderTokenMonitor")]
+    [InlineData((int)UsageSource.Gemini, "GeminiTokenMonitor")]
     public void CachedQueries_DoNotReplaceIncompleteCacheWithSourceLogs(int sourceValue, string cacheFolder)
     {
         var source = (UsageSource)sourceValue;
@@ -98,6 +99,7 @@ public sealed class UsageSourceCapabilitiesTests
             UsageSource.ZCode => Path.Combine(root, "rollout"),
             UsageSource.Dsh => Path.Combine(root, "fixture"),
             UsageSource.Qoder => Path.Combine(root, "workspace", "sample-session", "segments"),
+            UsageSource.Gemini => Path.Combine(root, "antigravity", "brain", "sample-conv", ".system_generated", "logs"),
             _ => root
         };
         Directory.CreateDirectory(root);
@@ -149,6 +151,12 @@ public sealed class UsageSourceCapabilitiesTests
                 data = new { model = "auto", input_tokens = 960, cache_read_input_tokens = 40,
                     cache_creation_input_tokens = 20, output_tokens = 10 }
             },
+            UsageSource.Gemini => new
+            {
+                step_index = 1, source = "MODEL", type = "PLANNER_RESPONSE", status = "DONE",
+                created_at = timestamp, model = "gemini-2.5-pro",
+                input_tokens = 900, cache_read_tokens = 40, cache_write_tokens = 20, output_tokens = 10
+            },
             _ => throw new ArgumentOutOfRangeException(nameof(source))
         };
         var text = JsonSerializer.Serialize(entry) + "\n";
@@ -161,7 +169,8 @@ public sealed class UsageSourceCapabilitiesTests
         {
             var name = source == UsageSource.Codex ? "rollout-capabilities.jsonl" :
                 source == UsageSource.Kimi ? "wire.jsonl" :
-                source == UsageSource.Qoder ? "segment.jsonl" : "model-io-capabilities.jsonl";
+                source == UsageSource.Qoder ? "segment.jsonl" :
+                source == UsageSource.Gemini ? "transcript.jsonl" : "model-io-capabilities.jsonl";
             File.WriteAllText(Path.Combine(root, name), text);
         }
     }

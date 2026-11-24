@@ -177,6 +177,10 @@ internal static class SpeedProbe
                     Json(new { time = day.AddSeconds(5).ToUnixTimeMilliseconds(), type = "usage.record", usageScope = "turn", model = "kimi", usage = new { inputOther = 900, output = 400 } }));
                 Write(UsageSource.Qoder, "s/segments/001.jsonl", Json(new { ts = day.AddSeconds(1), type = "model.request.started", request_id = "qoder-r", data = new { model = "qoder" } }),
                     Json(new { ts = day.AddSeconds(5), type = "model.response.completed", request_id = "qoder-r", data = new { model = "qoder", input_tokens = 900, output_tokens = 400 } }));
+                Write(UsageSource.Gemini, "antigravity/brain/conv-1/.system_generated/logs/transcript.jsonl",
+                    Json(new { step_index = 0, source = "USER_EXPLICIT", type = "USER_INPUT", created_at = day.AddSeconds(1), content = "<USER_REQUEST>hi</USER_REQUEST>" }),
+                    Json(new { step_index = 1, source = "MODEL", type = "PLANNER_RESPONSE", created_at = day.AddSeconds(1), model = "gemini-2.5-pro", input_tokens = 900, cache_read_tokens = 0, output_tokens = 400, tool_calls = new[] { new { name = "read_file" } } }),
+                    Json(new { step_index = 2, source = "MODEL", type = "GENERIC", created_at = day.AddSeconds(5), content = "Completed At: " + day.AddSeconds(6).ToString("O") }));
                 var database = AgentSpeedPaths.ZCodePath(); Directory.CreateDirectory(Path.GetDirectoryName(database)!);
                 using var connection = new SqliteConnection("Data Source=" + database + ";Pooling=False"); connection.Open(); using var command = connection.CreateCommand();
                 command.CommandText = "CREATE TABLE model_usage(id TEXT, session_id TEXT, model_id TEXT, started_at INTEGER, completed_at INTEGER, input_tokens INTEGER, output_tokens INTEGER); INSERT INTO model_usage VALUES('zcode-r','s','glm',$start,$end,900,400)";

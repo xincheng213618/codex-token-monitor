@@ -89,7 +89,7 @@ public partial class MainWindow : Window
 
             if (action == AutomaticRefreshAction.RefreshQuotaOnly)
             {
-                if (module is CodexUsageModule or ZCodeUsageModule or ClaudeCodeUsageModule)
+                if (module is CodexUsageModule or ZCodeUsageModule or ClaudeCodeUsageModule or GeminiUsageModule)
                 {
                     await RefreshQuotaSummaryAsync();
                 }
@@ -785,9 +785,9 @@ public partial class MainWindow : Window
                         ? ReadPriceSettingsForUsage(source, queried, runtime.LifetimeToken)
                         : Array.Empty<CacheWarning>();
                     using var diagnostics = CacheOperationDiagnostics.Begin();
-                    // Claude cycle detail is a transient log scan, so completeness
+                    // Claude/Gemini cycle detail is a transient log scan, so completeness
                     // of the application's daily cache cannot validate that result.
-                    var canCache = source != UsageSource.ClaudeCode &&
+                    var canCache = source is not (UsageSource.ClaudeCode or UsageSource.Gemini) &&
                         queried.CacheWarnings.Count == 0 && priceWarnings.Count == 0 && usageQueryService.CanCacheCycleResult(
                         cachedQueries, range, includeLiveToday, runtime.LifetimeToken);
                     var warnings = queried.CacheWarnings.Concat(priceWarnings).Concat(diagnostics.Warnings).Distinct().ToArray();
@@ -877,7 +877,7 @@ public partial class MainWindow : Window
 
     private static bool ShouldRefreshQuota(UsageSourceModule module)
     {
-        return module.SupportsQuota || module is ZCodeUsageModule or DshUsageModule or ClaudeCodeUsageModule;
+        return module.SupportsQuota || module is ZCodeUsageModule or DshUsageModule or ClaudeCodeUsageModule or GeminiUsageModule;
     }
 
     private Task RefreshQuotaSummaryAsync() => runtime.Run("额度刷新", _ => CurrentModule() switch
@@ -885,6 +885,7 @@ public partial class MainWindow : Window
         ZCodeUsageModule => RefreshZCodeQuotaCoreAsync(),
         DshUsageModule => RefreshDshBalanceCoreAsync(),
         ClaudeCodeUsageModule => RefreshClaudeActivityCoreAsync(),
+        GeminiUsageModule => RefreshGeminiActivityCoreAsync(),
         _ => RefreshQuotaSummaryCoreAsync()
     });
 
@@ -1109,6 +1110,7 @@ public partial class MainWindow : Window
         {
             CostCardsPanel.Children.Clear();
         }
+        SetModelBreakdownSource(module.Source, hasUsage ? result.Summary : null);
         if (module is CodexUsageModule codexModule)
         {
             codexModule.CurrentQuotaSnapshots = result.QuotaSnapshots;
@@ -1251,6 +1253,7 @@ public partial class MainWindow : Window
     private void ApplyEmptyModuleState(UsageSourceModule module)
     {
         displayViewModel.ShowLoading(module.Source, module.Title);
+        SetModelBreakdownSource(module.Source, null);
         CostCardsPanel.Children.Clear();
         SetTimelineVisible(false);
         ApplyQuotaSummary(module, module is CodexUsageModule codexModule ? codexModule.CurrentQuotaEstimate : null);
@@ -1269,7 +1272,12 @@ public partial class MainWindow : Window
         {
             // Non-Codex sources price their actual model ids against the
             // source's own price group, in that group's currency.
-            var provider = source == UsageSource.ZCode ? "智谱/Z.AI" : UsageSourceRegistry.For(source).Title;
+            var provider = source switch
+            {
+                UsageSource.ZCode => "智谱/Z.AI",
+                UsageSource.Gemini => "Google",
+                _ => UsageSourceRegistry.For(source).Title
+            };
             CostCardsPanel.Children.Add(CreateCostCard(
                 new PricePreset { Provider = provider, Model = source == UsageSource.Kimi ? "实际模型 · 参考价估算" : "实际模型 · 标准 API 等价" }, summary,
                 actual: true, priceGroup: PricePresetGroups.ForSource(source)));
@@ -1342,6 +1350,15 @@ public partial class MainWindow : Window
         builder.AppendLine($"Reasoning：{FormatTokenAdaptive(summary.ReasoningOutputTokens)}");
         builder.AppendLine($"Events：{summary.Events:N0}");
         builder.AppendLine($"Coding Time：{FormatDuration(result.CodingTime)}");
+        if (SupportsUsageRhythm(module.Source) && GetRhythmHistory(module.Source) is { } rhythmHist)
+        {
+            var rEnd = range.End < rhythmHist.UpdatedAt ? range.End : rhythmHist.UpdatedAt;
+            builder.AppendLine($"人工交互次数：{rhythmHist.CountInRange(range.Start, rEnd):N0}");
+        }
+        if (module is GeminiUsageModule { CurrentActivity.RangeStats: { } geminiStats })
+        {
+            builder.AppendLine($"Gemini 会话：{geminiStats.MainSessions:N0} 主会话 / {geminiStats.SubagentSessions:N0} 子代理（工具调用 {geminiStats.ToolCalls:N0} 次；AGY {geminiStats.AntigravityEvents:N0} 条 / CLI {geminiStats.CliEvents:N0} 条）");
+        }
         if (RealPriceCalculator.Supports(module.Source))
         {
             var referenceCost = EstimateRealPrice(module.Source, summary);
@@ -1447,7 +1464,7 @@ public partial class MainWindow : Window
 
     private static bool SupportsModelCost(UsageSource source)
     {
-        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode or UsageSource.Dsh or UsageSource.Kimi or UsageSource.Qoder;
+        return source is UsageSource.Codex or UsageSource.ZCode or UsageSource.WorkBuddy or UsageSource.ClaudeCode or UsageSource.Dsh or UsageSource.Kimi or UsageSource.Qoder or UsageSource.Gemini;
     }
 
     private static string FormatActualBucketCost(UsageSource source, TokenUsageBucket bucket)
@@ -1529,7 +1546,7 @@ public partial class MainWindow : Window
             tablePresets,
             includeModels: SupportsModelCost(source),
             includeQuota: source == UsageSource.Codex,
-            includeCacheWrite: source != UsageSource.Codex,
+            includeCacheWrite: !SupportsUsageRhythm(source),
             rows);
         breakdownDisplay = new BreakdownDisplay(range, source, buckets, rows, quotaSnapshots, priceSettings);
     }
@@ -1550,6 +1567,7 @@ public partial class MainWindow : Window
         ZCodeQuotaPanel.Visibility = module is ZCodeUsageModule ? Visibility.Visible : Visibility.Collapsed;
         DshBalancePanel.Visibility = module is DshUsageModule ? Visibility.Visible : Visibility.Collapsed;
         ClaudeActivityPanel.Visibility = module is ClaudeCodeUsageModule ? Visibility.Visible : Visibility.Collapsed;
+        GeminiActivityPanel.Visibility = module is GeminiUsageModule ? Visibility.Visible : Visibility.Collapsed;
         ResetSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         PlanSettingsButton.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         ClearReserveUsageDisplay();
@@ -1566,6 +1584,11 @@ public partial class MainWindow : Window
         if (module is ClaudeCodeUsageModule claudeModule)
         {
             ApplyClaudeActivitySummary(claudeModule);
+        }
+
+        if (module is GeminiUsageModule geminiModule)
+        {
+            ApplyGeminiActivitySummary(geminiModule);
         }
 
         if (!show)
@@ -2016,7 +2039,7 @@ public partial class MainWindow : Window
         var module = CurrentModule();
         var now = BeijingClock.Now;
         var cycle = SelectedCycle();
-        if (module is ClaudeCodeUsageModule && cycle is { IsCurrent: true } && cycle.ResetAt <= now)
+        if (module is ClaudeCodeUsageModule or GeminiUsageModule && cycle is { IsCurrent: true } && cycle.ResetAt <= now)
             cycle = cycle with { IsCurrent = false };
         return UsageRangePolicy.ResolveSelectedRange(
             module.Mode,

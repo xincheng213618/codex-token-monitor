@@ -70,7 +70,9 @@ public partial class MainWindow
     }
     private void DetailsTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ReferenceEquals(e.Source, DetailsTabs)) UpdateSpeedSelection();
+        if (!ReferenceEquals(e.Source, DetailsTabs)) return;
+        UpdateSpeedSelection();
+        if (ModelBreakdownTab?.IsSelected == true) RenderModelBreakdown();
     }
     private void SpeedAnalysisButton_Click(object sender, RoutedEventArgs e)
     {

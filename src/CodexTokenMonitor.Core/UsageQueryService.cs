@@ -113,12 +113,14 @@ internal sealed class UsageQueryService
                 customRows, customRows, UsageBreakdownBuilder.EstimateCodingTime(customRows), now, cancellationToken);
         }
 
-        if (reader.Source == UsageSource.ClaudeCode && range.Mode == RangeMode.Cycle)
+        if (reader.Source is UsageSource.ClaudeCode or UsageSource.Gemini && range.Mode == RangeMode.Cycle)
         {
             // This view has the same model scope and exact interval as the
-            // Claude weekly history. Historical logs may precede the cache.
+            // weekly cycle history. Historical logs may precede the cache.
             var cycleRows = reader.ReadTransientDetailRows(range.Start, range.End, cancellationToken)
-                .Where(row => row.ModelUsage.Keys.Any(ClaudeQuotaEstimator.IsClaudeModel)).ToArray();
+                .Where(row => reader.Source == UsageSource.Gemini
+                    ? row.ModelUsage.Count == 0 || row.ModelUsage.Keys.Any(GeminiQuotaEstimator.IsGeminiModel)
+                    : row.ModelUsage.Keys.Any(ClaudeQuotaEstimator.IsClaudeModel)).ToArray();
             var cycleSummary = UsageSummaryBuilder.FromRows(range.Start, range.End, cycleRows);
             var cycleBreakdown = UsageBreakdownBuilder.Build(range, cycleSummary, cycleRows, MultiDayBreakdownInterval);
             return CreateResult(reader, range, request.CachedQuota, cycleSummary, cycleBreakdown, cycleRows,

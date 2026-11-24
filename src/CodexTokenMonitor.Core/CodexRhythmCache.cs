@@ -11,11 +11,11 @@ internal sealed class CodexRhythmCache
     private readonly string path;
     private readonly string mutexName;
 
-    public CodexRhythmCache(string home)
+    public CodexRhythmCache(string home, string cacheFolder = "CodexTokenMonitor")
     {
         var key = HashPath(home);
-        path = Path.Combine(MonitorCachePaths.LocalAppData, "CodexTokenMonitor", "rhythm", $"history-v1-{key}.json");
-        mutexName = "CodexTokenMonitor.Rhythm." + HashPath(path);
+        path = Path.Combine(MonitorCachePaths.LocalAppData, cacheFolder, "rhythm", $"history-v1-{key}.json");
+        mutexName = $"{cacheFolder}.Rhythm.{HashPath(path)}";
     }
 
     public CodexRhythmSnapshot Load()

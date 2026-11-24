@@ -14,7 +14,8 @@ internal enum ClaudeQuotaWindowKind
 internal enum ClaudeQuotaReadingSource
 {
     Manual,
-    Official
+    Official,
+    Desktop
 }
 
 /// <summary>

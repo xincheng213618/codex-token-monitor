@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CodexTokenMonitor</AssemblyName>
     <RootNamespace>CodexTokenMonitor</RootNamespace>
-    <Version>2026.11.18</Version>
+    <Version>2026.11.25</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -38,6 +38,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CodexTokenMonitor.Core\CodexTokenMonitor.Core.csproj" />
+    <EmbeddedResource Include="..\..\Scripts\gemini-statusline.ps1"
+                      LogicalName="CodexTokenMonitor.GeminiStatusline.ps1" />
     <None Include="..\..\docs\third-party\real-api-pricing\**\*"
           Link="Notices\real-api-pricing\%(RecursiveDir)%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

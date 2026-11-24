@@ -62,7 +62,10 @@ internal static class UsageSourceRegistry
             "kimi code", "kimi work"),
         new UsageSourceDefinition(UsageSource.Qoder, "Qoder", PricePresetGroups.Qoder, false,
             UsageSourceReaders.CreateQoderReader,
-            "qoder cli", "qoder ide")
+            "qoder cli", "qoder ide"),
+        new UsageSourceDefinition(UsageSource.Gemini, "Gemini", PricePresetGroups.Gemini, false,
+            UsageSourceReaders.CreateGeminiReader,
+            "google", "google gemini", "antigravity", "agy", "gemini cli", "gemini-cli")
     });
 
     private static readonly IReadOnlyDictionary<UsageSource, UsageSourceDefinition> BySource =

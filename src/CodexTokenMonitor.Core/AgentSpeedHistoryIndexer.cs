@@ -26,6 +26,11 @@ internal sealed class AgentSpeedHistoryIndexer(AgentSpeedHistoryStore store)
                     var errors = native.Read(engine, DateTimeOffset.MinValue.AddDays(2), DateTimeOffset.MaxValue.AddDays(-2), cancellation);
                     return new(engine.Responses, errors == 0 && Signature(file.Path) == file.Signature);
                 }
+                if (source == UsageSource.Gemini && file.Path.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                {
+                    var ok = GeminiSpeedParser.ReadSessionJsonFile(file.Path, engine, canUse, cancellation);
+                    return new(engine.Responses, ok && Signature(file.Path) == file.Signature);
+                }
                 var agentId = source == UsageSource.Qoder ? Path.GetDirectoryName(Path.GetDirectoryName(file.Path))! : file.Path;
                 IAgentSpeedParser parser;
                 if (source == UsageSource.Qoder)

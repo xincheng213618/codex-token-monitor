@@ -1,0 +1,85 @@
+<UserControl x:Class="CodexTokenMonitor.ModelUsageBreakdownView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontWeight="Normal" Foreground="{StaticResource TextBrush}" SizeChanged="View_SizeChanged">
+    <ScrollViewer x:Name="PageScroll" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+        <Grid MinHeight="80" Height="{Binding ViewportHeight, ElementName=PageScroll}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Grid x:Name="CompositionLayout" Margin="0,2,0,9">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid x:Name="TokenMix" Grid.ColumnSpan="2" Height="30">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition x:Name="TokenLabelWidth" Width="200" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Margin="0,0,14,0" VerticalAlignment="Center">
+                        <TextBlock DockPanel.Dock="Left" Text="Token 用量" FontWeight="SemiBold" Margin="0,0,8,0" />
+                        <TextBlock x:Name="TokenTotal" Text="—" TextAlignment="Right" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    </DockPanel>
+                    <Border Grid.Column="1" Height="16" VerticalAlignment="Center" Background="{StaticResource BorderBrush}" CornerRadius="5">
+                        <Grid x:Name="TokenShareStrip" AutomationProperties.Name="Token 用量占比" />
+                    </Border>
+                </Grid>
+
+                <Grid x:Name="CostMix" Grid.Row="1" Grid.ColumnSpan="2" Height="30">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition x:Name="CostLabelWidth" Width="200" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Margin="0,0,14,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="CostCaption" DockPanel.Dock="Left" Text="API 等价费用" FontWeight="SemiBold" Margin="0,0,8,0" />
+                        <TextBlock x:Name="CostTotal" Text="—" TextAlignment="Right" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    </DockPanel>
+                    <Border Grid.Column="1" Height="16" VerticalAlignment="Center" Background="{StaticResource BorderBrush}" CornerRadius="5">
+                        <Grid x:Name="CostShareStrip" AutomationProperties.Name="已计价费用占比" />
+                    </Border>
+                </Grid>
+
+                <TextBlock x:Name="CoverageNote" Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource SectionDescription}"
+                           Margin="0,2,0,0" Visibility="Collapsed" />
+            </Grid>
+
+            <DataGrid x:Name="ModelGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True"
+                      CanUserAddRows="False" CanUserReorderColumns="False" SelectionMode="Single" SelectionUnit="FullRow"
+                      IsSynchronizedWithCurrentItem="False"
+                      SelectedValuePath="ModelId" SelectionChanged="ModelGrid_SelectionChanged" PreviewKeyDown="ModelGrid_PreviewKeyDown"
+                      AutomationProperties.Name="按模型查看 Token 和费用占比"
+                      VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True">
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="模型" Width="2*" MinWidth="140" SortMemberPath="Model">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <DockPanel>
+                                    <Border Width="8" Height="8" CornerRadius="2" Background="{Binding Color}" Margin="0,0,8,0" />
+                                    <TextBlock Text="{Binding Model}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding Model}" />
+                                </DockPanel>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Token 数" Width="*" MinWidth="85" Binding="{Binding TokenText}"
+                                        SortMemberPath="Tokens" ElementStyle="{StaticResource NumericCellText}" />
+                    <DataGridTextColumn Header="Token 占比" Width="94" Binding="{Binding TokenShareText}"
+                                        SortMemberPath="TokenShare" ElementStyle="{StaticResource NumericCellText}" />
+                    <DataGridTextColumn x:Name="CostColumn" Header="估算费用" Width="1.2*" MinWidth="106" Binding="{Binding CostText}"
+                                        SortMemberPath="CostAmount" ElementStyle="{StaticResource NumericCellText}" />
+                    <DataGridTextColumn x:Name="CostShareColumn" Header="费用占比" Width="94" Binding="{Binding CostShareText}"
+                                        SortMemberPath="CostShare" ElementStyle="{StaticResource NumericCellText}" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

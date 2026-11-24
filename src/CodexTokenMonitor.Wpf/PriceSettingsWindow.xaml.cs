@@ -44,9 +44,18 @@ internal partial class PriceSettingsWindow : Window
             string? modelWarning = null;
             try
             {
-                var models = await querySession.RunAsync("读取已发现模型", _ => UsageCacheStore.Load().GetModelIds());
+                var models = await querySession.RunAsync("读取已发现模型", _ =>
+                {
+                    var codexModels = UsageCacheStore.Load().GetModelIds();
+                    var geminiModels = UsageCacheStore.Load(GeminiUsageReader.CacheFolder).GetModelIds();
+                    return (Codex: codexModels, Gemini: geminiModels);
+                });
                 if (querySession.IsStopping) return;
-                if (models.CacheWarnings.Count == 0) CodexModelCost.AddMissingPresets(loadedSettings, models.Value);
+                if (models.CacheWarnings.Count == 0)
+                {
+                    CodexModelCost.AddMissingPresets(loadedSettings, models.Value.Codex);
+                    CodexModelCost.AddMissingGeminiPresets(loadedSettings, models.Value.Gemini);
+                }
                 else modelWarning = CacheFailureText.Detail(models.CacheWarnings);
             }
             catch (OperationCanceledException) when (querySession.IsStopping) { return; }

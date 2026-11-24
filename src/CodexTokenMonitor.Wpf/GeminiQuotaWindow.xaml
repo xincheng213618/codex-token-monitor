@@ -1,0 +1,121 @@
+<Window x:Class="CodexTokenMonitor.GeminiQuotaWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:ClassModifier="internal" Title="Gemini 额度详情与周额度估算" Width="1160" Height="820" MinWidth="920" MinHeight="680"
+        ResizeMode="CanResizeWithGrip" WindowStartupLocation="CenterOwner"
+        Background="{StaticResource CanvasBrush}" FontFamily="Microsoft YaHei UI" FontSize="12" Foreground="{StaticResource TextBrush}">
+    <Grid Margin="20" Background="{StaticResource CanvasBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="*" MinHeight="175" /><RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <DockPanel Margin="0,0,0,12">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="SyncDesktopButton" Style="{StaticResource ToolButton}" Content="同步桌面额度"
+                        Margin="0,0,8,0" Click="SyncDesktop_Click"
+                        ToolTip="读取 Antigravity 当前打开的 Models 或 View Usage 面板" />
+                <Button x:Name="CopyStatuslineConfigButton" Style="{StaticResource ToolButton}"
+                        Content="复制 agy statusLine 配置" Click="CopyStatuslineConfig_Click"
+                        ToolTip="复制 ~/.gemini/antigravity-cli/settings.json 的自动同步配置片段" />
+            </StackPanel>
+            <StackPanel>
+                <TextBlock Text="Gemini 额度详情与周额度估算" Style="{StaticResource PageTitle}" />
+                <TextBlock Style="{StaticResource PageSubtitle}" Margin="0,6,0,0" TextWrapping="Wrap"
+                           Text="查看 5h / 7d 剩余额度与满额估算。支持 Antigravity 桌面用量面板、CLI statusLine 和手动登记。" />
+            </StackPanel>
+        </DockPanel>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="14" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <Border Style="{StaticResource PanelBorder}" Padding="14,10">
+                <StackPanel>
+                    <TextBlock Text="5h 满额 · 大致估算" Style="{StaticResource SectionTitle}" />
+                    <TextBlock x:Name="FiveHourTotalValue" Text="待估算" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" Margin="0,4,0,2" />
+                    <TextBlock x:Name="FiveHourTokensValue" Text="-- Token" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock x:Name="FiveHourQuotaDetail" Style="{StaticResource SectionDescription}" TextWrapping="Wrap" Margin="0,6,0,3" />
+                    <TextBlock x:Name="FiveHourSampleDetail" Style="{StaticResource SectionDescription}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="2" Style="{StaticResource PanelBorder}" Padding="14,10">
+                <StackPanel>
+                    <TextBlock Text="7d 满额 · 周额度估算" Style="{StaticResource SectionTitle}" />
+                    <TextBlock x:Name="WeekTotalValue" Text="待估算" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" Margin="0,4,0,2" />
+                    <TextBlock x:Name="WeekTokensValue" Text="-- Token" FontSize="16" FontWeight="SemiBold" />
+                    <TextBlock x:Name="WeekQuotaDetail" Style="{StaticResource SectionDescription}" TextWrapping="Wrap" Margin="0,6,0,3" />
+                    <TextBlock x:Name="WeekSampleDetail" Style="{StaticResource SectionDescription}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+        </Grid>
+        <Border Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="14,10" Margin="0,10,0,0">
+            <StackPanel>
+                <TextBlock Text="登记当前 5h / 7d 额度读数（用于反推 100% 满额容量与订阅折算）" Style="{StaticResource SectionTitle}" />
+                <TextBlock Style="{StaticResource SectionDescription}" Margin="0,4,0,8" TextWrapping="Wrap"
+                           Text="首次同步请展开 Antigravity 模型菜单的 View Usage 取得重置倒计时。已有周期时也能从「Settings → Models」更新比例。可直接填写剩余比例和重置时间（如 14:30、3h20m 或 4d12h）。" />
+                <WrapPanel Margin="0,0,0,6" VerticalAlignment="Center">
+                    <TextBlock Text="5h 窗口：" FontWeight="SemiBold" Width="66" VerticalAlignment="Center" />
+                    <ComboBox x:Name="FiveHourModeBox" Width="88" Margin="0,0,8,0" SelectedIndex="0">
+                        <ComboBoxItem Content="剩余 %" />
+                        <ComboBoxItem Content="已用 %" />
+                    </ComboBox>
+                    <TextBox x:Name="FiveHourPercentBox" Width="68" MaxLength="6" Margin="0,0,12,0" VerticalContentAlignment="Center" ToolTip="0 - 100 之间的百分比数值，例如 78" />
+                    <TextBlock Text="重置时间 / 倒计时" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBox x:Name="FiveHourResetBox" Width="168" MaxLength="24" Margin="0,0,12,0" VerticalContentAlignment="Center"
+                             ToolTip="例如 2026-11-24 14:30、14:30 或 3h40m" />
+                    <Button Content="保存 5h 读数" MinWidth="104" Click="SaveFiveHourReading_Click" />
+                </WrapPanel>
+                <WrapPanel VerticalAlignment="Center">
+                    <TextBlock Text="7d 周窗：" FontWeight="SemiBold" Width="66" VerticalAlignment="Center" />
+                    <ComboBox x:Name="WeekModeBox" Width="88" Margin="0,0,8,0" SelectedIndex="0">
+                        <ComboBoxItem Content="剩余 %" />
+                        <ComboBoxItem Content="已用 %" />
+                    </ComboBox>
+                    <TextBox x:Name="WeekPercentBox" Width="68" MaxLength="6" Margin="0,0,12,0" VerticalContentAlignment="Center" ToolTip="0 - 100 之间的百分比数值，例如 78" />
+                    <TextBlock Text="重置时间 / 倒计时" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBox x:Name="WeekResetBox" Width="168" MaxLength="24" Margin="0,0,12,0" VerticalContentAlignment="Center"
+                             ToolTip="例如 2026-11-28 08:17 或 4d12h" />
+                    <Button Content="保存 7d 读数" MinWidth="104" Click="SaveWeekReading_Click" />
+                </WrapPanel>
+                <TextBlock x:Name="ReadingSaveStatus" Style="{StaticResource SectionDescription}" TextWrapping="Wrap" Margin="0,6,0,0" />
+            </StackPanel>
+        </Border>
+        <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,9" Margin="0,10,0,0">
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                <DockPanel Margin="0,0,0,7">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button x:Name="RefreshHistoryButton" Style="{StaticResource ToolButton}" Content="刷新历史" Click="RefreshHistory_Click" Margin="0,0,8,0" />
+                        <Button x:Name="OpenCycleButton" Style="{StaticResource ToolButton}" Content="查看所选周期" IsEnabled="False" Click="OpenCycle_Click" />
+                    </StackPanel>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="历史 7d 周期" Style="{StaticResource SectionTitle}" />
+                        <TextBlock x:Name="CycleHistoryStatus" Text="等待读取本机历史…" Style="{StaticResource SectionDescription}" />
+                    </StackPanel>
+                </DockPanel>
+                <DataGrid x:Name="CycleHistoryGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                          CanUserResizeRows="False" CanUserSortColumns="False" HeadersVisibility="Column" FrozenColumnCount="1"
+                          SelectionMode="Single" SelectionChanged="CycleHistoryGrid_SelectionChanged">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="周期（起止）" Binding="{Binding Period}" Width="220" />
+                        <DataGridTextColumn Header="状态" Binding="{Binding State}" Width="92">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock"><Setter Property="ToolTip" Value="{Binding UsageDetail}" /></Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn Header="请求" Binding="{Binding Requests}" Width="70" ElementStyle="{StaticResource NumericCellText}" />
+                        <DataGridTextColumn Header="本机 Token" Binding="{Binding Tokens}" Width="104" ElementStyle="{StaticResource NumericCellText}" />
+                        <DataGridTextColumn Header="API 等价" Binding="{Binding Cost}" Width="104" ElementStyle="{StaticResource NumericCellText}" />
+                        <DataGridTextColumn Header="7d 已用 / 剩余" Binding="{Binding WeekUsed}" Width="124" />
+                        <DataGridTextColumn Header="读数时间" Binding="{Binding ObservedAt}" Width="132" />
+                        <DataGridTextColumn Header="满额参考" Binding="{Binding FullReference}" Width="104" ElementStyle="{StaticResource NumericCellText}" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Border>
+        <Border Grid.Row="4" Style="{StaticResource DialogFooter}" Margin="0,10,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Style="{StaticResource SectionDescription}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,16,0"
+                           Text="满额参考按读数时刻同一窗口内的本机 Gemini 用量与已用比例外推。美元是 API 等价；桌面倒计时换算的重置时间带「约」。" />
+                <Button Grid.Column="1" Content="关闭" MinWidth="80" IsCancel="True" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

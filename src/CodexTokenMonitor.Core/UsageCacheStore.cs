@@ -781,6 +781,63 @@ internal sealed partial class UsageCacheStore
         return added;
     }
 
+    internal bool ReconcileCodexCompactionDay(
+        DateOnly date,
+        IReadOnlyList<TokenUsageEvent> additions,
+        IReadOnlySet<string>? supersededKeys = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureAvailable(propagateErrors: true);
+        var offset = CodexUsageReader.BeijingOffset;
+        var newEvents = additions.Select(item => item with { Timestamp = item.Timestamp.ToOffset(offset) }).ToArray();
+        if (newEvents.Any(item => DateOnly.FromDateTime(item.Timestamp.DateTime) != date))
+            throw new ArgumentException("Compaction events must belong to the cache day being reconciled.", nameof(additions));
+
+        using var connection = OpenConnection();
+        using var transaction = connection.BeginTransaction();
+        using var query = connection.CreateCommand();
+        query.Transaction = transaction;
+        query.CommandText = """
+            SELECT is_complete, scanned_through_local, events, total_tokens
+            FROM usage_days WHERE date = $date
+            """;
+        query.Parameters.AddWithValue("$date", DateKey(date));
+        bool isComplete;
+        DateTimeOffset? scannedThrough;
+        long expectedEvents;
+        long expectedTokens;
+        using (var row = query.ExecuteReader())
+        {
+            if (!row.Read()) return false;
+            isComplete = row.GetInt64(0) != 0;
+            scannedThrough = ReadDateTimeOffset(row, 1);
+            expectedEvents = row.GetInt64(2);
+            expectedTokens = row.GetInt64(3);
+        }
+
+        var existing = ReadDetailEvents(connection, date, cancellationToken, transaction: transaction);
+        var detailTotal = existing.Aggregate(0L, (total, item) => TokenCountMath.AddNonNegative(total, item.TotalTokens));
+        if (existing.Count != expectedEvents || detailTotal != expectedTokens)
+            return false;
+
+        var existingByKey = existing.ToDictionary(BuildUsageEventKey, StringComparer.Ordinal);
+        var merged = UsageEventMerger.Merge(existing.Concat(newEvents)
+            .Where(item => supersededKeys?.Contains(BuildUsageEventKey(item)) != true));
+        var updates = merged.Where(item => !existingByKey.TryGetValue(BuildUsageEventKey(item), out var previous) ||
+            item != previous).ToArray();
+        var hasRemoval = supersededKeys is not null && supersededKeys.Overlaps(existingByKey.Keys);
+        if (updates.Length == 0 && !hasRemoval) return true;
+
+        var dayStart = new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), offset);
+        DeleteSupersededCompactionEvents(connection, transaction, date, supersededKeys);
+        WriteDay(connection, transaction, CreateBucketFromEvents(dayStart, merged), isComplete, scannedThrough,
+            updates, replaceDetailEvents: false);
+        cancellationToken.ThrowIfCancellationRequested();
+        transaction.Commit();
+        return true;
+    }
+
     public bool HasDetailEvents(
         DateOnly date,
         CancellationToken cancellationToken = default)
@@ -862,7 +919,8 @@ internal sealed partial class UsageCacheStore
         IReadOnlyList<TokenUsageEvent>? detailEvents = null,
         bool replaceDetailEvents = true,
         CancellationToken cancellationToken = default,
-        bool propagateErrors = false)
+        bool propagateErrors = false,
+        IReadOnlySet<string>? supersededCompactionKeys = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!EnsureAvailable(propagateErrors))
@@ -873,133 +931,11 @@ internal sealed partial class UsageCacheStore
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            bucket.NormalizeInPlace();
-            var date = DateOnly.FromDateTime(bucket.StartLocal.DateTime);
-            var key = DateKey(date);
             using var connection = OpenConnection();
             using var transaction = connection.BeginTransaction();
-            using (var command = connection.CreateCommand())
-            {
-                command.Transaction = transaction;
-                command.CommandText = """
-                    INSERT INTO usage_days (
-                        date, is_complete, scanned_through_local, events, input_tokens, cached_input_tokens,
-                        uncached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, last_token_event_local,
-                        long_context_events, long_context_input_tokens, long_context_cached_input_tokens,
-                        long_context_output_tokens, peak_input_tokens, peak_cached_input_tokens, peak_output_tokens,
-                        cache_write_input_tokens, long_context_cache_write_input_tokens, peak_cache_write_input_tokens, model_usage_json
-                    )
-                    VALUES (
-                        $date, $is_complete, $scanned_through_local, $events, $input_tokens, $cached_input_tokens,
-                        $uncached_input_tokens, $output_tokens, $reasoning_output_tokens, $total_tokens, $last_token_event_local,
-                        $long_context_events, $long_context_input_tokens, $long_context_cached_input_tokens,
-                        $long_context_output_tokens, $peak_input_tokens, $peak_cached_input_tokens, $peak_output_tokens,
-                        $cache_write_input_tokens, $long_context_cache_write_input_tokens, $peak_cache_write_input_tokens, $model_usage_json
-                    )
-                    ON CONFLICT(date) DO UPDATE SET
-                        is_complete = excluded.is_complete,
-                        scanned_through_local = excluded.scanned_through_local,
-                        events = excluded.events,
-                        input_tokens = excluded.input_tokens,
-                        cached_input_tokens = excluded.cached_input_tokens,
-                        uncached_input_tokens = excluded.uncached_input_tokens,
-                        output_tokens = excluded.output_tokens,
-                        reasoning_output_tokens = excluded.reasoning_output_tokens,
-                        total_tokens = excluded.total_tokens,
-                        last_token_event_local = excluded.last_token_event_local,
-                        long_context_events = excluded.long_context_events,
-                        long_context_input_tokens = excluded.long_context_input_tokens,
-                        long_context_cached_input_tokens = excluded.long_context_cached_input_tokens,
-                        long_context_output_tokens = excluded.long_context_output_tokens,
-                        peak_input_tokens = excluded.peak_input_tokens,
-                        peak_cached_input_tokens = excluded.peak_cached_input_tokens,
-                        peak_output_tokens = excluded.peak_output_tokens,
-                        cache_write_input_tokens = excluded.cache_write_input_tokens,
-                        long_context_cache_write_input_tokens = excluded.long_context_cache_write_input_tokens,
-                        peak_cache_write_input_tokens = excluded.peak_cache_write_input_tokens,
-                        model_usage_json = excluded.model_usage_json
-                    """;
-                command.Parameters.AddWithValue("$date", key);
-                command.Parameters.AddWithValue("$is_complete", isComplete ? 1 : 0);
-                command.Parameters.AddWithValue("$model_usage_json", JsonSerializer.Serialize(bucket.ModelUsage));
-                command.Parameters.AddWithValue("$scanned_through_local", ToDbValue(scannedThroughLocal));
-                command.Parameters.AddWithValue("$events", bucket.Events);
-                command.Parameters.AddWithValue("$input_tokens", bucket.InputTokens);
-                command.Parameters.AddWithValue("$cached_input_tokens", bucket.CachedInputTokens);
-                command.Parameters.AddWithValue("$cache_write_input_tokens", bucket.CacheWriteInputTokens);
-                command.Parameters.AddWithValue("$uncached_input_tokens", bucket.UncachedInputTokens);
-                command.Parameters.AddWithValue("$output_tokens", bucket.OutputTokens);
-                command.Parameters.AddWithValue("$reasoning_output_tokens", bucket.ReasoningOutputTokens);
-                command.Parameters.AddWithValue("$total_tokens", bucket.TotalTokens);
-                command.Parameters.AddWithValue("$last_token_event_local", ToDbValue(bucket.LastTokenEventLocal));
-                command.Parameters.AddWithValue("$long_context_events", bucket.LongContextEvents);
-                command.Parameters.AddWithValue("$long_context_input_tokens", bucket.LongContextInputTokens);
-                command.Parameters.AddWithValue("$long_context_cached_input_tokens", bucket.LongContextCachedInputTokens);
-                command.Parameters.AddWithValue(
-                    "$long_context_cache_write_input_tokens",
-                    bucket.LongContextCacheWriteInputTokens);
-                command.Parameters.AddWithValue("$long_context_output_tokens", bucket.LongContextOutputTokens);
-                command.Parameters.AddWithValue("$peak_input_tokens", bucket.PeakInputTokens);
-                command.Parameters.AddWithValue("$peak_cached_input_tokens", bucket.PeakCachedInputTokens);
-                command.Parameters.AddWithValue("$peak_cache_write_input_tokens", bucket.PeakCacheWriteInputTokens);
-                command.Parameters.AddWithValue("$peak_output_tokens", bucket.PeakOutputTokens);
-                command.ExecuteNonQuery();
-            }
-
-            if (detailEvents is not null)
-            {
-                if (replaceDetailEvents)
-                {
-                    using var deleteCommand = connection.CreateCommand();
-                    deleteCommand.Transaction = transaction;
-                    deleteCommand.CommandText = """
-                        DELETE FROM usage_events
-                        WHERE date = $date
-                          AND event_key NOT IN (SELECT event_key FROM imported_usage_event_keys)
-                        """;
-                    deleteCommand.Parameters.AddWithValue("$date", key);
-                    deleteCommand.ExecuteNonQuery();
-                }
-
-                using var insertCommand = connection.CreateCommand();
-                insertCommand.Transaction = transaction;
-                insertCommand.CommandText = """
-                    INSERT OR REPLACE INTO usage_events (
-                        date, event_key, timestamp_local, input_tokens, cached_input_tokens,
-                        output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier
-                    )
-                    VALUES (
-                        $date, $event_key, $timestamp_local, $input_tokens, $cached_input_tokens,
-                        $output_tokens, $reasoning_output_tokens, $total_tokens, $cache_write_input_tokens, $model_id, $service_tier
-                    )
-                    """;
-                insertCommand.Parameters.AddWithValue("$date", key);
-                insertCommand.Parameters.AddWithValue("$event_key", "");
-                insertCommand.Parameters.AddWithValue("$model_id", DBNull.Value);
-                insertCommand.Parameters.AddWithValue("$service_tier", DBNull.Value);
-                insertCommand.Parameters.AddWithValue("$timestamp_local", "");
-                insertCommand.Parameters.AddWithValue("$input_tokens", 0L);
-                insertCommand.Parameters.AddWithValue("$cached_input_tokens", 0L);
-                insertCommand.Parameters.AddWithValue("$cache_write_input_tokens", 0L);
-                insertCommand.Parameters.AddWithValue("$output_tokens", 0L);
-                insertCommand.Parameters.AddWithValue("$reasoning_output_tokens", 0L);
-                insertCommand.Parameters.AddWithValue("$total_tokens", 0L);
-                foreach (var item in UsageEventMerger.Merge(detailEvents))
-                {
-                    insertCommand.Parameters["$event_key"].Value = BuildUsageEventKey(item);
-                    insertCommand.Parameters["$model_id"].Value = (object?)item.ModelId ?? DBNull.Value;
-                    insertCommand.Parameters["$service_tier"].Value = (object?)item.ServiceTier ?? DBNull.Value;
-                    insertCommand.Parameters["$timestamp_local"].Value = FormatDateTimeOffset(item.Timestamp);
-                    insertCommand.Parameters["$input_tokens"].Value = item.InputTokens;
-                    insertCommand.Parameters["$cached_input_tokens"].Value = item.CachedInputTokens;
-                    insertCommand.Parameters["$cache_write_input_tokens"].Value = item.CacheWriteInputTokens;
-                    insertCommand.Parameters["$output_tokens"].Value = item.OutputTokens;
-                    insertCommand.Parameters["$reasoning_output_tokens"].Value = item.ReasoningOutputTokens;
-                    insertCommand.Parameters["$total_tokens"].Value = item.TotalTokens;
-                    insertCommand.ExecuteNonQuery();
-                }
-            }
-
+            DeleteSupersededCompactionEvents(connection, transaction, DateOnly.FromDateTime(bucket.StartLocal.DateTime),
+                supersededCompactionKeys);
+            WriteDay(connection, transaction, bucket, isComplete, scannedThroughLocal, detailEvents, replaceDetailEvents);
             cancellationToken.ThrowIfCancellationRequested();
             transaction.Commit();
         }
@@ -1012,6 +948,165 @@ internal sealed partial class UsageCacheStore
             database.ReportFailure(ex);
             if (propagateErrors) throw;
             // Cache writes are best-effort; usage calculation should keep working without them.
+        }
+    }
+
+    private static void DeleteSupersededCompactionEvents(
+        SqliteConnection connection, SqliteTransaction transaction, DateOnly date, IReadOnlySet<string>? keys)
+    {
+        if (keys is null || keys.Count == 0) return;
+
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.Parameters.AddWithValue("$date", DateKey(date));
+        var keyParameter = command.Parameters.Add("$key", SqliteType.Text);
+        foreach (var key in keys)
+        {
+            keyParameter.Value = key;
+            command.CommandText = "DELETE FROM usage_events WHERE date = $date AND event_key = $key";
+            if (command.ExecuteNonQuery() == 0) continue;
+            command.CommandText = """
+                DELETE FROM imported_usage_event_keys
+                WHERE event_key = $key AND NOT EXISTS (
+                    SELECT 1 FROM usage_events WHERE event_key = $key
+                )
+                """;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    private static void WriteDay(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        TokenUsageBucket bucket,
+        bool isComplete,
+        DateTimeOffset? scannedThroughLocal,
+        IReadOnlyList<TokenUsageEvent>? detailEvents,
+        bool replaceDetailEvents)
+    {
+        bucket.NormalizeInPlace();
+        var date = DateOnly.FromDateTime(bucket.StartLocal.DateTime);
+        var key = DateKey(date);
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                INSERT INTO usage_days (
+                    date, is_complete, scanned_through_local, events, input_tokens, cached_input_tokens,
+                    uncached_input_tokens, output_tokens, reasoning_output_tokens, total_tokens, last_token_event_local,
+                    long_context_events, long_context_input_tokens, long_context_cached_input_tokens,
+                    long_context_output_tokens, peak_input_tokens, peak_cached_input_tokens, peak_output_tokens,
+                    cache_write_input_tokens, long_context_cache_write_input_tokens, peak_cache_write_input_tokens, model_usage_json
+                )
+                VALUES (
+                    $date, $is_complete, $scanned_through_local, $events, $input_tokens, $cached_input_tokens,
+                    $uncached_input_tokens, $output_tokens, $reasoning_output_tokens, $total_tokens, $last_token_event_local,
+                    $long_context_events, $long_context_input_tokens, $long_context_cached_input_tokens,
+                    $long_context_output_tokens, $peak_input_tokens, $peak_cached_input_tokens, $peak_output_tokens,
+                    $cache_write_input_tokens, $long_context_cache_write_input_tokens, $peak_cache_write_input_tokens, $model_usage_json
+                )
+                ON CONFLICT(date) DO UPDATE SET
+                    is_complete = excluded.is_complete,
+                    scanned_through_local = excluded.scanned_through_local,
+                    events = excluded.events,
+                    input_tokens = excluded.input_tokens,
+                    cached_input_tokens = excluded.cached_input_tokens,
+                    uncached_input_tokens = excluded.uncached_input_tokens,
+                    output_tokens = excluded.output_tokens,
+                    reasoning_output_tokens = excluded.reasoning_output_tokens,
+                    total_tokens = excluded.total_tokens,
+                    last_token_event_local = excluded.last_token_event_local,
+                    long_context_events = excluded.long_context_events,
+                    long_context_input_tokens = excluded.long_context_input_tokens,
+                    long_context_cached_input_tokens = excluded.long_context_cached_input_tokens,
+                    long_context_output_tokens = excluded.long_context_output_tokens,
+                    peak_input_tokens = excluded.peak_input_tokens,
+                    peak_cached_input_tokens = excluded.peak_cached_input_tokens,
+                    peak_output_tokens = excluded.peak_output_tokens,
+                    cache_write_input_tokens = excluded.cache_write_input_tokens,
+                    long_context_cache_write_input_tokens = excluded.long_context_cache_write_input_tokens,
+                    peak_cache_write_input_tokens = excluded.peak_cache_write_input_tokens,
+                    model_usage_json = excluded.model_usage_json
+                """;
+            command.Parameters.AddWithValue("$date", key);
+            command.Parameters.AddWithValue("$is_complete", isComplete ? 1 : 0);
+            command.Parameters.AddWithValue("$model_usage_json", JsonSerializer.Serialize(bucket.ModelUsage));
+            command.Parameters.AddWithValue("$scanned_through_local", ToDbValue(scannedThroughLocal));
+            command.Parameters.AddWithValue("$events", bucket.Events);
+            command.Parameters.AddWithValue("$input_tokens", bucket.InputTokens);
+            command.Parameters.AddWithValue("$cached_input_tokens", bucket.CachedInputTokens);
+            command.Parameters.AddWithValue("$cache_write_input_tokens", bucket.CacheWriteInputTokens);
+            command.Parameters.AddWithValue("$uncached_input_tokens", bucket.UncachedInputTokens);
+            command.Parameters.AddWithValue("$output_tokens", bucket.OutputTokens);
+            command.Parameters.AddWithValue("$reasoning_output_tokens", bucket.ReasoningOutputTokens);
+            command.Parameters.AddWithValue("$total_tokens", bucket.TotalTokens);
+            command.Parameters.AddWithValue("$last_token_event_local", ToDbValue(bucket.LastTokenEventLocal));
+            command.Parameters.AddWithValue("$long_context_events", bucket.LongContextEvents);
+            command.Parameters.AddWithValue("$long_context_input_tokens", bucket.LongContextInputTokens);
+            command.Parameters.AddWithValue("$long_context_cached_input_tokens", bucket.LongContextCachedInputTokens);
+            command.Parameters.AddWithValue(
+                "$long_context_cache_write_input_tokens",
+                bucket.LongContextCacheWriteInputTokens);
+            command.Parameters.AddWithValue("$long_context_output_tokens", bucket.LongContextOutputTokens);
+            command.Parameters.AddWithValue("$peak_input_tokens", bucket.PeakInputTokens);
+            command.Parameters.AddWithValue("$peak_cached_input_tokens", bucket.PeakCachedInputTokens);
+            command.Parameters.AddWithValue("$peak_cache_write_input_tokens", bucket.PeakCacheWriteInputTokens);
+            command.Parameters.AddWithValue("$peak_output_tokens", bucket.PeakOutputTokens);
+            command.ExecuteNonQuery();
+        }
+
+        if (detailEvents is not null)
+        {
+            if (replaceDetailEvents)
+            {
+                using var deleteCommand = connection.CreateCommand();
+                deleteCommand.Transaction = transaction;
+                deleteCommand.CommandText = """
+                    DELETE FROM usage_events
+                    WHERE date = $date
+                      AND event_key NOT IN (SELECT event_key FROM imported_usage_event_keys)
+                    """;
+                deleteCommand.Parameters.AddWithValue("$date", key);
+                deleteCommand.ExecuteNonQuery();
+            }
+
+            using var insertCommand = connection.CreateCommand();
+            insertCommand.Transaction = transaction;
+            insertCommand.CommandText = """
+                INSERT OR REPLACE INTO usage_events (
+                    date, event_key, timestamp_local, input_tokens, cached_input_tokens,
+                    output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier
+                )
+                VALUES (
+                    $date, $event_key, $timestamp_local, $input_tokens, $cached_input_tokens,
+                    $output_tokens, $reasoning_output_tokens, $total_tokens, $cache_write_input_tokens, $model_id, $service_tier
+                )
+                """;
+            insertCommand.Parameters.AddWithValue("$date", key);
+            insertCommand.Parameters.AddWithValue("$event_key", "");
+            insertCommand.Parameters.AddWithValue("$model_id", DBNull.Value);
+            insertCommand.Parameters.AddWithValue("$service_tier", DBNull.Value);
+            insertCommand.Parameters.AddWithValue("$timestamp_local", "");
+            insertCommand.Parameters.AddWithValue("$input_tokens", 0L);
+            insertCommand.Parameters.AddWithValue("$cached_input_tokens", 0L);
+            insertCommand.Parameters.AddWithValue("$cache_write_input_tokens", 0L);
+            insertCommand.Parameters.AddWithValue("$output_tokens", 0L);
+            insertCommand.Parameters.AddWithValue("$reasoning_output_tokens", 0L);
+            insertCommand.Parameters.AddWithValue("$total_tokens", 0L);
+            foreach (var item in UsageEventMerger.Merge(detailEvents))
+            {
+                insertCommand.Parameters["$event_key"].Value = BuildUsageEventKey(item);
+                insertCommand.Parameters["$model_id"].Value = (object?)item.ModelId ?? DBNull.Value;
+                insertCommand.Parameters["$service_tier"].Value = (object?)item.ServiceTier ?? DBNull.Value;
+                insertCommand.Parameters["$timestamp_local"].Value = FormatDateTimeOffset(item.Timestamp);
+                insertCommand.Parameters["$input_tokens"].Value = item.InputTokens;
+                insertCommand.Parameters["$cached_input_tokens"].Value = item.CachedInputTokens;
+                insertCommand.Parameters["$cache_write_input_tokens"].Value = item.CacheWriteInputTokens;
+                insertCommand.Parameters["$output_tokens"].Value = item.OutputTokens;
+                insertCommand.Parameters["$reasoning_output_tokens"].Value = item.ReasoningOutputTokens;
+                insertCommand.Parameters["$total_tokens"].Value = item.TotalTokens;
+                insertCommand.ExecuteNonQuery();
+            }
         }
     }
 
@@ -1146,6 +1241,16 @@ internal sealed partial class UsageCacheStore
               AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'dsh-model-context-v1');
             INSERT OR IGNORE INTO cache_maintenance VALUES ('dsh-model-context-v1');
             """);
+        if (Path.GetFileName(Path.GetDirectoryName(cachePath)) == GeminiUsageReader.CacheFolder)
+        {
+            // Re-scan Antigravity days for previously skipped context compaction steps.
+            ExecuteNonQuery(connection, """
+                UPDATE usage_days SET is_complete = 0, scanned_through_local = NULL
+                WHERE date IN (SELECT DISTINCT date FROM usage_events WHERE event_key LIKE 'agy:%')
+                  AND NOT EXISTS (SELECT 1 FROM cache_maintenance WHERE name = 'antigravity-checkpoint-usage-v1');
+                INSERT OR IGNORE INTO cache_maintenance VALUES ('antigravity-checkpoint-usage-v1');
+                """);
+        }
         // The shared historical warmer used to build day buckets with the
         // scalar Add overload, leaving model_usage_json empty while detail
         // events carried model ids. One-shot: re-warm those days so the fixed
@@ -1368,10 +1473,12 @@ internal sealed partial class UsageCacheStore
         SqliteConnection connection,
         DateOnly date,
         CancellationToken cancellationToken = default,
-        bool importedOnly = false)
+        bool importedOnly = false,
+        SqliteTransaction? transaction = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT event_key, timestamp_local, input_tokens, cached_input_tokens,
                    output_tokens, reasoning_output_tokens, total_tokens, cache_write_input_tokens, model_id, service_tier

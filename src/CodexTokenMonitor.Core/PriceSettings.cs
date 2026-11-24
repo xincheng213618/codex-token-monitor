@@ -13,6 +13,7 @@ internal static class PricePresetGroups
     public const string Dsh = "DSH";
     public const string Kimi = "Kimi";
     public const string Qoder = "Qoder";
+    public const string Gemini = "Gemini";
 
     public static IReadOnlyList<string> All => UsageSourceRegistry.PriceGroups;
 
@@ -73,6 +74,7 @@ internal sealed class PriceSettings
     public List<PricePreset> DshPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Dsh).ToList();
     public List<PricePreset> KimiPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Kimi).ToList();
     public List<PricePreset> QoderPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Qoder).ToList();
+    public List<PricePreset> GeminiPresets { get; set; } = PricePreset.DefaultsForGroup(PricePresetGroups.Gemini).ToList();
 
     public PriceProfile ToGptProfile()
     {
@@ -133,7 +135,8 @@ internal sealed class PriceSettings
             WorkBuddyPresets = WorkBuddyPresets.Select(item => item.Clone()).ToList(),
             DshPresets = DshPresets.Select(item => item.Clone()).ToList(),
             KimiPresets = KimiPresets.Select(item => item.Clone()).ToList(),
-            QoderPresets = QoderPresets.Select(item => item.Clone()).ToList()
+            QoderPresets = QoderPresets.Select(item => item.Clone()).ToList(),
+            GeminiPresets = GeminiPresets.Select(item => item.Clone()).ToList()
         };
     }
 
@@ -147,6 +150,7 @@ internal sealed class PriceSettings
             PricePresetGroups.Dsh => DshPresets,
             PricePresetGroups.Kimi => KimiPresets,
             PricePresetGroups.Qoder => QoderPresets,
+            PricePresetGroups.Gemini => GeminiPresets,
             _ => CodexPresets
         };
     }
@@ -173,6 +177,9 @@ internal sealed class PriceSettings
             case PricePresetGroups.Qoder:
                 QoderPresets = presets;
                 break;
+            case PricePresetGroups.Gemini:
+                GeminiPresets = presets;
+                break;
             default:
                 CodexPresets = presets;
                 break;
@@ -190,6 +197,7 @@ internal sealed class PricePreset
     public const string DeepSeekPriceSource = "DeepSeek API 官方定价（2026-09-10；空闲价；北京时间工作日高峰 ×2）：https://api-docs.deepseek.com/zh-cn/quick_start/pricing";
     public const string HunyuanHy4PriceSource = "腾讯混元 Hy4 preview 官方价格（2026-08-28 发布；输入 6 元 / 输出 18 元 / 缓存命中 0.3 元 每百万 tokens）：https://hy.tencent.com/research/hy4-preview";
     public const string QoderAutoPriceSource = "Qoder 会话日志只记录内部路由 id（auto / qfmodel），没有公开 API 单价；按订阅额度折算 ¥99 / 110亿 token = ¥0.009 每百万（可编辑）";
+    public const string GeminiPriceSource = "Google Gemini Developer API 标准短上下文价（≤200K tokens）：https://ai.google.dev/gemini-api/docs/pricing";
     public string Group { get; set; } = "";
     public string Provider { get; set; } = "";
     public string Model { get; set; } = "";
@@ -323,7 +331,23 @@ internal sealed class PricePreset
             Preset("Claude", "Haiku 4.5 API", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.10m, 5.00m, "Anthropic pricing/cache read/write", cacheWrite: 1.25m),
             Preset("Claude", "Opus 4.6 Fast", "$", "USD / 1M tokens", 1_000_000m, 30.00m, 3.00m, 150.00m, "Anthropic fast mode reference", cacheWrite: 37.50m),
             Preset("xAI", "Grok 4.3", "$", "USD / 1M tokens", 1_000_000m, 1.25m, 0.25m, 2.50m, "xAI model pricing"),
-            Preset("xAI", "Grok Build 0.1", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.00m, 2.00m, "xAI coding reference")
+            Preset("xAI", "Grok Build 0.1", "$", "USD / 1M tokens", 1_000_000m, 1.00m, 0.00m, 2.00m, "xAI coding reference"),
+            Preset("Google", "Gemini 4 Carbon", "$", "USD / 1M tokens", 1_000_000m, 2.00m, 0.10m, 10.00m,
+                "Google Gemini Developer API 官方定价（2026-11；含隐式缓存读取；12月1日起标准价 $4/$0.20/$20）：https://ai.google.dev/gemini-api/docs/pricing", cacheWrite: 2.00m),
+            Preset("Google", "Gemini 4 Argon", "$", "USD / 1M tokens", 1_000_000m, 2.00m, 0.10m, 10.00m,
+                "Google Gemini Developer API 官方定价（2026-11；含隐式缓存读取）：https://ai.google.dev/gemini-api/docs/pricing", cacheWrite: 2.00m),
+            Preset("Google", "Gemini 4 Neon", "$", "USD / 1M tokens", 1_000_000m, 3.00m, 0.15m, 15.00m,
+                "Google Gemini Developer API 官方定价（2026-11；含隐式缓存读取）：https://ai.google.dev/gemini-api/docs/pricing", cacheWrite: 3.00m),
+            Preset("Google", "Gemini 4 Hydrogen", "$", "USD / 1M tokens", 1_000_000m, 1.50m, 0.075m, 7.50m,
+                "Google Gemini Developer API 官方定价（2026-11；含隐式缓存读取）：https://ai.google.dev/gemini-api/docs/pricing", cacheWrite: 1.50m),
+            Preset("Google", "Gemini 3.8 Flash", "$", "USD / 1M tokens", 1_000_000m, 0.75m, 0.075m, 3.75m,
+                "Google Gemini Developer API 官方定价（2026-11 首发期）：https://ai.google.dev/gemini-api/docs/pricing", cacheWrite: 0.75m),
+            Preset("Google", "Gemini 3.5 Flash-Lite", "$", "USD / 1M tokens", 1_000_000m, 0.30m, 0.03m, 2.50m, GeminiPriceSource, cacheWrite: 0.30m),
+            Preset("Google", "Gemini 3.1 Pro Preview", "$", "USD / 1M tokens", 1_000_000m, 2.00m, 0.20m, 12.00m, GeminiPriceSource, cacheWrite: 2.00m),
+            Preset("Google", "Gemini 3 Flash Preview", "$", "USD / 1M tokens", 1_000_000m, 0.50m, 0.05m, 3.00m, GeminiPriceSource, cacheWrite: 0.50m),
+            Preset("Google", "Gemini 2.5 Pro", "$", "USD / 1M tokens", 1_000_000m, 1.25m, 0.125m, 10.00m, GeminiPriceSource, cacheWrite: 1.25m),
+            Preset("Google", "Gemini 2.5 Flash", "$", "USD / 1M tokens", 1_000_000m, 0.30m, 0.03m, 2.50m, GeminiPriceSource, cacheWrite: 0.30m),
+            Preset("Google", "Gemini 2.5 Flash-Lite", "$", "USD / 1M tokens", 1_000_000m, 0.10m, 0.01m, 0.40m, GeminiPriceSource, cacheWrite: 0.10m)
         };
     }
 
@@ -411,6 +435,7 @@ internal sealed class PricePreset
             PricePresetGroups.Dsh => ("DeepSeek", "V4.1 Flash"),
             PricePresetGroups.Kimi => ("Kimi（月之暗面）", "K2.8 Preview"),
             PricePresetGroups.Qoder => ("通义千问", "Qwen3 Coder Plus <=32K"),
+            PricePresetGroups.Gemini => ("Google", "Gemini 4 Carbon"),
             _ => ("OpenAI", "GPT-6.2 Sol")
         };
         var ordered = new List<PricePreset>();
@@ -505,7 +530,10 @@ internal static class PriceSettingsStore
                 PricePresetGroups.Kimi),
             QoderPresets = ApplyDefaultDisplayOrder(
                 NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Qoder), PricePresetGroups.Qoder),
-                PricePresetGroups.Qoder)
+                PricePresetGroups.Qoder),
+            GeminiPresets = ApplyDefaultDisplayOrder(
+                NormalizeGroupPresets(PricePreset.DefaultsForGroup(PricePresetGroups.Gemini), PricePresetGroups.Gemini),
+                PricePresetGroups.Gemini)
         };
         return settings;
     }
@@ -639,7 +667,7 @@ internal static class PriceSettingsStore
             ?? throw new JsonException("Price settings must contain a settings object.");
         List<PricePreset>?[] groups = [settings.Presets, settings.CodexPresets, settings.ClaudeCodePresets,
             settings.ZCodePresets, settings.WorkBuddyPresets, settings.DshPresets, settings.KimiPresets,
-            settings.QoderPresets];
+            settings.QoderPresets, settings.GeminiPresets];
         if (groups.Any(group => group is null || group.Any(preset => preset is null)))
             throw new JsonException("Price preset collections and their entries must not be null.");
         if (settings.DisplaySlots is null || settings.DisplaySlots.Values.Any(slots => slots is null || slots.Any(key => key is null)))
@@ -707,6 +735,7 @@ internal static class PriceSettingsStore
         var dshPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Dsh), PricePresetGroups.Dsh);
         var kimiPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Kimi), PricePresetGroups.Kimi);
         var qoderPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Qoder), PricePresetGroups.Qoder);
+        var geminiPresets = NormalizeGroupPresets(SelectConfiguredPresets(settings, PricePresetGroups.Gemini), PricePresetGroups.Gemini);
         var shouldRefreshDefaults = settings.DisplayOrderVersion < defaults.DisplayOrderVersion;
         if (shouldRefreshDefaults)
         {
@@ -719,6 +748,7 @@ internal static class PriceSettingsStore
             MergeMissingDefaults(dshPresets, PricePresetGroups.Dsh);
             MergeMissingDefaults(kimiPresets, PricePresetGroups.Kimi);
             MergeMissingDefaults(qoderPresets, PricePresetGroups.Qoder);
+            MergeMissingDefaults(geminiPresets, PricePresetGroups.Gemini);
             codexPresets = ApplyDefaultDisplayOrder(codexPresets, PricePresetGroups.Codex);
             claudePresets = ApplyDefaultDisplayOrder(claudePresets, PricePresetGroups.ClaudeCode);
             zCodePresets = ApplyDefaultDisplayOrder(zCodePresets, PricePresetGroups.ZCode);
@@ -726,6 +756,7 @@ internal static class PriceSettingsStore
             dshPresets = ApplyDefaultDisplayOrder(dshPresets, PricePresetGroups.Dsh);
             kimiPresets = ApplyDefaultDisplayOrder(kimiPresets, PricePresetGroups.Kimi);
             qoderPresets = ApplyDefaultDisplayOrder(qoderPresets, PricePresetGroups.Qoder);
+            geminiPresets = ApplyDefaultDisplayOrder(geminiPresets, PricePresetGroups.Gemini);
         }
 
         // Hy4 preview shipped as an unfilled 0x row before Tencent published its
@@ -743,6 +774,7 @@ internal static class PriceSettingsStore
             FillPublishedRate(dshPresets, hy4Official);
             FillPublishedRate(kimiPresets, hy4Official);
             FillPublishedRate(qoderPresets, hy4Official);
+            FillPublishedRate(geminiPresets, hy4Official);
         }
 
         var gptName = string.IsNullOrWhiteSpace(settings.GptName)
@@ -787,7 +819,8 @@ internal static class PriceSettingsStore
             WorkBuddyPresets = workBuddyPresets,
             DshPresets = dshPresets,
             KimiPresets = kimiPresets,
-            QoderPresets = qoderPresets
+            QoderPresets = qoderPresets,
+            GeminiPresets = geminiPresets
         };
         foreach (var group in PricePresetGroups.All)
         {
@@ -908,7 +941,16 @@ internal static class PriceSettingsStore
             ("Kimi", "Xiaomi", "MiMo V2.5 Pro"),
             ("Qoder", "通义千问", "Qwen3 Coder Plus <=32K"),
             ("Qoder", "DeepSeek", "V4.1 Flash"),
-            ("Qoder", "OpenAI", "GPT-6.1 Sol")
+            ("Qoder", "OpenAI", "GPT-6.1 Sol"),
+            ("Gemini", "Google", "Gemini 4 Carbon"),
+            ("Gemini", "Google", "Gemini 4 Neon"),
+            ("Gemini", "Google", "Gemini 4 Argon"),
+            ("Gemini", "Google", "Gemini 4 Hydrogen"),
+            ("Gemini", "Google", "Gemini 3.8 Flash"),
+            ("Gemini", "Google", "Gemini 3.1 Pro Preview"),
+            ("Gemini", "Google", "Gemini 2.5 Pro"),
+            ("Gemini", "DeepSeek", "V4.1 Flash"),
+            ("Gemini", "OpenAI", "GPT-6.2 Sol")
         };
 
         var ordered = new List<PricePreset>();
@@ -993,6 +1035,23 @@ internal static class PriceSettingsStore
                     published.Model = normalized.Model;
                 }
                 normalized = published;
+            }
+        }
+        if (normalized.Provider == "Google" && CodexModelCost.IsPending(normalized))
+        {
+            var family = CodexModelCost.FamilyKey(normalized.ModelId);
+            var published = PricePreset.Defaults().FirstOrDefault(item =>
+                item.Provider == "Google" && string.Equals(item.ModelId, family, StringComparison.OrdinalIgnoreCase));
+            if (published is not null)
+            {
+                var upgraded = published.Clone();
+                upgraded.Group = normalized.Group;
+                if (!string.Equals(CodexModelCost.NormalizeModelId(normalized.ModelId), family, StringComparison.OrdinalIgnoreCase))
+                {
+                    upgraded.ModelId = normalized.ModelId;
+                    upgraded.Model = normalized.Model;
+                }
+                normalized = upgraded;
             }
         }
         // Upgrade only the untouched placeholder; retain user prices and order.
@@ -1148,6 +1207,12 @@ internal static class PriceSettingsStore
             ContainsIgnoreCase(preset.Model, "Buddy"))
         {
             return PricePresetGroups.WorkBuddy;
+        }
+
+        if (ContainsIgnoreCase(preset.Provider, "Google") ||
+            ContainsIgnoreCase(preset.Model, "Gemini"))
+        {
+            return PricePresetGroups.Gemini;
         }
 
         return PricePresetGroups.Codex;

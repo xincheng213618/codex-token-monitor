@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using ScottPlot.TickGenerators;
+using ScottPlot.WPF;
 using PlotColor = ScottPlot.Color;
 
 namespace CodexTokenMonitor;
@@ -10,13 +11,36 @@ public partial class CodexRhythmWindow : Window
     private readonly Func<Task> refresh;
     private CodexMessageHistory? current;
     private TimeSpan currentOffset;
+    private string? refreshError;
+    private CodexRhythmDay[] rhythmDays = [];
+    private IReadOnlyDictionary<DateOnly, long> tokensByDay = new Dictionary<DateOnly, long>();
+    internal UsageSource RhythmSource { get; private set; } = UsageSource.Codex;
 
-    internal CodexRhythmWindow(Func<Task> refresh)
+    internal CodexRhythmWindow(Func<Task> refresh, UsageSource source = UsageSource.Codex)
     {
         this.refresh = refresh;
         InitializeComponent();
+        SetRhythmSource(source);
         SilencePlot.UserInputProcessor.Disable();
+        InteractionRatePlot.UserInputProcessor.Disable();
+        WindowTokenPlot.UserInputProcessor.Disable();
         SilencePlot.Visibility = Visibility.Collapsed;
+        InitializeDailyTrends();
+    }
+
+    internal void SetRhythmSource(UsageSource source)
+    {
+        var changed = RhythmSource != source;
+        RhythmSource = source;
+        var label = $"{UsageSourceRegistry.For(source).Title} 使用节律";
+        Title = label;
+        RhythmHeaderTitle.Text = label;
+        if (changed)
+        {
+            current = null;
+            ShowAnalysis(null, new Dictionary<DateOnly, long>());
+            ShowTodaySnapshot(null);
+        }
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await refresh();
@@ -24,10 +48,19 @@ public partial class CodexRhythmWindow : Window
     internal void ShowRefreshStatus(bool refreshing, string? error)
     {
         RefreshButton.IsEnabled = !refreshing;
-        SourceText.ToolTip = error;
-        var status = refreshing ? "正在更新…" : error is not null ? "更新失败，可重试" : "每小时更新";
-        SourceText.Text = current is null ? status :
-            $"{current.Source} · {DayTimeZoneSettings.Format(currentOffset)} · 更新于 {current.UpdatedAt.ToOffset(currentOffset):yyyy-MM-dd HH:mm:ss} · {status}";
+        RefreshButton.Content = refreshing ? "正在更新…" : error is null ? "更新统计" : "重试更新";
+        refreshError = error;
+        UpdateRefreshTooltip();
+    }
+
+    private void UpdateRefreshTooltip()
+    {
+        var source = current is { } history
+            ? $"{history.Source} · {DayTimeZoneSettings.Format(currentOffset)} · 更新于 {history.UpdatedAt.ToOffset(currentOffset):yyyy-MM-dd HH:mm:ss}"
+            : "等待首次更新";
+        var todayText = todaySnapshot is { TotalTokens: { } total } today
+            ? $"\n截至 {today.Cutoff:HH:mm:ss} · 今日 Token {CodexRhythmTokenFormat.Format(total)}" : "";
+        RefreshButton.ToolTip = source + todayText + (refreshError is { } error ? $"\n更新失败 · {error}" : "\n每小时更新");
     }
 
     internal void ShowHistory(CodexMessageHistory history, TimeSpan reportingOffset)
@@ -36,29 +69,22 @@ public partial class CodexRhythmWindow : Window
         var previousOffset = currentOffset;
         current = history;
         currentOffset = reportingOffset;
-        ShowRefreshStatus(!RefreshButton.IsEnabled, SourceText.ToolTip as string);
+        if (previous is not null && previousOffset != reportingOffset)
+        {
+            ShowAnalysis(null, new Dictionary<DateOnly, long>());
+            ShowAnalysisStatus("正在统计当前时区的交互和 Token…");
+            ShowTodaySnapshot(null);
+        }
+        UpdateRefreshTooltip();
         if (previous is not null && previousOffset == reportingOffset && previous.Skipped == history.Skipped &&
             previous.Messages.AsSpan().SequenceEqual(history.Messages) &&
             previous.TurnStarts.AsSpan().SequenceEqual(history.TurnStarts))
             return;
 
         var rhythm = CodexUsageRhythm.Calculate(history, reportingOffset);
-        var validDays = rhythm.Days.Count(day => day.Messages.HasValue);
-        CoverageText.Text = rhythm.Days.Length == 0
-            ? history.Messages.Length == 0 ? "未找到人工消息记录。" : $"已读取 {history.Messages.Length:N0} 次交互，完整自然日不足。"
-            : $"{rhythm.Days[0].Date:yyyy-MM-dd} 至 {rhythm.Days[^1].Date:yyyy-MM-dd} · " +
-              $"{validDays:N0} 个有效日 · {rhythm.Days.Sum(day => day.Messages ?? 0):N0} 次交互";
-        if (rhythm.Days.Length > validDays)
-            CoverageText.Text += $" · {rhythm.Days.Length - validDays:N0} 天覆盖待确认";
-        if (history.Skipped > 0)
-            CoverageText.Text += $" · 跳过 {history.Skipped:N0} 项无法核验的记录";
-        var samples = rhythm.SilenceSamples;
-        SilenceText.Text = samples == 0 ? "暂无可计算的最长静默样本。" :
-            $"最长静默 · {samples:N0} 个有效样本 · 中位 {rhythm.MedianSilenceHours:F1} 小时 · " +
-            $"短于 6 小时 {rhythm.SilencesUnderSix:N0} 次（{(double)rhythm.SilencesUnderSix / samples:P1}） · " +
-            $"短于 5 小时 {rhythm.SilencesUnderFive:N0} 次（{(double)rhythm.SilencesUnderFive / samples:P1}）";
         MonthGrid.ItemsSource = rhythm.Months;
-        DayGrid.ItemsSource = rhythm.Days.Reverse().ToArray();
+        rhythmDays = rhythm.Days.Reverse().ToArray();
+        UpdateDayRows();
         WeekGrid.ItemsSource = rhythm.Weeks.Reverse().Select(week => new
         {
             week.Monday,
@@ -69,6 +95,82 @@ public partial class CodexRhythmWindow : Window
         LongGapsGrid.ItemsSource = rhythm.LongSilences;
         LongGapsTab.Header = $"超过 24 小时（{rhythm.LongSilences.Length}）";
         DrawSilencePlot(rhythm);
+    }
+
+    internal void ShowAnalysisStatus(string message)
+    {
+        AnalysisStatusText.Text = message;
+        AnalysisStatusText.Visibility = string.IsNullOrEmpty(message) ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    internal void ShowAnalysis(CodexRhythmWindowAnalysis? analysis, IReadOnlyDictionary<DateOnly, long> dailyTokens)
+    {
+        tokensByDay = dailyTokens;
+        UpdateDayRows();
+        if (analysis is null || analysis.Points.Length == 0)
+        {
+            AnalysisContent.Visibility = Visibility.Collapsed;
+            AnalysisGrid.ItemsSource = null;
+            InteractionRatePlot.Plot.Clear();
+            WindowTokenPlot.Plot.Clear();
+            ShowAnalysisStatus("暂无完整自然日可分析。");
+            return;
+        }
+
+        ShowAnalysisStatus("");
+        AnalysisContent.Visibility = Visibility.Visible;
+        var points = analysis.Points.OrderBy(point => point.Hours).ToArray();
+        AnalysisRangeText.Text = $"{analysis.Start:yyyy-MM-dd} 至 {analysis.End:yyyy-MM-dd} · {DayTimeZoneSettings.Format(currentOffset)}";
+        AnalysisInsightText.Text = DescribeInteractionRate(points);
+        AnalysisGrid.ItemsSource = points;
+
+        var hours = points.Select(point => (double)point.Hours).ToArray();
+        InteractionRateEmptyText.Visibility = DrawAnalysisPlot(InteractionRatePlot, hours,
+            points.Select(point => point.MedianMessagesPerHour ?? double.NaN).ToArray(), "#147D70")
+            ? Visibility.Collapsed : Visibility.Visible;
+        WindowTokenEmptyText.Visibility = DrawAnalysisPlot(WindowTokenPlot, hours,
+            points.Select(point => point.MedianTokens ?? double.NaN).ToArray(), "#3264AA", compactTokens: true)
+            ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private static string DescribeInteractionRate(CodexRhythmWindowPoint[] points)
+    {
+        var peak = points.FirstOrDefault(point => point.Hours == 1)?.MedianMessagesPerHour;
+        var halfDay = points.FirstOrDefault(point => point.Hours == 12)?.MedianMessagesPerHour;
+        var fullDay = points.FirstOrDefault(point => point.Hours == 24)?.MedianMessagesPerHour;
+        if (peak is not { } oneHour || halfDay is not { } twelveHours || fullDay is not { } allHours)
+            return "样本不足，暂时无法比较 1、12、24 小时的交互速度。";
+        if (oneHour > twelveHours && oneHour > allHours)
+            return $"以最密集 1 小时的 {oneHour:0.##} 次/小时为基准，12 小时降至 {twelveHours:0.##}（−{1 - twelveHours / oneHour:P0}），全天降至 {allHours:0.##}（−{1 - allHours / oneHour:P0}）。";
+        return $"1 小时、12 小时和全天的交互速度中位数分别为 {oneHour:0.##}、{twelveHours:0.##} 和 {allHours:0.##} 次/小时。";
+    }
+
+    private static bool DrawAnalysisPlot(
+        WpfPlot control, double[] hours, double[] values, string color, bool compactTokens = false)
+    {
+        var plot = control.Plot;
+        plot.Clear();
+        if (values.All(double.IsNaN))
+        {
+            control.Visibility = Visibility.Collapsed;
+            return false;
+        }
+
+        control.Visibility = Visibility.Visible;
+        var curve = plot.Add.Scatter(hours, values, PlotColor.FromHex(color));
+        curve.LineWidth = 2;
+        curve.MarkerSize = 6;
+        plot.Axes.Bottom.TickGenerator = new NumericManual(hours, hours.Select(hour => hour.ToString("0")).ToArray());
+        plot.Axes.Left.MinimumSize = compactTokens ? 57 : 44;
+        plot.Axes.Left.TickGenerator = new NumericAutomatic
+        {
+            LabelFormatter = value => compactTokens ? CodexRhythmTokenFormat.Format(value) : value.ToString("0.##")
+        };
+        plot.Grid.MajorLineColor = PlotColor.FromHex("#E2E8EE");
+        var maximum = Math.Max(1, values.Where(double.IsFinite).Max());
+        plot.Axes.SetLimits(0, hours[^1] + 1, -0.02 * maximum, 1.12 * maximum);
+        control.Refresh();
+        return true;
     }
 
     private void DrawSilencePlot(CodexUsageRhythm rhythm)

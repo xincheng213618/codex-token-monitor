@@ -1,40 +1,60 @@
 <Window x:Class="CodexTokenMonitor.CodexRhythmWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:CodexTokenMonitor"
         xmlns:plot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
         Title="Codex 使用节律" Width="980" Height="700" MinWidth="760" MinHeight="555"
         WindowStartupLocation="CenterOwner" Background="{StaticResource CanvasBrush}"
         Foreground="{StaticResource TextBrush}" FontFamily="Microsoft YaHei UI" FontSize="12"
         UseLayoutRounding="True" ShowInTaskbar="False">
     <Window.Resources>
+        <local:CodexRhythmTokenConverter x:Key="RhythmToken" />
         <Style x:Key="RhythmGrid" TargetType="DataGrid" BasedOn="{StaticResource BaseDataGrid}">
             <Setter Property="IsReadOnly" Value="True" />
             <Setter Property="AutoGenerateColumns" Value="False" />
             <Setter Property="CanUserAddRows" Value="False" />
             <Setter Property="CanUserResizeRows" Value="False" />
         </Style>
+        <Style x:Key="RhythmAnalysisHeader" TargetType="DataGridColumnHeader" BasedOn="{StaticResource BaseDataGridColumnHeader}">
+            <Setter Property="Padding" Value="5,0" />
+        </Style>
+        <Style x:Key="RhythmAnalysisCell" TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
+            <Setter Property="Padding" Value="5,0" />
+        </Style>
+        <Style x:Key="RhythmNumber" TargetType="TextBlock">
+            <Setter Property="TextAlignment" Value="Right" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+        </Style>
+        <Style x:Key="RhythmDayTokens" TargetType="TextBlock" BasedOn="{StaticResource RhythmNumber}">
+            <Setter Property="ToolTip" Value="{Binding TotalTokens, StringFormat=N0, TargetNullValue=—}" />
+        </Style>
+        <Style x:Key="RhythmTokensPerMessage" TargetType="TextBlock" BasedOn="{StaticResource RhythmNumber}">
+            <Setter Property="ToolTip" Value="{Binding TokensPerMessage, StringFormat='{}{0:#,0.##}', TargetNullValue=—}" />
+        </Style>
+        <Style x:Key="RhythmMedianTokens" TargetType="TextBlock" BasedOn="{StaticResource RhythmNumber}">
+            <Setter Property="ToolTip" Value="{Binding MedianTokens, StringFormat='{}{0:#,0.##}', TargetNullValue=—}" />
+        </Style>
+        <Style x:Key="RhythmDayDate" TargetType="TextBlock">
+            <Setter Property="ToolTip" Value="{Binding DateDetails}" />
+        </Style>
     </Window.Resources>
     <Grid Margin="20,16">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" /><RowDefinition Height="*" />
         </Grid.RowDefinitions>
         <DockPanel Margin="0,0,0,12">
             <Button x:Name="RefreshButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="更新统计"
-                    Click="Refresh_Click" VerticalAlignment="Center" Margin="14,0,0,0" />
+                    Click="Refresh_Click" VerticalAlignment="Center" Margin="14,0,0,0"
+                    ToolTipService.ShowOnDisabled="True" />
             <StackPanel>
-                <TextBlock Text="Codex 使用节律" FontSize="21" FontWeight="SemiBold" />
-                <TextBlock x:Name="SourceText"
-                           Style="{StaticResource SectionDescription}" Margin="0,5,0,0" />
+                <TextBlock x:Name="RhythmHeaderTitle" Text="Codex 使用节律" FontSize="21" FontWeight="SemiBold" />
+                <TextBlock Style="{StaticResource SectionDescription}" Margin="0,5,0,0"
+                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                           Text="完整自然日 · 缺覆盖留空 · 消息间隔 ≤30 分钟按日计入 · 静默归起点日，跨缺口剔除"
+                           ToolTip="按完整自然日汇总，排除记录首尾日期，覆盖不足的日期留空。相邻消息间隔 ≤30 分钟计入交互时长并按日拆分。最长静默归起点日，跨记录缺口的间隔剔除。交互时长反映消息节律。" />
             </StackPanel>
         </DockPanel>
-        <Border Grid.Row="1" Style="{StaticResource PanelBorder}" Padding="14,10" Margin="0,0,0,12">
-            <StackPanel>
-                <TextBlock x:Name="CoverageText" Text="等待首次更新" FontWeight="SemiBold" TextWrapping="Wrap" />
-                <TextBlock x:Name="SilenceText"
-                           Style="{StaticResource SectionDescription}" Margin="0,5,0,0" />
-            </StackPanel>
-        </Border>
-        <TabControl Grid.Row="2" x:Name="RhythmTabs" Background="{StaticResource SurfaceBrush}">
+        <TabControl Grid.Row="1" x:Name="RhythmTabs" Background="{StaticResource SurfaceBrush}">
             <TabItem Header="月度概览">
                 <DataGrid x:Name="MonthGrid" Style="{StaticResource RhythmGrid}">
                     <DataGrid.Columns>
@@ -61,18 +81,71 @@
                     </DataGrid>
                 </Grid>
             </TabItem>
-            <TabItem Header="逐日明细">
-                <DataGrid x:Name="DayGrid" Style="{StaticResource RhythmGrid}">
-                    <DataGrid.Columns>
-                        <DataGridTextColumn Header="日期" Binding="{Binding Date, StringFormat=yyyy-MM-dd}" Width="*" />
-                        <DataGridTextColumn Header="交互次数" Binding="{Binding Messages, TargetNullValue=—}" Width="*" />
-                        <DataGridTextColumn Header="有消息的钟点" Binding="{Binding ClockHours, TargetNullValue=—}" Width="*" />
-                        <DataGridTextColumn Header="交互时长（小时）" Binding="{Binding InteractionHours, StringFormat=F2, TargetNullValue=—}" Width="1.2*" />
-                        <DataGridTextColumn Header="最长静默起点" Binding="{Binding LongestSilence.Start, StringFormat=MM-dd HH:mm, FallbackValue=—}" Width="1.2*" />
-                        <DataGridTextColumn Header="最长静默终点" Binding="{Binding LongestSilence.End, StringFormat=MM-dd HH:mm, FallbackValue=—}" Width="1.2*" />
-                        <DataGridTextColumn Header="静默（小时）" Binding="{Binding LongestSilence.Hours, StringFormat=F2, FallbackValue=—}" Width="*" />
-                    </DataGrid.Columns>
-                </DataGrid>
+            <TabItem x:Name="DailyTrendTab" Header="逐日明细">
+                <Grid x:Name="DailyDetailPanel" Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Expander x:Name="DailyTrends" Header="每日趋势" IsExpanded="True" Visibility="Collapsed"
+                              Margin="0,0,0,7">
+                        <StackPanel Margin="0,3,0,1">
+                            <DockPanel Margin="0,0,0,5">
+                                <ComboBox x:Name="DailyTrendRange" DockPanel.Dock="Right" SelectedIndex="1"
+                                          Width="106" AutomationProperties.Name="每日趋势范围">
+                                    <ComboBoxItem Content="最近 28 天" />
+                                    <ComboBoxItem Content="最近 56 天" />
+                                    <ComboBoxItem Content="全部日期" />
+                                </ComboBox>
+                                <ComboBox x:Name="DailyTrendMode" DockPanel.Dock="Right" SelectedIndex="0"
+                                          Width="115" Margin="0,0,8,0" AutomationProperties.Name="趋势计算方式">
+                                    <ComboBoxItem Content="逐日" />
+                                    <ComboBoxItem Content="7 天移动" />
+                                </ComboBox>
+                                <TextBlock x:Name="DailyTrendScaleText" Text="走势指数 · 各指标均值为 100"
+                                           Style="{StaticResource SectionDescription}" VerticalAlignment="Center" Margin="0,0,8,0"
+                                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                           ToolTip="各指标以可用完整日均值为基准。今日截至打开或手动更新的时刻。7 天移动使用完整自然日，Token/次按窗口总 Token 除以总交互次数。" />
+                            </DockPanel>
+                            <WrapPanel Margin="4,0,0,3">
+                                <TextBlock Text="●  人工交互次数" Foreground="#147D70" FontWeight="SemiBold" Margin="0,0,16,0" />
+                                <TextBlock Text="◆  Token 总量" Foreground="#3264AA" FontWeight="SemiBold" Margin="0,0,16,0"
+                                           ToolTip="模型 Token 含缓存输入，也可能来自 Goal、自动化和子代理执行。" />
+                                <TextBlock Text="■  Token/次" Foreground="#93612C" FontWeight="SemiBold"
+                                           ToolTip="Token 总量除以人工交互次数，表示同期汇总比值。" />
+                            </WrapPanel>
+                            <Grid x:Name="DailyChart" Height="190">
+                                <plot:WpfPlot x:Name="DailyOverlayPlot" Focusable="False"
+                                              AutomationProperties.Name="按日期比较人工交互次数、Token 总量和 Token 每次的走势指数" />
+                                <TextBlock x:Name="DailyTrendEmpty" Text="暂无趋势样本" Visibility="Collapsed"
+                                           Style="{StaticResource SectionDescription}" HorizontalAlignment="Center"
+                                           VerticalAlignment="Center" />
+                            </Grid>
+                        </StackPanel>
+                    </Expander>
+                    <DataGrid x:Name="DayGrid" Grid.Row="1" Style="{StaticResource RhythmGrid}" FrozenColumnCount="1"
+                              ColumnHeaderStyle="{StaticResource RhythmAnalysisHeader}" CellStyle="{StaticResource RhythmAnalysisCell}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="日期" Binding="{Binding DateLabel}" SortMemberPath="Date"
+                                                Width="1.18*" MinWidth="102" ElementStyle="{StaticResource RhythmDayDate}" />
+                            <DataGridTextColumn Header="交互次数" Binding="{Binding Messages, TargetNullValue=—}" Width="0.85*" MinWidth="67"
+                                                ElementStyle="{StaticResource RhythmNumber}" />
+                            <DataGridTextColumn Header="当日 Token" Binding="{Binding TotalTokens, Converter={StaticResource RhythmToken}}"
+                                                Width="1.15*" MinWidth="88" ElementStyle="{StaticResource RhythmDayTokens}" />
+                            <DataGridTextColumn Header="Token/次" Binding="{Binding TokensPerMessage, Converter={StaticResource RhythmToken}}"
+                                                Width="1.05*" MinWidth="82" ElementStyle="{StaticResource RhythmTokensPerMessage}" />
+                            <DataGridTextColumn Header="有消息的钟点" Binding="{Binding ClockHours, TargetNullValue=—}" Width="1.05*" MinWidth="86" />
+                            <DataGridTextColumn Header="交互时长（小时）" Binding="{Binding InteractionHours, StringFormat=F2, TargetNullValue=—}"
+                                                Width="1.2*" MinWidth="109" />
+                            <DataGridTextColumn Header="静默起点" Binding="{Binding LongestSilence.Start, StringFormat=MM-dd HH:mm, FallbackValue=—}"
+                                                Width="1.08*" MinWidth="86" />
+                            <DataGridTextColumn Header="静默终点" Binding="{Binding LongestSilence.End, StringFormat=MM-dd HH:mm, FallbackValue=—}"
+                                                Width="1.08*" MinWidth="86" />
+                            <DataGridTextColumn Header="静默（小时）" Binding="{Binding LongestSilence.Hours, StringFormat=F2, FallbackValue=—}"
+                                                Width="1.05*" MinWidth="87" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
             </TabItem>
             <TabItem x:Name="LongGapsTab" Header="超过 24 小时">
                 <DataGrid x:Name="LongGapsGrid" Style="{StaticResource RhythmGrid}">
@@ -83,8 +156,62 @@
                     </DataGrid.Columns>
                 </DataGrid>
             </TabItem>
+            <TabItem x:Name="AnalysisTab" Header="交互分析">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="12,10">
+                        <TextBlock x:Name="AnalysisStatusText" Text="等待首次统计"
+                                   Style="{StaticResource SectionDescription}" />
+                        <StackPanel x:Name="AnalysisContent" Visibility="Collapsed">
+                            <TextBlock x:Name="AnalysisRangeText" FontWeight="SemiBold" TextWrapping="Wrap" />
+                            <TextBlock x:Name="AnalysisInsightText" Margin="0,5,0,10" TextWrapping="Wrap" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="1.16*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,12,0">
+                                    <TextBlock Text="交互速度中位（次/小时）" FontWeight="SemiBold" />
+                                    <Grid Height="122">
+                                        <plot:WpfPlot x:Name="InteractionRatePlot" Focusable="False"
+                                                      AutomationProperties.Name="各窗口时长的交互速度中位数" />
+                                        <TextBlock x:Name="InteractionRateEmptyText" Text="暂无交互样本"
+                                                   Style="{StaticResource SectionDescription}" Visibility="Collapsed"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Grid>
+                                    <TextBlock x:Name="WindowTokenTitle" Text="窗口内 Token 中位" Margin="0,8,0,0" FontWeight="SemiBold" />
+                                    <Grid Height="122">
+                                        <plot:WpfPlot x:Name="WindowTokenPlot" Focusable="False"
+                                                      AutomationProperties.Name="各窗口时长的 Token 中位数" />
+                                        <TextBlock x:Name="WindowTokenEmptyText" Text="暂无 Token 样本"
+                                                   Style="{StaticResource SectionDescription}" Visibility="Collapsed"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Grid>
+                                    <TextBlock Text="窗口时长（小时）" Style="{StaticResource SectionDescription}" HorizontalAlignment="Center" />
+                                </StackPanel>
+                                <DataGrid x:Name="AnalysisGrid" Grid.Column="1" Style="{StaticResource RhythmGrid}"
+                                          ColumnHeaderStyle="{StaticResource RhythmAnalysisHeader}"
+                                          CellStyle="{StaticResource RhythmAnalysisCell}" CanUserSortColumns="False"
+                                          VerticalAlignment="Top" AutomationProperties.Name="各窗口时长的统计明细">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="小时" Binding="{Binding Hours}" Width="0.65*" MinWidth="34" />
+                                        <DataGridTextColumn Header="交互中位" Binding="{Binding MedianMessages, StringFormat=0.#, TargetNullValue=—}"
+                                                            Width="*" MinWidth="58" />
+                                        <DataGridTextColumn Header="次/小时" Binding="{Binding MedianMessagesPerHour, StringFormat=0.##, TargetNullValue=—}"
+                                                            Width="0.9*" MinWidth="52" />
+                                        <DataGridTextColumn Header="交互天数" Binding="{Binding MessageSampleDays}" Width="*" MinWidth="58" />
+                                        <DataGridTextColumn Header="Token 中位"
+                                                            Binding="{Binding MedianTokens, Converter={StaticResource RhythmToken}}"
+                                                            Width="1.7*" MinWidth="100" ElementStyle="{StaticResource RhythmMedianTokens}" />
+                                        <DataGridTextColumn Header="Token 天数" Binding="{Binding TokenSampleDays}" Width="*" MinWidth="68" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </Grid>
+                            <TextBlock Text="每天选人工消息最多的连续窗口，24 小时取完整自然日。Token 按该窗口内的记录时间统计，含缓存输入。缺少覆盖的日期不参与 Token 统计。"
+                                       Style="{StaticResource SectionDescription}" Margin="0,8,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
-        <TextBlock Grid.Row="3" Style="{StaticResource SectionDescription}" Margin="2,10,2,0"
-                   Text="按完整自然日汇总，排除记录首尾日期和缺少覆盖证据的日期。相邻消息间隔 ≤ 30 分钟计入交互时长，跨午夜按日拆分。最长静默按起点日期归属，跨记录缺口的间隔剔除。时长反映 Codex 消息节律，实际工作和睡眠需另行记录。" />
     </Grid>
 </Window>

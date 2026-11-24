@@ -8,7 +8,8 @@ internal enum UsageSource
     WorkBuddy = 3,
     Dsh = 4,
     Kimi = 5,
-    Qoder = 6
+    Qoder = 6,
+    Gemini = 7
 }
 
 internal sealed record DailyUsageSnapshot(
@@ -36,6 +37,7 @@ internal static class UsageSourceReaders
     internal static IUsageSourceReader CreateDshReader() => new DshUsageSourceReader();
     internal static IUsageSourceReader CreateKimiReader() => new KimiUsageReader();
     internal static IUsageSourceReader CreateQoderReader() => new QoderUsageReader();
+    internal static IUsageSourceReader CreateGeminiReader() => new GeminiUsageReader();
 
     private sealed class CodexUsageSourceReader(CodexUsageReader reader) : IUsageSourceReader
     {

@@ -9,7 +9,7 @@ namespace CodexTokenMonitor;
 /// </summary>
 internal sealed class CodexLogFileIndex : IDisposable
 {
-    internal const string FileName = "codex-log-file-index-v1.json";
+    internal const string FileName = "codex-log-file-index-v2.json";
     private readonly string path;
     private readonly Dictionary<string, Entry> entries = new(StringComparer.OrdinalIgnoreCase);
     private bool dirty;
@@ -53,7 +53,9 @@ internal sealed class CodexLogFileIndex : IDisposable
                 token.ThrowIfCancellationRequested();
                 // Include replayed records as well: a wider range is safe and
                 // leaves model/replay attribution entirely with the normal parser.
-                if (line.Contains("\"token_count\"", StringComparison.Ordinal) &&
+                if ((line.Contains("\"token_count\"", StringComparison.Ordinal) ||
+                     line.Contains("\"token_usage_record\"", StringComparison.Ordinal) ||
+                     line.Contains("\"compacted\"", StringComparison.Ordinal)) &&
                     SubagentReplayFilter.TryReadRecordTimestamp(line) is { } timestamp)
                 {
                     if (first is null || timestamp < first) first = timestamp;

@@ -25,7 +25,8 @@ internal static partial class MainWindowProbe
             Line(now.AddSeconds(-14), "turn_context", new { model = "speed-fixture" }) + Response("r1", now.AddSeconds(-5)));
         Select(window, modules[UsageSource.Codex], RangeMode.Day);
         var tabs = Get<TabControl>(window, "DetailsTabs");
-        Require(tabs.Items.Cast<TabItem>().Select(tab => tab.Header.ToString()).SequenceEqual(new[] { "用量明细", "实时数据" }), "only the lower detail area switches between usage and live data");
+        Require(tabs.Items.Cast<TabItem>().Select(tab => tab.Header.ToString()).SequenceEqual(new[] { "用量明细", "实时数据", "模型占比" }),
+            "the lower detail area offers usage, live data, and model breakdowns");
         Require(tabs.Padding == new Thickness(0) && tabs.Margin == new Thickness(0) && Get<Border>(window, "DetailsCard").Padding == new Thickness(12, 10, 12, 10),
             "one padded detail card contains the shared tab header and content");
         foreach (var name in new[] { "UsageBreakdownPanel", "RealtimeDataPanel" })
@@ -146,6 +147,7 @@ internal static partial class MainWindowProbe
                 await popup.Completion.ContinueWith(_ => { }, TaskScheduler.Default).WaitAsync(TimeSpan.FromSeconds(10));
             }
         }
+        await CheckModelBreakdownAsync(window, modules[UsageSource.Codex]);
 
         void CheckPageLayout()
         {
@@ -196,6 +198,14 @@ internal static partial class MainWindowProbe
             Require(Math.Abs(sourcePoint.Y - dataY) < 20 && Math.Abs(sourcePoint.Y - analysisY) < 20, "sources and toolbar occupy a single header row");
             Require(sourcePoint.X <= usageBounds.X + 12, "header icon no longer reserves space before source tabs");
             Require(cacheY >= usageBounds.Bottom - 2, "cache status is below the page area");
+            Get<TabItem>(window, "ModelBreakdownTab").IsSelected = true; host.UpdateLayout();
+            var modelPanel = Get<ContentControl>(window, "ModelBreakdownHost");
+            var modelBounds = new Rect(modelPanel.TranslatePoint(new Point(), host), modelPanel.RenderSize);
+            Require(Math.Abs(usageBounds.X - modelBounds.X) < 1 && Math.Abs(usageBounds.Y - modelBounds.Y) < 1 &&
+                Math.Abs(usageBounds.Width - modelBounds.Width) < 1 && Math.Abs(usageBounds.Height - modelBounds.Height) < 1,
+                $"model page shares the detail page bounds: {usageBounds} / {modelBounds}");
+            Require(trendBounds == new Rect(trend.TranslatePoint(new Point(), host), trend.RenderSize),
+                "selecting the model breakdown keeps the trend plot fixed");
             tabs.SelectedIndex = selected; host.UpdateLayout();
         }
         static async Task Wait(Func<bool> predicate, string message)
@@ -203,6 +213,104 @@ internal static partial class MainWindowProbe
             var watch = Stopwatch.StartNew();
             while (!predicate()) { if (watch.Elapsed > TimeSpan.FromSeconds(15)) throw new TimeoutException(message); await Task.Delay(20); }
         }
+    }
+
+    private static async Task CheckModelBreakdownAsync(MainWindow window, UsageSourceModule module)
+    {
+        var usageTab = Get<TabItem>(window, "UsageAnalysisTab");
+        var modelTab = Get<TabItem>(window, "ModelBreakdownTab");
+        var modelHost = Get<ContentControl>(window, "ModelBreakdownHost");
+        var hasOriginalDisplay = module.TryGetDisplay(out var previousRange, out var previousResult);
+        try
+        {
+            var range = new SelectedRange(SeedDay, SeedDay.AddDays(1), "模型占比样本", "样本明细", RangeMode.Day);
+            var timestamp = SeedDay.AddHours(11);
+            var sol = new TokenUsageEvent(timestamp, 6_000_000, 5_800_000, 100_000, 0, 6_100_000, ModelId: "gpt-6.2-sol");
+            var astra = new TokenUsageEvent(timestamp.AddMinutes(1), 3_000_000, 2_900_000, 100_000, 0, 3_100_000, ModelId: "gpt-6.2-astra");
+            var unknown = new TokenUsageEvent(timestamp.AddMinutes(2), 800_000, 0, 0, 0, 800_000);
+            Publish(range, sol, astra, unknown);
+            modelTab.IsSelected = true;
+            var view = (FrameworkElement)modelHost.Content;
+            var grid = Get<DataGrid>(view, "ModelGrid");
+            var tokenStrip = Get<Grid>(view, "TokenShareStrip");
+            var costStrip = Get<Grid>(view, "CostShareStrip");
+            var pageScroll = Get<ScrollViewer>(view, "PageScroll");
+            Require(grid.Items.Count == 3 && Segments(tokenStrip).Length == 3 && Segments(costStrip).Length == 2,
+                "unattributed tokens remain in the token mix, while the cost mix contains priced models");
+            var solToken = Segment(tokenStrip, "gpt-6.2-sol");
+            var astraToken = Segment(tokenStrip, "gpt-6.2-astra");
+            var solCost = Segment(costStrip, "gpt-6.2-sol");
+            var astraCost = Segment(costStrip, "gpt-6.2-astra");
+
+            foreach (var width in new[] { 1380, 1060 })
+            {
+                await RenderContentAsync(window, Path.Combine(outputRoot, $"main-model-breakdown-{width}.png"), width,
+                    () =>
+                    {
+                        Require(Get<TextBlock>(view, "TokenTotal").IsVisible && Get<TextBlock>(view, "CostTotal").IsVisible &&
+                            grid.IsVisible && grid.ActualHeight > 0, "composition totals and model rows are visible at each width");
+                        var viewport = (ScrollContentPresenter)pageScroll.Template.FindName("PART_ScrollContentPresenter", pageScroll);
+                        var firstRow = grid.ItemContainerGenerator.ContainerFromIndex(0) as DataGridRow;
+                        Require(firstRow is { IsVisible: true, ActualHeight: > 0 },
+                            $"the model table realizes its first row at {width}px");
+                        var rowBounds = firstRow!.TransformToAncestor(viewport)
+                            .TransformBounds(new Rect(firstRow.RenderSize));
+                        var headerBottom = grid.TranslatePoint(new Point(0, grid.ColumnHeaderHeight), viewport).Y;
+                        Require(rowBounds.Top >= headerBottom - 1 && rowBounds.Bottom <= viewport.ActualHeight + 1,
+                            $"the first model row fits below the headers inside the clipped viewport at {width}px: {rowBounds}, viewport height {viewport.ActualHeight}");
+                        var tokenOrigin = tokenStrip.TranslatePoint(new Point(), viewport);
+                        var costOrigin = costStrip.TranslatePoint(new Point(), viewport);
+                        Require(width == 1060
+                            ? Math.Abs(tokenOrigin.Y - costOrigin.Y) < 1 && costOrigin.X > tokenOrigin.X
+                            : costOrigin.Y > tokenOrigin.Y && Math.Abs(tokenOrigin.X - costOrigin.X) < 1,
+                            $"composition strips are side by side in the short window and stacked in the taller window at {width}px");
+                        Require(Math.Abs(solToken.ActualWidth - tokenStrip.ActualWidth * 0.61) < 2 &&
+                            Math.Abs(astraToken.ActualWidth - tokenStrip.ActualWidth * 0.31) < 2,
+                            "token segments use the full 10M-token denominator");
+                        Require(Math.Abs(astraCost.ActualWidth - costStrip.ActualWidth * (5.96 / 7.94)) < 2 &&
+                            astraCost.ActualWidth > solCost.ActualWidth,
+                            "cost segments reflect actual per-model cache and output pricing");
+                    }, height: width == 1060 ? 800 : 940);
+            }
+
+            grid.SelectedIndex = 1;
+            Require(astraToken.Opacity > solToken.Opacity && astraCost.Opacity > solCost.Opacity,
+                "selecting Astra highlights its segment in both comparisons");
+            var laterRange = range with { Start = range.Start.AddHours(1), Title = "模型占比更新样本" };
+            Publish(laterRange, sol);
+            Require(grid.Items.Count == 1 && Segments(tokenStrip).Length == 1 && Segments(costStrip).Length == 1 &&
+                string.Equals(Segments(tokenStrip)[0].Tag as string, "gpt-6.2-sol", StringComparison.Ordinal),
+                "a subsequent result replaces the selected range's model mix");
+            Results.Add(new { check = "model-breakdown", models = 2, tokenShares = true, costShares = true,
+                selectionHighlightsBoth = true, updatesWithRange = true });
+        }
+        finally
+        {
+            usageTab.IsSelected = true;
+            if (hasOriginalDisplay)
+            {
+                module.StoreDisplay(previousRange, previousResult);
+                Invoke(window, "ApplySummary", previousRange, previousResult, module);
+            }
+            else
+            {
+                module.ClearDisplay();
+                Invoke(window, "ApplyEmptyModuleState", module);
+            }
+        }
+
+        void Publish(SelectedRange range, params TokenUsageEvent[] events)
+        {
+            var summary = new TokenUsageSummary { StartLocal = range.Start, EndLocal = range.End };
+            foreach (var item in events) summary.Add(item);
+            var result = new UsageQueryResult(summary, new[] { summary }, TimeSpan.Zero, null, []);
+            module.StoreDisplay(range, result);
+            Invoke(window, "ApplySummary", range, result, module);
+        }
+
+        static Border[] Segments(Grid strip) => strip.Children.OfType<Border>().ToArray();
+        static Border Segment(Grid strip, string modelId) => Segments(strip)
+            .Single(item => string.Equals(item.Tag as string, modelId, StringComparison.Ordinal));
     }
 
     private static async Task RenderSpeedPopupAsync(Window window, string fileName)

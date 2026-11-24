@@ -221,6 +221,15 @@ internal sealed class QoderUsageModule : UsageSourceModule
     public QoderUsageModule() : base(UsageSource.Qoder) { }
 }
 
+internal sealed class GeminiUsageModule : UsageSourceModule
+{
+    public GeminiUsageModule() : base(UsageSource.Gemini) { }
+
+    public override bool SupportsCycle => QuotaCycles.Count > 0;
+    public GeminiActivitySnapshot? CurrentActivity { get; set; }
+    public IReadOnlyList<ClaudeQuotaReading> QuotaReadings { get; set; } = Array.Empty<ClaudeQuotaReading>();
+}
+
 internal static class UsageSourceModules
 {
     public static IReadOnlyDictionary<UsageSource, UsageSourceModule> Create()
@@ -239,6 +248,7 @@ internal static class UsageSourceModules
         UsageSource.Dsh => new DshUsageModule(),
         UsageSource.Kimi => new KimiUsageModule(),
         UsageSource.Qoder => new QoderUsageModule(),
+        UsageSource.Gemini => new GeminiUsageModule(),
         _ => throw new InvalidOperationException($"No desktop page registered for source {source}.")
     };
 }

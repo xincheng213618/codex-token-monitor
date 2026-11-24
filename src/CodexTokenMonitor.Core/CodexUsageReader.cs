@@ -18,10 +18,11 @@ internal sealed class CodexUsageReader
 
     private LiveFileTailReader UsageTailReader = new();
     private readonly ConcurrentDictionary<string, byte> RepeatedUsageKeys = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> SupersededCompactions = new(StringComparer.Ordinal);
     private LiveFileTailReader QuotaTailReader = new();
     private readonly CodexQuotaCycleReader CycleReader = new();
     private readonly CodexAppServerQuotaReader AppServerQuotaReader = new();
-    private ConcurrentDictionary<string, SubagentReplayFilter> UsageReplayFilters =
+    private ConcurrentDictionary<string, UsageFileState> UsageFileStates =
         new(StringComparer.OrdinalIgnoreCase);
     private ConcurrentDictionary<string, SubagentReplayFilter> QuotaReplayFilters =
         new(StringComparer.OrdinalIgnoreCase);
@@ -31,6 +32,12 @@ internal sealed class CodexUsageReader
     private string? quotaHistoryCachedPath;
     private long quotaHistoryCachedLength = -1;
     private DateTime quotaHistoryCachedWriteTimeUtc;
+
+    private sealed class UsageFileState
+    {
+        public SubagentReplayFilter Replay { get; } = new();
+        public CodexCompactionUsageCollector Compactions { get; } = new();
+    }
 
     private readonly record struct RateLimitWindowSnapshot(
         decimal UsedPercent,
@@ -129,6 +136,49 @@ internal sealed class CodexUsageReader
         CancellationToken cancellationToken = default)
     {
         return UsageCacheStore.Load(CacheFolder).ReadDetailRows(startLocal, endLocal, cancellationToken);
+    }
+
+    internal bool ReconcileCompactionUsage(
+        DateTimeOffset startLocal, DateTimeOffset endLocal, CancellationToken cancellationToken = default)
+    {
+        var scan = ReadEventsUncached(startLocal, endLocal, cancellationToken: cancellationToken);
+        if (!scan.IsComplete) return false;
+
+        var additionsByDay = scan.Events.Where(IsCompactionUsage)
+            .ToLookup(item => DateOnly.FromDateTime(item.Timestamp.DateTime));
+        var supersededByDay = SupersededCompactions
+            .Where(item => item.Value >= startLocal && item.Value < endLocal)
+            .ToLookup(item => DateOnly.FromDateTime(item.Value.DateTime), item => item.Key);
+        var days = additionsByDay.Select(group => group.Key).Union(supersededByDay.Select(group => group.Key));
+        var cache = UsageCacheStore.Load(CacheFolder);
+        var complete = true;
+        foreach (var day in days.Order())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!cache.ReconcileCodexCompactionDay(day, additionsByDay[day].ToArray(),
+                    supersededByDay[day].ToHashSet(StringComparer.Ordinal), cancellationToken))
+                complete = false;
+        }
+        return complete;
+    }
+
+    internal CodexRhythmTokens ReadRhythmTokens(
+        CodexUsageRhythm rhythm, TimeSpan reportingOffset, CancellationToken token) =>
+        UsageCacheStore.Load(CacheFolder).ReadRhythmTokens(rhythm, reportingOffset, token);
+
+    internal long? ReadRhythmTodayTotal(DateTimeOffset cutoff, TimeSpan reportingOffset, CancellationToken token)
+    {
+        var localCutoff = cutoff.ToOffset(reportingOffset);
+        var start = new DateTimeOffset(localCutoff.Date, reportingOffset).ToOffset(BeijingOffset);
+        var end = cutoff.ToOffset(BeijingOffset);
+        if (start >= end) return null;
+
+        // Refresh only the storage days intersecting this reporting day. Use the
+        // exact timestamp bounds when summing because its midnight need not match ours.
+        for (var day = StartOfDay(start); day < end; day = day.AddDays(1))
+            _ = ReadDetailRows(day, Min(day.AddDays(1), end), includeLiveToday: true, cancellationToken: token);
+
+        return UsageCacheStore.Load(CacheFolder).ReadRhythmTokenTotal(start, end, token);
     }
 
     public CodexQuotaEstimate? ReadQuotaEstimate(CancellationToken cancellationToken = default)
@@ -1413,11 +1463,13 @@ internal sealed class CodexUsageReader
             var date = DateOnly.FromDateTime(dayStart.DateTime);
             // Deduplication is scoped to a day, matching usage_events' key and
             // the existing per-day reader when a turn continues past midnight.
-            var events = MergeUsageEvents(cache.GetDetailEvents(date, cancellationToken)
-                .Concat(eventsByDay[date]));
+            var cachedEvents = cache.GetDetailEvents(date, cancellationToken);
+            var superseded = GetSupersededCompactionKeys(cachedEvents);
+            var events = MergeUsageEvents(cachedEvents.Concat(eventsByDay[date]));
             eventsByDay.Remove(date);
             var dayEnd = dayStart.AddDays(1);
-            if (events.Count == 0 && cache.TryGet(date, out var legacyBucket) && legacyBucket.Events > 0)
+            if (events.Count == 0 && cachedEvents.Count == 0 &&
+                cache.TryGet(date, out var legacyBucket) && legacyBucket.Events > 0)
             {
                 // Keep legacy summary-only data if the original source is no
                 // longer present, but do not claim its missing details are complete.
@@ -1428,7 +1480,7 @@ internal sealed class CodexUsageReader
 
             var bucket = CreateBucketFromMergedEvents(dayStart, events);
             cache.Put(bucket, isComplete, dayEnd.AddTicks(-1), events,
-                cancellationToken: cancellationToken, propagateErrors: true);
+                cancellationToken: cancellationToken, propagateErrors: true, supersededCompactionKeys: superseded);
             cancellationToken.ThrowIfCancellationRequested();
             if (isComplete && GetIncompleteHistoricalDays(dayStart, dayStart, cancellationToken).Count == 0)
             {
@@ -1579,6 +1631,7 @@ internal sealed class CodexUsageReader
                 var scannedThrough = Min(dayStart.AddDays(1), scanRange.EndLocal).AddTicks(-1);
                 var isComplete = scanRange.CacheHistoricalDays && dayStart < todayStart && scanned.IsComplete;
                 IReadOnlyList<TokenUsageEvent>? detailEvents = null;
+                IReadOnlySet<string>? superseded = null;
                 var replaceDetailEvents = true;
                 var hasDetailEvents = cache.HasDetailEvents(date, cancellationToken);
                 if (hasDetailEvents)
@@ -1592,7 +1645,9 @@ internal sealed class CodexUsageReader
                         detailEnd,
                         useLiveCursor: true,
                         cancellationToken: cancellationToken);
-                    detailEvents = MergeUsageEvents(cache.GetDetailEvents(date, cancellationToken)
+                    var cachedEvents = cache.GetDetailEvents(date, cancellationToken);
+                    superseded = GetSupersededCompactionKeys(cachedEvents);
+                    detailEvents = MergeUsageEvents(cachedEvents
                         .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayStart.AddDays(1)));
                     mergedBucket = CreateBucketFromMergedEvents(dayStart, detailEvents);
@@ -1614,7 +1669,8 @@ internal sealed class CodexUsageReader
                     scannedThrough,
                     detailEvents,
                     replaceDetailEvents,
-                    cancellationToken);
+                    cancellationToken,
+                    supersededCompactionKeys: superseded);
                 dailyBuckets[date] = mergedBucket;
                 cacheChanged = true;
             }
@@ -1702,6 +1758,7 @@ internal sealed class CodexUsageReader
                         .Concat(newEventsResult.Events)
                         .Where(item => item.Timestamp >= dayStart && item.Timestamp < dayEnd));
                     var mergedBucket = CreateBucketFromMergedEvents(dayStart, mergedEvents);
+                    var superseded = GetSupersededCompactionKeys(cachedEvents);
                     replaceDetails |= cachedEvents.Any(e => RepeatedUsageKeys.ContainsKey(UsageIdentity(e)));
                     var isComplete = dayStart < todayStart && scanEnd >= dayEnd && newEventsResult.IsComplete;
                     cache.Put(
@@ -1710,7 +1767,8 @@ internal sealed class CodexUsageReader
                         scanEnd.AddTicks(-1),
                         replaceDetails ? mergedEvents : newEventsResult.Events,
                         replaceDetailEvents: replaceDetails,
-                        cancellationToken: cancellationToken);
+                        cancellationToken: cancellationToken,
+                        supersededCompactionKeys: superseded);
                     cancellationToken.ThrowIfCancellationRequested();
                     cache.Save();
                     cachedEvents = mergedEvents;
@@ -1731,7 +1789,8 @@ internal sealed class CodexUsageReader
                 completeHistoricalDay,
                 endLocal.AddTicks(-1),
                 fullEvents,
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken,
+                supersededCompactionKeys: GetSupersededCompactionKeys(cachedEvents));
             cancellationToken.ThrowIfCancellationRequested();
             cache.Save();
         }
@@ -1779,6 +1838,8 @@ internal sealed class CodexUsageReader
             EndLocal = endLocal
         };
         var dailyBuckets = new Dictionary<DateOnly, TokenUsageBucket>();
+        var compactionEvents = new List<TokenUsageEvent>();
+        var fileEvents = new List<TokenUsageEvent>();
         var isComplete = true;
         using var fileIndex = new CodexLogFileIndex();
 
@@ -1788,12 +1849,21 @@ internal sealed class CodexUsageReader
             foreach (var file in EnumerateJsonlFiles(root, startLocal, endLocal))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (!ReadFile(file, startLocal, endLocal, summary, dailyBuckets, cancellationToken, fileIndex))
+                fileEvents.Clear();
+                if (!ReadEventFile(file, startLocal, endLocal, fileEvents, cancellationToken, fileIndex))
                 {
                     isComplete = false;
                 }
+                foreach (var item in fileEvents)
+                {
+                    if (IsCompactionUsage(item)) compactionEvents.Add(item);
+                    else AddUsageEvent(item, summary, dailyBuckets);
+                }
             }
         }
+
+        foreach (var item in MergeUsageEvents(compactionEvents))
+            AddUsageEvent(item, summary, dailyBuckets);
 
         summary.DailyBuckets.AddRange(
             dailyBuckets.Values
@@ -1854,15 +1924,11 @@ internal sealed class CodexUsageReader
     {
         try
         {
-            var replayFilter = new SubagentReplayFilter();
-            return fileIndex.Read(file, startLocal, endLocal, line =>
-            {
-                var usageEvent = ReadFilteredUsageEvent(line, startLocal, endLocal, replayFilter);
-                if (usageEvent is not null)
-                {
-                    events.Add(usageEvent);
-                }
-            }, cancellationToken);
+            var state = new UsageFileState();
+            var complete = fileIndex.Read(file, startLocal, endLocal, line =>
+                ReadUsageLine(line, startLocal, endLocal, events, state), cancellationToken);
+            AddCompactionEvents(state, startLocal, endLocal, events);
+            return complete;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1881,8 +1947,8 @@ internal sealed class CodexUsageReader
         List<TokenUsageEvent> events,
         CancellationToken cancellationToken)
     {
-        var replayFilter = UsageReplayFilters.GetOrAdd(file, static _ => new SubagentReplayFilter());
-        return UsageTailReader.ReadNewLinesWhile(file, startLocal, line =>
+        var state = UsageFileStates.GetOrAdd(file, static _ => new UsageFileState());
+        var complete = UsageTailReader.ReadNewLinesWhile(file, startLocal, line =>
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (SubagentReplayFilter.TryReadRecordTimestamp(line) is { } timestamp && timestamp >= endLocal)
@@ -1890,18 +1956,37 @@ internal sealed class CodexUsageReader
                 return false;
             }
 
-            var usageEvent = ReadFilteredUsageEvent(line, startLocal, endLocal, replayFilter);
-            if (usageEvent is not null)
-            {
-                events.Add(usageEvent);
-            }
-
+            ReadUsageLine(line, startLocal, endLocal, events, state);
             return true;
         }, cancellationToken, onRestart: () =>
         {
-            replayFilter = new SubagentReplayFilter();
-            UsageReplayFilters[file] = replayFilter;
+            state = new UsageFileState();
+            UsageFileStates[file] = state;
         });
+        AddCompactionEvents(state, startLocal, endLocal, events);
+        return complete;
+    }
+
+    private void ReadUsageLine(string line, DateTimeOffset startLocal, DateTimeOffset endLocal,
+        List<TokenUsageEvent> events, UsageFileState state)
+    {
+        // A legacy mirror can sit across the requested time boundary from its compaction.
+        var usage = ReadFilteredUsageEvent(line, DateTimeOffset.MinValue, DateTimeOffset.MaxValue, state.Replay);
+        state.Compactions.Observe(line, usage, state.Replay.ModelId, state.Replay.ServiceTier);
+        if (usage is not null && usage.Timestamp >= startLocal && usage.Timestamp < endLocal)
+            events.Add(usage);
+    }
+
+    private void AddCompactionEvents(UsageFileState state, DateTimeOffset startLocal, DateTimeOffset endLocal,
+        List<TokenUsageEvent> events)
+    {
+        foreach (var compaction in state.Compactions.Resolve())
+        {
+            var usage = compaction.Event;
+            if (usage.Timestamp < startLocal || usage.Timestamp >= endLocal) continue;
+            if (compaction.HasLegacy) SupersededCompactions.TryAdd(usage.Key!, usage.Timestamp);
+            else events.Add(usage);
+        }
     }
 
     // Cache reads and source scans return normalized, unique events in time
@@ -2161,7 +2246,7 @@ internal sealed class CodexUsageReader
     {
         UsageTailReader.Reset();
         QuotaTailReader.Reset();
-        UsageReplayFilters.Clear();
+        UsageFileStates.Clear();
         QuotaReplayFilters.Clear();
     }
 
@@ -2177,12 +2262,12 @@ internal sealed class CodexUsageReader
         var cutoffUtc = DateTime.MinValue;
         UsageTailReader.PruneBeforeUtc(cutoffUtc);
         QuotaTailReader.PruneBeforeUtc(cutoffUtc);
-        PruneReplayFiltersBeforeUtc(UsageReplayFilters, cutoffUtc);
+        PruneReplayFiltersBeforeUtc(UsageFileStates, cutoffUtc);
         PruneReplayFiltersBeforeUtc(QuotaReplayFilters, cutoffUtc);
     }
 
-    private void PruneReplayFiltersBeforeUtc(
-        ConcurrentDictionary<string, SubagentReplayFilter> filters,
+    private static void PruneReplayFiltersBeforeUtc<T>(
+        ConcurrentDictionary<string, T> filters,
         DateTime cutoffUtc)
     {
         foreach (var pair in filters)
@@ -2200,7 +2285,7 @@ internal sealed class CodexUsageReader
 
             if (shouldRemove)
             {
-                ((ICollection<KeyValuePair<string, SubagentReplayFilter>>)filters).Remove(pair);
+                ((ICollection<KeyValuePair<string, T>>)filters).Remove(pair);
             }
         }
     }
@@ -2436,34 +2521,6 @@ internal sealed class CodexUsageReader
 
     internal static bool IsWeeklyWindow(int windowMinutes) => windowMinutes == WeeklyWindowMinutes;
 
-    private bool ReadFile(
-        string file,
-        DateTimeOffset startLocal,
-        DateTimeOffset endLocal,
-        TokenUsageSummary summary,
-        Dictionary<DateOnly, TokenUsageBucket> dailyBuckets,
-        CancellationToken cancellationToken,
-        CodexLogFileIndex fileIndex)
-    {
-        try
-        {
-            var replayFilter = new SubagentReplayFilter();
-            return fileIndex.Read(file, startLocal, endLocal, line =>
-            {
-                var usageEvent = ReadFilteredUsageEvent(line, startLocal, endLocal, replayFilter);
-                if (usageEvent is not null) AddUsageEvent(usageEvent, summary, dailyBuckets);
-            }, cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private static void AddUsageEvent(
         TokenUsageEvent usageEvent,
         TokenUsageSummary summary,
@@ -2485,7 +2542,22 @@ internal sealed class CodexUsageReader
     }
 
     private IReadOnlyList<TokenUsageEvent> MergeUsageEvents(IEnumerable<TokenUsageEvent> events) =>
-        UsageEventMerger.Merge(events.Where(e => !RepeatedUsageKeys.ContainsKey(UsageIdentity(e))));
+        UsageEventMerger.Merge(events.Where(e => IsCompactionUsage(e)
+            ? !IsSupersededCompaction(e)
+            : !RepeatedUsageKeys.ContainsKey(UsageIdentity(e))));
+
+    private IReadOnlySet<string>? GetSupersededCompactionKeys(IReadOnlyList<TokenUsageEvent> cachedEvents)
+    {
+        if (SupersededCompactions.IsEmpty) return null;
+        return cachedEvents.Where(IsSupersededCompaction).Select(item => item.Key!)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private bool IsSupersededCompaction(TokenUsageEvent usage) =>
+        usage.Key is { } key && SupersededCompactions.ContainsKey(key);
+
+    private static bool IsCompactionUsage(TokenUsageEvent usage) =>
+        usage.Key?.StartsWith("codex-compaction:", StringComparison.Ordinal) == true;
 
     private static string UsageIdentity(TokenUsageEvent e) => UsageEventMerger.GetStableKey(e with { Key = null });
 

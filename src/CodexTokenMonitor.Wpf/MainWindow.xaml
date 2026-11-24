@@ -252,6 +252,46 @@
                         ToolTip="查看 5h / 7d 满额参考和 Fable 周额度，管理本地重置提醒" Click="ClaudeQuotaButton_Click" />
             </Grid>
         </Border>
+        <Border x:Name="GeminiActivityPanel" Grid.Row="2" Style="{StaticResource PanelBorder}" Padding="16,9" Margin="0,0,0,10" Visibility="Collapsed">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="1.15*" /><ColumnDefinition Width="1*" />
+                    <ColumnDefinition Width="1.05*" /><ColumnDefinition Width="1.05*" /><ColumnDefinition Width="88" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,14,0" ToolTip="Antigravity / Gemini 5 小时滚动额度窗口剩余比例与重置时间；支持 agy statusLine 自动同步或在「额度详情」登记。">
+                    <TextBlock Text="5h 额度" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="GeminiBlockValue" Text="--" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="GeminiBlockDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="0,0,14,0" ToolTip="按本机 5h 窗口内的 Gemini 模型 API 等价费用与 Token ÷ 同时刻已用比例，折算 5h 100% 满额容量。">
+                    <TextBlock Text="5h 总额度 · 估算" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="GeminiFiveHourCapacityValue" Text="-" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="GeminiFiveHourCapacityDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Margin="0,0,14,0" ToolTip="Antigravity / Gemini 7 天周额度剩余比例、重置时间与订阅折算金额。">
+                    <TextBlock Text="7d 额度" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="GeminiWeekValue" Text="--" Style="{StaticResource QuotaValue}" Foreground="{StaticResource AccentBrush}" />
+                    <TextBlock x:Name="GeminiWeekDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" Margin="0,0,14,0" ToolTip="按本机 7d 窗口内的 Gemini 模型 API 等价费用与 Token ÷ 同时刻已用比例，折算 7d 周满额容量。">
+                    <TextBlock Text="7d 总额度 · 估算" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="GeminiWeekCapacityValue" Text="-" Style="{StaticResource QuotaValue}" />
+                    <TextBlock x:Name="GeminiWeekCapacityDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="4" Margin="0,0,12,0" ToolTip="今日 Gemini 各模型 Token 占比与上下文缓存命中节省。">
+                    <TextBlock Text="今日模型" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="GeminiPrimaryModelValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    <TextBlock x:Name="GeminiPrimaryModelDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="5" Margin="0,0,12,0" ToolTip="所选时间范围内主会话 / 子代理会话数量与 AGY / CLI 来源分布。">
+                    <TextBlock Text="主 / 子代理会话" Style="{StaticResource QuotaCaption}" />
+                    <TextBlock x:Name="GeminiSessionStatsValue" Text="-" Style="{StaticResource QuotaValue}" FontSize="17" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    <TextBlock x:Name="GeminiSessionStatsDetail" Style="{StaticResource QuotaDetail}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                </StackPanel>
+                <Button x:Name="GeminiQuotaButton" Grid.Column="6" Style="{StaticResource PrimaryButton}" Content="额度详情" VerticalAlignment="Center"
+                        ToolTip="查看 5h / 7d 满额参考与历史 7d 周期，登记 /usage 读数或复制 agy statusLine 配置" Click="GeminiQuotaButton_Click" />
+            </Grid>
+        </Border>
         <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="12,6" Margin="0,0,0,10">
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="统计范围" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,12,0" />
@@ -335,6 +375,9 @@
                     </TabItem>
                     <TabItem x:Name="RealtimeDataTab" Header="实时数据">
                         <Border x:Name="RealtimeDataPanel" Background="Transparent" Padding="0" BorderThickness="0" Margin="0" TextElement.FontWeight="Normal"><ContentControl x:Name="RealtimeDataHost" /></Border>
+                    </TabItem>
+                    <TabItem x:Name="ModelBreakdownTab" Header="模型占比">
+                        <ContentControl x:Name="ModelBreakdownHost" FontWeight="Normal" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
                     </TabItem>
                 </TabControl>
             </Border>

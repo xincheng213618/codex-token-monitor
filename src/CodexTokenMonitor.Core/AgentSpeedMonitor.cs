@@ -7,6 +7,7 @@ internal sealed class AgentSpeedMonitor : IAgentSpeedSampler
     private readonly LiveFileTailReader tail = new();
     private readonly Dictionary<string, IAgentSpeedParser> parsers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ZstdJsonlTailReader> compressed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (long Length, long WriteTicks)> jsonSignatures = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> opened = new(StringComparer.OrdinalIgnoreCase);
     private readonly AgentSpeedEngine engine;
     private readonly ZCodeSpeedDatabase? database;
@@ -53,6 +54,23 @@ internal sealed class AgentSpeedMonitor : IAgentSpeedSampler
             foreach (var file in files)
             {
                 token.ThrowIfCancellationRequested();
+                if (Source == UsageSource.Gemini && file.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var info = new FileInfo(file);
+                        var sig = (info.Length, info.LastWriteTimeUtc.Ticks);
+                        if (!jsonSignatures.TryGetValue(file, out var prev) || prev != sig)
+                        {
+                            if (GeminiSpeedParser.ReadSessionJsonFile(file, engine, key => engine.CanAccept(Source, key, file), token))
+                                jsonSignatures[file] = sig;
+                            else unreadable++;
+                        }
+                    }
+                    catch (IOException) { unreadable++; }
+                    catch (UnauthorizedAccessException) { unreadable++; }
+                    continue;
+                }
                 if (!parsers.TryGetValue(file, out var parser))
                 {
                     var agentId = Source == UsageSource.Qoder ? Path.GetDirectoryName(Path.GetDirectoryName(file))! : file;
@@ -150,6 +168,11 @@ internal sealed class AgentSpeedMonitor : IAgentSpeedSampler
             parsers.Remove(stale); if (compressed.Remove(stale, out var reader)) reader.Dispose(); opened.Remove(stale);
             if (!parsers.Values.Any(parser => parser.Agent.Id == agentId)) engine.RemoveAgent(agentId);
         }
+        foreach (var staleJson in jsonSignatures.Keys.Where(path => !present.Contains(path)).ToArray())
+        {
+            jsonSignatures.Remove(staleJson);
+            engine.RemoveAgent(staleJson);
+        }
     }
 
     private bool Discover(string directory, Dictionary<string, DateTime> result, CancellationToken token)
@@ -158,6 +181,20 @@ internal sealed class AgentSpeedMonitor : IAgentSpeedSampler
         {
             if (!Directory.Exists(directory)) return true;
             if (!SafePath(directory)) return true;
+            if (Source == UsageSource.Gemini)
+            {
+                var (geminiFiles, geminiComplete) = GeminiUsageReader.DiscoverLogFiles([directory], token, reportDiagnostics: false);
+                if (!geminiComplete) discoveryErrors++;
+                foreach (var path in geminiFiles)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (!SafePath(path)) continue;
+                    try { result[path] = File.GetLastWriteTimeUtc(path); }
+                    catch (IOException) { discoveryErrors++; }
+                    catch (UnauthorizedAccessException) { discoveryErrors++; }
+                }
+                return true;
+            }
             foreach (var path in Directory.EnumerateFiles(directory, Source == UsageSource.Kimi ? "wire.jsonl" : "*.jsonl*", new EnumerationOptions
                 { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint,
                     MaxRecursionDepth = Source == UsageSource.Dsh ? int.MaxValue : Math.Max(0, 12 - RelativeDepth(directory)) }))
@@ -210,6 +247,9 @@ internal sealed class AgentSpeedMonitor : IAgentSpeedSampler
 
     private bool CandidateName(string path) => Source == UsageSource.Dsh ? DshGeneration(Path.GetFileName(path)) >= 0
         : Source == UsageSource.Kimi ? Path.GetFileName(path).Equals("wire.jsonl", StringComparison.OrdinalIgnoreCase)
+        : Source == UsageSource.Gemini ? Path.GetFileName(path).Equals("transcript.jsonl", StringComparison.OrdinalIgnoreCase) ||
+            (Path.GetFileName(path).StartsWith("session-", StringComparison.OrdinalIgnoreCase) &&
+             (path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)))
         : path.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase) || Source == UsageSource.Codex && path.EndsWith(".jsonl.zst", StringComparison.OrdinalIgnoreCase);
 
     private static int DshGeneration(string name)
@@ -327,6 +367,7 @@ internal static class AgentSpeedPaths
             UsageSource.Kimi => isolated is not null ? [isolated] : [Path.Combine(Config("KIMI_CODE_HOME", ".kimi-code"), "sessions"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "kimi-desktop", "daimon-share", "daimon", "runtime", "kimi-code", "home", "sessions")],
             UsageSource.Qoder => [isolated ?? Path.Combine(profile, ".qoder", "logs", "sessions")],
+            UsageSource.Gemini => GeminiUsageReader.GetLogRoots(isolated).ToArray(),
             UsageSource.ZCode => [],
             _ => throw new ArgumentOutOfRangeException(nameof(source))
         };
@@ -341,6 +382,7 @@ internal static class AgentSpeedPaths
     public static IEnumerable<string> Files(UsageSource source, string root)
     {
         if (source == UsageSource.Dsh) return DshUsageReader.SelectHighestGenerations(root);
+        if (source == UsageSource.Gemini) return GeminiUsageReader.DiscoverLogFiles([root], reportDiagnostics: false).Files;
         return Directory.EnumerateFiles(root, source == UsageSource.Kimi ? "wire.jsonl" : "*.jsonl*", new EnumerationOptions
         { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint, MaxRecursionDepth = 12 })
             .Where(path => path.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase) || source == UsageSource.Codex && path.EndsWith(".jsonl.zst", StringComparison.OrdinalIgnoreCase));
@@ -352,6 +394,7 @@ internal static class AgentSpeedPaths
         UsageSource.Codex => new CodexSpeedParser(id, canUse), UsageSource.ClaudeCode => new ClaudeSpeedParser(id, canUse),
         UsageSource.Dsh => new DshSpeedParser(id, canUse), UsageSource.WorkBuddy => new WorkBuddySpeedParser(id, canUse),
         UsageSource.Kimi => new KimiSpeedParser(id), UsageSource.Qoder => new QoderSpeedParser(id),
+        UsageSource.Gemini => new GeminiSpeedParser(id, canUse),
         _ => throw new ArgumentOutOfRangeException(nameof(source))
     };
 }

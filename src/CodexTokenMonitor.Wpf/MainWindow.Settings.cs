@@ -96,10 +96,14 @@ public partial class MainWindow
         try
         {
             var settings = PriceSettingsStore.Load();
-            if (diagnostics.Warnings.Count == 0 && source == UsageSource.Codex && result is not null)
+            if (diagnostics.Warnings.Count == 0 && result is not null &&
+                source is UsageSource.Codex or UsageSource.Gemini)
             {
                 var updated = settings.Clone();
-                if (CodexModelCost.AddMissingPresets(updated, result.Summary.ModelUsage.Keys) > 0)
+                var added = source == UsageSource.Gemini
+                    ? CodexModelCost.AddMissingGeminiPresets(updated, result.Summary.ModelUsage.Keys)
+                    : CodexModelCost.AddMissingPresets(updated, result.Summary.ModelUsage.Keys);
+                if (added > 0)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     PriceSettingsStore.Save(updated);

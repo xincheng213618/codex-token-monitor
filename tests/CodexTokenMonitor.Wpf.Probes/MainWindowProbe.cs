@@ -66,6 +66,11 @@ internal static partial class MainWindowProbe
     {
         var logRoot = Path.Combine(isolatedRoot, "logs");
         Require(Path.GetFullPath(MonitorCachePaths.LocalAppData) == isolatedRoot, "cache isolation");
+        var statusline = GeminiQuotaWindow.InstallStatuslineScript();
+        Require(statusline == Path.Combine(isolatedRoot, "GeminiTokenMonitor", "gemini-statusline.ps1") &&
+            File.ReadAllText(statusline).Contains("rate-limits.jsonl", StringComparison.Ordinal),
+            "Gemini installs its bundled statusline independently of the source checkout");
+        Results.Add(new { check = "gemini-bundled-statusline" });
         new CodexDataSharingSettings { AutoStart = false }.Save();
         SeedCaches();
         // The shared reader instance owns the attempt timestamp now that the
@@ -277,7 +282,8 @@ internal static partial class MainWindowProbe
             [UsageSource.WorkBuddy] = new(RangeMode.Day, SeedDay.DateTime, SeedDay.AddHours(9.5), null),
             [UsageSource.Dsh] = new(RangeMode.Day, SeedDay.AddDays(1).DateTime, null, null),
             [UsageSource.Kimi] = new(RangeMode.Week, SeedDay.AddDays(1).DateTime, null, null),
-            [UsageSource.Qoder] = new(RangeMode.Day, SeedDay.AddDays(2).DateTime, null, null)
+            [UsageSource.Qoder] = new(RangeMode.Day, SeedDay.AddDays(2).DateTime, null, null),
+            [UsageSource.Gemini] = new(RangeMode.Day, SeedDay.AddDays(1).DateTime, null, null)
         };
         foreach (var (source, selection) in expected)
         {
@@ -296,7 +302,7 @@ internal static partial class MainWindowProbe
         {
             SetSuppressed(window, false);
             var visits = new[] { UsageSource.Codex, UsageSource.ClaudeCode, UsageSource.ZCode, UsageSource.WorkBuddy,
-                UsageSource.Kimi, UsageSource.Qoder, UsageSource.Dsh, UsageSource.WorkBuddy, UsageSource.ZCode, UsageSource.ClaudeCode, UsageSource.Codex, UsageSource.Dsh };
+                UsageSource.Kimi, UsageSource.Qoder, UsageSource.Gemini, UsageSource.Dsh, UsageSource.WorkBuddy, UsageSource.ZCode, UsageSource.ClaudeCode, UsageSource.Codex, UsageSource.Dsh };
             foreach (var source in visits)
             {
                 tabs.SelectedItem = tabs.Items.Cast<TabItem>().Single(tab => Equals(tab.Tag, source));
@@ -817,7 +823,7 @@ internal static partial class MainWindowProbe
 
     private static void SeedCaches()
     {
-        var folders = new[] { "CodexTokenMonitor", "ClaudeCodeTokenMonitor", "ZCodeTokenMonitor", "WorkBuddyTokenMonitor", "DshTokenMonitor", "KimiTokenMonitor", "QoderTokenMonitor" };
+        var folders = new[] { "CodexTokenMonitor", "ClaudeCodeTokenMonitor", "ZCodeTokenMonitor", "WorkBuddyTokenMonitor", "DshTokenMonitor", "KimiTokenMonitor", "QoderTokenMonitor", "GeminiTokenMonitor" };
         foreach (var source in Enum.GetValues<UsageSource>())
         {
             var multiplier = (int)source + 1;
@@ -827,7 +833,8 @@ internal static partial class MainWindowProbe
                 1 => "mimo-v2.5-pro",
                 _ => "GLM-5.2"
             } : source == UsageSource.Kimi ? "k2d8-preview"
-                : source == UsageSource.Qoder ? (index == 1 ? "qfmodel" : "auto") : null;
+                : source == UsageSource.Qoder ? (index == 1 ? "qfmodel" : "auto")
+                : source == UsageSource.Gemini ? "gemini-2.5-pro" : null;
             var events = new[]
             {
                 new TokenUsageEvent(SeedDay.AddHours(9), 100 * multiplier, 20 * multiplier, 10 * multiplier, 0, 110 * multiplier, $"{source}:one", ModelId: Model(0)),
