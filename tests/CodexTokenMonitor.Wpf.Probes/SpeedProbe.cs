@@ -102,19 +102,23 @@ internal static class SpeedProbe
 
             SeedOtherSources();
             var sourceBox = (ComboBox)window.FindName("SourceBox"); var metricBox = (ComboBox)window.FindName("MetricBox");
-            foreach (var source in UsageSourceRegistry.All.Where(source => source.Source != UsageSource.Codex))
+            var otherSources = UsageSourceRegistry.All.Where(source => source.Source != UsageSource.Codex).ToArray();
+            foreach (var source in otherSources)
             {
                 window.SelectSource(source.Source);
                 await WaitAsync(() => window.LastSnapshot is { Requests: 1, MeasuredRequests: 1 } && window.Title.StartsWith(source.Title), "native source selection " + source.Title);
             }
+            var totalRequests = 13 + otherSources.Length;
+            var totalModels = 1 + otherSources.Length;
             window.SelectSource(null);
-            await WaitAsync(() => window.LastSnapshot?.Requests == 19, "all-source aggregate");
-            Require(window.LastSnapshot!.Models.Count == 7, "all seven source/model rows exist");
+            await WaitAsync(() => window.LastSnapshot?.Requests == totalRequests, "all-source aggregate");
+            Require(window.LastSnapshot!.Models.Count == totalModels, "all source/model rows exist");
             metricBox.SelectedIndex = 1;
             await WaitAsync(() => window.LastSnapshot?.Metric == AgentSpeedMetric.TotalThroughput, "metric switch");
             Require(window.LastSnapshot!.MeasuredPeak > 0 && window.LastSnapshot.Average > 0, "throughput and measured peak are populated");
             await RenderAsync(window, "speed-all-sources.png");
-            results.Add(new { check = "source-metric-and-peak", sources = 7, requests = 19, modeDistinguished = true, totalThroughput = true });
+            results.Add(new { check = "source-metric-and-peak", sources = totalModels, requests = totalRequests,
+                modeDistinguished = true, totalThroughput = true });
 
             var historyStore = new AgentSpeedHistoryStore();
             var history = new AgentSpeedHistoryWindow(historyStore, null, () => now, autoIndex: false);
@@ -123,13 +127,13 @@ internal static class SpeedProbe
             try { await history.IndexAsync().WaitAsync(TimeSpan.FromSeconds(15)); }
             finally { runtime.SharedIoGate.Release(); }
             await history.RefreshRowsAsync();
-            Require(history.VisibleRows.Sum(row => row.Requests) == 19, "all-date history includes every native source");
+            Require(history.VisibleRows.Sum(row => row.Requests) == totalRequests, "all-date history includes every native source");
             var csv = AgentSpeedHistoryCsv.Build(history.VisibleRows);
             File.WriteAllText(Path.Combine(output, "speed-history.csv"), csv);
-            Require(csv.Contains("ZCode") && csv.Contains("Qoder"), "history CSV includes other sources");
+            Require(csv.Contains("ZCode") && csv.Contains("Qoder") && csv.Contains("Gemini"), "history CSV includes other sources");
             await RenderAsync(history, "speed-history.png");
             File.Delete(path); await history.IndexAsync();
-            Require(history.VisibleRows.Sum(row => row.Requests) == 19, "deleted logs retain persisted history");
+            Require(history.VisibleRows.Sum(row => row.Requests) == totalRequests, "deleted logs retain persisted history");
             results.Add(new { check = "history-index-and-export", sharedGateHeld = true, persistedAfterDeletion = true, rows = history.VisibleRows.Count });
 
             var repairStore = new AgentSpeedHistoryStore(Path.Combine(isolated, "repair-history.sqlite3"));
@@ -141,7 +145,8 @@ internal static class SpeedProbe
             await RenderAsync(repair, "speed-history-failure.png");
             await repair.IndexAsync(repair: true);
             var backup = Directory.GetFiles(isolated, "repair-history.sqlite3.backup-*").Single(file => !file.EndsWith("-wal") && !file.EndsWith("-shm"));
-            Require(File.ReadAllBytes(backup).SequenceEqual(corrupt) && repair.VisibleRows.Sum(row => row.Requests) == 6, "repair preserves exact backup and rebuilds remaining logs");
+            Require(File.ReadAllBytes(backup).SequenceEqual(corrupt) && repair.VisibleRows.Sum(row => row.Requests) == otherSources.Length,
+                "repair preserves exact backup and rebuilds remaining logs");
             results.Add(new { check = "history-corruption-repair", previousRowsPreserved = true, bytesPreserved = true, backupExact = true });
             var closingIndex = repair.IndexAsync(); var beforeHistoryClose = repair.VisibleRows; repair.Close();
             await closingIndex.WaitAsync(TimeSpan.FromSeconds(10)); await repair.Completion.WaitAsync(TimeSpan.FromSeconds(10));
