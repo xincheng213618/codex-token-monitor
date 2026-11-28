@@ -114,12 +114,32 @@ internal sealed class GeminiSpeedParser : IAgentSpeedParser
         var type = AgentSpeedJson.Text(root, "type");
         var source = AgentSpeedJson.Text(root, "source");
 
+        if (type == "SYSTEM_MESSAGE")
+        {
+            var stepIndex = AgentSpeedJson.Number(root, "step_index");
+            if (stepIndex == 0)
+            {
+                subagent = true;
+                pendingPlanner = null;
+                remainingToolCalls = 0;
+                latestToolCompletedAt = null;
+                expectingSubagentResult = false;
+                requestStart = timestamp;
+                phase = AgentSpeedPhase.Generating;
+            }
+
+            return [];
+        }
+
         if (type == "USER_INPUT")
         {
             var stepIndex = AgentSpeedJson.Number(root, "step_index");
             var content = AgentSpeedJson.Text(root, "content") ?? "";
-            if (stepIndex == 0 && source is not null && source != "USER_EXPLICIT" &&
-                !content.Contains("<USER_REQUEST>", StringComparison.Ordinal))
+            if (GeminiUsageReader.IsExplicitHumanPrompt(source, content))
+            {
+                subagent = false;
+            }
+            else if (stepIndex == 0 && GeminiUsageReader.IsSubagentInitialStep(type, stepIndex, source, content))
             {
                 subagent = true;
             }

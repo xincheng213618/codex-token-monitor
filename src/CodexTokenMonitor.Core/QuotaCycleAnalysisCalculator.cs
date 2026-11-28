@@ -92,18 +92,12 @@ internal static class QuotaCycleAnalysisCalculator
             };
         }
 
-        var anchors = usageRows.Select(item => item.StartLocal);
-        var timeline = (cacheOnly
-                ? UsageSourceReaders.Codex.ReadCachedQuotaTimeline(anchors, cancellationToken: cancellationToken)
-                : UsageSourceReaders.Codex.ReadMaterializedQuotaTimeline(anchors, cancellationToken: cancellationToken))
-            .Where(item =>
-                item.WeekUsedPercent is not null &&
-                !item.IsAnomaly &&
-                CodexQuotaCycleReader.IsSameQuotaReset(item.WeekResetAtLocal, period.ResetAt))
-            .GroupBy(item => item.SnapshotLocal)
-            .ToDictionary(group => group.Key, group => group.Last());
-
-        var samples = BuildSamples(start, usageRows, timeline);
+        // A materialized usage timestamp may contain an old interpolated value.
+        // Use real quota observations and let the band builder interpolate only
+        // the percentage boundaries skipped by two consecutive observations.
+        var snapshots = UsageSourceReaders.Codex.ReadQuotaCycleSnapshots(
+            start, end, period.ResetAt, scanLogs: !cacheOnly, cancellationToken);
+        var samples = BuildSamples(start, usageRows, snapshots, cancellationToken);
         var analysis = BuildFromSamples(period, samples, bandSizePercent, cancellationToken);
         var calibrationAnalysis = BuildCalibrationFromSamples(period, samples, cancellationToken);
         return analysis with
@@ -166,7 +160,8 @@ internal static class QuotaCycleAnalysisCalculator
     private static IReadOnlyList<QuotaCycleAnalysisSample> BuildSamples(
         DateTimeOffset periodStart,
         IReadOnlyList<TokenUsageBucket> usageRows,
-        IReadOnlyDictionary<DateTimeOffset, CodexQuotaSnapshot> timeline)
+        IReadOnlyList<CodexQuotaSnapshot> snapshots,
+        CancellationToken cancellationToken)
     {
         var samples = new List<QuotaCycleAnalysisSample>
         {
@@ -175,26 +170,32 @@ internal static class QuotaCycleAnalysisCalculator
             new(periodStart, 0m, new TokenUsageBucket { StartLocal = periodStart })
         };
         var pending = new TokenUsageBucket { StartLocal = periodStart };
-        var lastUsedPercent = 0m;
+        var usageIndex = 0;
 
-        foreach (var row in usageRows)
+        foreach (var snapshot in snapshots)
         {
-            pending.MergeFrom(row);
-            if (!timeline.TryGetValue(row.StartLocal, out var quota) || quota.WeekUsedPercent is null)
+            cancellationToken.ThrowIfCancellationRequested();
+            while (usageIndex < usageRows.Count && usageRows[usageIndex].StartLocal <= snapshot.SnapshotLocal)
             {
-                continue;
+                cancellationToken.ThrowIfCancellationRequested();
+                pending.MergeFrom(usageRows[usageIndex++]);
             }
 
-            lastUsedPercent = quota.WeekUsedPercent.Value;
-            samples.Add(new QuotaCycleAnalysisSample(row.StartLocal, lastUsedPercent, pending));
-            pending = new TokenUsageBucket { StartLocal = row.StartLocal };
+            samples.Add(new QuotaCycleAnalysisSample(snapshot.SnapshotLocal, snapshot.WeekUsedPercent!.Value, pending));
+            pending = new TokenUsageBucket { StartLocal = snapshot.SnapshotLocal };
         }
 
-        if (pending.Events > 0 || pending.TotalTokens > 0)
+        if (usageIndex < usageRows.Count)
         {
+            for (; usageIndex < usageRows.Count; usageIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                pending.MergeFrom(usageRows[usageIndex]);
+            }
+
             samples.Add(new QuotaCycleAnalysisSample(
                 usageRows[^1].StartLocal,
-                lastUsedPercent,
+                samples[^1].UsedPercent,
                 pending));
         }
 

@@ -105,40 +105,42 @@ internal static class GeminiRhythmReader
         while (reader.ReadLine() is { } line)
         {
             token.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(line) || !line.Contains("USER_INPUT", StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (!line.Contains("USER_INPUT", StringComparison.Ordinal) &&
+                (seenFirstStep || !line.Contains("SYSTEM_MESSAGE", StringComparison.Ordinal)))
+            {
                 continue;
+            }
 
             try
             {
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
                 if (root.ValueKind != JsonValueKind.Object) continue;
-                if (AgentSpeedJson.Text(root, "type") != "USER_INPUT") continue;
-                if (!GeminiUsageReader.TryParseTimestamp(root, "created_at", out var stamp) ||
-                    stamp < DateTimeOffset.UnixEpoch)
-                {
-                    continue;
-                }
-
+                var type = AgentSpeedJson.Text(root, "type");
+                var stepIdx = AgentSpeedJson.Number(root, "step_index");
                 var source = AgentSpeedJson.Text(root, "source");
                 var content = AgentSpeedJson.Text(root, "content") ?? "";
-                if (!seenFirstStep)
+                if (!seenFirstStep && type is "USER_INPUT" or "SYSTEM_MESSAGE")
                 {
                     seenFirstStep = true;
-                    // Delegated subagents receive synthetic initial task prompts rather than explicit user messages.
-                    if (source is not null && source != "USER_EXPLICIT" &&
-                        !content.Contains("<USER_REQUEST>", StringComparison.Ordinal))
+                    // Delegated subagents start with SYSTEM_MESSAGE (step 0) or non-explicit USER_INPUT.
+                    if (GeminiUsageReader.IsSubagentInitialStep(type, stepIdx, source, content))
                     {
                         isSubagentConversation = true;
                         break;
                     }
                 }
 
-                if (isSubagentConversation) break;
-
-                if (source == "USER_EXPLICIT" || (source is null && content.Contains("<USER_REQUEST>", StringComparison.Ordinal)))
+                if (isSubagentConversation || type != "USER_INPUT") continue;
+                if (!GeminiUsageReader.TryParseTimestamp(root, "created_at", out var stamp) ||
+                    stamp < DateTimeOffset.UnixEpoch)
                 {
-                    var stepIdx = AgentSpeedJson.Number(root, "step_index");
+                    continue;
+                }
+
+                if (GeminiUsageReader.IsExplicitHumanPrompt(source, content))
+                {
                     turns.Add(stamp);
                     messages.Add(new CodexRhythmMessage(stamp, $"{convId}:{stepIdx}:{stamp.UtcTicks}"));
                 }

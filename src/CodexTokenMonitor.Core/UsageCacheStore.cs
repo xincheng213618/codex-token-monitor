@@ -46,10 +46,15 @@ internal sealed partial class UsageCacheStore
     public static string GetCachePath(string folderName)
     {
         return Path.Combine(MonitorCachePaths.LocalAppData, folderName,
-            folderName == "CodexTokenMonitor" ? "token-cache-v4.sqlite3"
+            folderName is "CodexTokenMonitor" or GeminiUsageReader.CacheFolder ? "token-cache-v4.sqlite3"
                 : folderName == "ZCodeTokenMonitor" ? "token-cache-v7.sqlite3"
                 : CacheFileName);
     }
+
+    private static IEnumerable<string> FolderLegacyDerivedFileNames(string folderName) =>
+        string.Equals(folderName, GeminiUsageReader.CacheFolder, StringComparison.OrdinalIgnoreCase)
+            ? LegacyDerivedFileNames.Concat(["token-cache-v3.sqlite3", "token-cache-v3.sqlite3-wal", "token-cache-v3.sqlite3-shm"])
+            : LegacyDerivedFileNames;
 
     public static bool Delete(string folderName)
     {
@@ -60,7 +65,7 @@ internal sealed partial class UsageCacheStore
         var deleted = false;
         var directory = Path.GetDirectoryName(cachePath) ?? "";
         foreach (var path in new[] { cachePath, cachePath + "-wal", cachePath + "-shm" }
-                     .Concat(LegacyDerivedFileNames.Select(name => Path.Combine(directory, name)))
+                     .Concat(FolderLegacyDerivedFileNames(folderName).Select(name => Path.Combine(directory, name)))
                      .Append(Path.Combine(directory, CurrentQuotaHistoryFileName))
                      .Concat(folderName == "CodexTokenMonitor"
                          ? new[] { Path.Combine(directory, CodexLogFileIndex.FileName) }
@@ -86,7 +91,8 @@ internal sealed partial class UsageCacheStore
     private static void DeleteLegacyDerivedFiles(string cachePath)
     {
         var directory = Path.GetDirectoryName(cachePath) ?? "";
-        foreach (var fileName in LegacyDerivedFileNames)
+        var folderName = Path.GetFileName(Path.TrimEndingDirectorySeparator(directory));
+        foreach (var fileName in FolderLegacyDerivedFileNames(folderName))
         {
             try
             {

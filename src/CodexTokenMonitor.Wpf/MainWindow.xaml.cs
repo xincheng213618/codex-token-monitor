@@ -51,7 +51,14 @@ public partial class MainWindow : Window
         InitializeComponent();
         InitializeDayTimeZone();
         DataContext = displayViewModel;
-        foreach (var definition in UsageSourceRegistry.All)
+        SourceTabs.SelectedValuePath = nameof(TabItem.Tag);
+        var tabOrder = UsageSourceRegistry.All.OrderBy(definition => definition.Source switch
+        {
+            UsageSource.Codex => 0,
+            UsageSource.Gemini => 1,
+            _ => 2
+        });
+        foreach (var definition in tabOrder)
             SourceTabs.Items.Add(new TabItem { Header = definition.Title, Tag = definition.Source });
         SourceTabs.SelectedIndex = 0;
         usageRefreshRunner = new LatestRequestRunner<UsageRefreshRequest>(
@@ -1196,7 +1203,7 @@ public partial class MainWindow : Window
         // their change events from enqueueing refreshes (and release the scope
         // even if a restore step throws).
         using var restoreScope = suppressUiEvents.Begin();
-        SourceTabs.SelectedIndex = SourceToTabIndex(snapshot.Source);
+        SourceTabs.SelectedValue = snapshot.Source;
         activeSource = snapshot.Source;
         RestoreModuleRange(module, snapshot.Range);
         AlignRestoredCurrentRange(module, snapshot.Range);
@@ -1224,11 +1231,6 @@ public partial class MainWindow : Window
         }
 
         module.PickerValue = module.Mode == RangeMode.Week ? BeijingClock.DateTimeNow : RangeNow(module).Date;
-    }
-
-    private static int SourceToTabIndex(UsageSource source)
-    {
-        return UsageSourceRegistry.IndexOf(source);
     }
 
     private static void RestoreModuleRange(UsageSourceModule module, SelectedRange range)

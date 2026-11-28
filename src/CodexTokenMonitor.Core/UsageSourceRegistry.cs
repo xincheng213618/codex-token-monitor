@@ -38,7 +38,7 @@ internal sealed class UsageSourceDefinition
 
 internal static class UsageSourceRegistry
 {
-    // This explicit order is also the existing main/price tab order. Keep it
+    // This explicit order is also the price tab order. Keep it
     // separate from persisted enum values when adding a source in the future.
     // Reader factories remain deferred; metadata access performs no I/O.
     public static IReadOnlyList<UsageSourceDefinition> All { get; } = Array.AsReadOnly(new[]

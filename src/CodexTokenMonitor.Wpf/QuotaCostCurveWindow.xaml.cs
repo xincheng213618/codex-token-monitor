@@ -4,8 +4,9 @@ namespace CodexTokenMonitor;
 
 public partial class QuotaCostCurveWindow : Window
 {
-    private readonly CodexQuotaEstimate currentQuota;
+    private readonly CodexQuotaEstimate? currentQuota;
     private readonly IReadOnlyList<CodexQuotaCycle> knownPeriods;
+    private readonly Func<CancellationToken, QuotaCostCurveResult>? customBuilder;
     private readonly AnalysisQuerySession querySession;
     private readonly QuotaCostCurveControl curveControl = new();
     private QuotaCostCurveResult? loadedResult;
@@ -17,11 +18,34 @@ public partial class QuotaCostCurveWindow : Window
         CodexQuotaEstimate currentQuota,
         IReadOnlyList<CodexQuotaCycle> knownPeriods,
         MonitorRuntime? runtime = null)
+        : this(currentQuota, knownPeriods, customBuilder: null, windowTitle: null, runtime: runtime)
+    {
+    }
+
+    internal QuotaCostCurveWindow(
+        Func<CancellationToken, QuotaCostCurveResult> customBuilder,
+        string windowTitle,
+        MonitorRuntime? runtime = null)
+        : this(currentQuota: null, Array.Empty<CodexQuotaCycle>(), customBuilder, windowTitle, runtime)
+    {
+    }
+
+    private QuotaCostCurveWindow(
+        CodexQuotaEstimate? currentQuota,
+        IReadOnlyList<CodexQuotaCycle> knownPeriods,
+        Func<CancellationToken, QuotaCostCurveResult>? customBuilder,
+        string? windowTitle,
+        MonitorRuntime? runtime)
     {
         this.currentQuota = currentQuota;
         this.knownPeriods = knownPeriods;
+        this.customBuilder = customBuilder;
         querySession = new AnalysisQuerySession(runtime);
         InitializeComponent();
+        if (!string.IsNullOrWhiteSpace(windowTitle))
+        {
+            Title = windowTitle;
+        }
         CurveHost.Content = curveControl;
         Loaded += async (_, _) => await LoadAsync();
         Closed += (_, _) => querySession.Dispose();
@@ -41,10 +65,12 @@ public partial class QuotaCostCurveWindow : Window
             }
             var result = await querySession.RunAsync(
                 "额度费用曲线窗口加载",
-                token => QuotaCostCurveCalculator.Build(
-                    currentQuota,
-                    knownPeriods,
-                    token),
+                token => customBuilder is not null
+                    ? customBuilder(token)
+                    : QuotaCostCurveCalculator.Build(
+                        currentQuota!,
+                        knownPeriods,
+                        token),
                 requiresSharedIo: false);
             if (querySession.IsStopping || !IsLoaded) return;
             if (result.CacheWarnings.Count > 0)

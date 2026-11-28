@@ -442,7 +442,34 @@ internal sealed class CodexUsageReader
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var cached = ReadCachedQuotaSnapshots(startLocal, endLocal, cancellationToken);
+        return MergeQuotaSnapshotHistory(
+            ReadCachedQuotaSnapshots(startLocal, endLocal, cancellationToken), startLocal, endLocal, cancellationToken);
+    }
+
+    internal IReadOnlyList<CodexQuotaSnapshot> ReadQuotaCycleSnapshots(
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        DateTimeOffset resetAt,
+        bool scanLogs,
+        CancellationToken cancellationToken)
+    {
+        var snapshots = scanLogs
+            ? MergeQuotaSnapshotHistory(ReadQuotaSnapshotsCached(startLocal, endLocal, cancellationToken),
+                startLocal, endLocal, cancellationToken)
+            : ReadCachedAndHistoricalQuotaSnapshots(startLocal, endLocal, cancellationToken);
+
+        return PrepareQuotaTimelineSources(snapshots, cancellationToken)
+            .Where(item => item.WeekUsedPercent is not null && item.WeekResetAtLocal is not null &&
+                           CodexQuotaCycleReader.IsSameQuotaReset(item.WeekResetAtLocal, resetAt))
+            .ToArray();
+    }
+
+    private IReadOnlyList<CodexQuotaSnapshot> MergeQuotaSnapshotHistory(
+        IReadOnlyList<CodexQuotaSnapshot> cached,
+        DateTimeOffset startLocal,
+        DateTimeOffset endLocal,
+        CancellationToken cancellationToken)
+    {
         var history = ReadQuotaHistoryQuotaSnapshots(startLocal, endLocal, cancellationToken);
         var historySparkTimes = history
             .Where(IsGpt53QuotaSnapshot)
@@ -2447,7 +2474,7 @@ internal sealed class CodexUsageReader
 
             var windows = ClassifyRateLimitWindows(primary, secondary);
 
-            var modelContextWindow = payload.TryGetProperty("info", out var info)
+            var modelContextWindow = payload.TryGetProperty("info", out var info) && info.ValueKind == JsonValueKind.Object
                 ? GetInt64(info, "model_context_window")
                 : 0;
             var limitId = GetString(rateLimits, "limit_id");

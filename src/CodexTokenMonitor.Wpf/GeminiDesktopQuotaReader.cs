@@ -13,8 +13,12 @@ internal static class GeminiDesktopQuotaReader
     private static readonly Condition TextElement = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text);
     private static DateTimeOffset nextRead;
 
-    public static GeminiRateLimitSnapshot? Synchronize(bool force = false)
+    public static GeminiRateLimitSnapshot? Synchronize(bool force = false) =>
+        Synchronize(force, out _);
+
+    public static GeminiRateLimitSnapshot? Synchronize(bool force, out double? unanchoredResetRemainingPercent)
     {
+        unanchoredResetRemainingPercent = null;
         if (UsageLogPaths.GetOverrideRoot(UsageSource.Gemini) is not null) return null;
         lock (Gate)
         {
@@ -27,7 +31,12 @@ internal static class GeminiDesktopQuotaReader
             {
                 foreach (var process in processes)
                 {
-                    if (ReadWindow(process, now, previous) is not { } result) continue;
+                    if (ReadWindow(process, now, previous, out var detectedRemaining) is not { } result)
+                    {
+                        if (detectedRemaining is not null)
+                            unanchoredResetRemainingPercent ??= detectedRemaining;
+                        continue;
+                    }
                     if (result.FiveHour is { } five && five != previous?.FiveHour ||
                         result.SevenDay is { } week && week != previous?.SevenDay)
                         GeminiRateLimitLog.SaveCurrent(result);
@@ -43,8 +52,12 @@ internal static class GeminiDesktopQuotaReader
     }
 
     private static GeminiRateLimitSnapshot? ReadWindow(
-        Process process, DateTimeOffset now, GeminiRateLimitSnapshot? previous)
+        Process process,
+        DateTimeOffset now,
+        GeminiRateLimitSnapshot? previous,
+        out double? unanchoredResetRemainingPercent)
     {
+        unanchoredResetRemainingPercent = null;
         try
         {
             var handle = process.MainWindowHandle;
@@ -58,9 +71,14 @@ internal static class GeminiDesktopQuotaReader
                 for (var depth = 0; depth < 4 && section is not null; depth++)
                 {
                     var text = section.FindAll(TreeScope.Descendants, TextElement)
-                        .Cast<AutomationElement>().Select(element => element.Current.Name);
+                        .Cast<AutomationElement>().Select(element => element.Current.Name).ToArray();
                     if (GeminiDesktopQuotaParser.Parse(text, now, previous) is { } result)
                         return result;
+                    if (unanchoredResetRemainingPercent is null &&
+                        GeminiDesktopQuotaParser.TryDetectUnanchoredWeekReset(text, previous, out var rem))
+                    {
+                        unanchoredResetRemainingPercent = rem;
+                    }
                     section = TreeWalker.ControlViewWalker.GetParent(section);
                 }
             }

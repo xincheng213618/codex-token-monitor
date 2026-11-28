@@ -13,16 +13,19 @@ public partial class MainWindow
         }
 
         var range = GetSelectedRange();
+        var shouldRefreshRhythm = geminiMessageHistory is null ||
+            DateTimeOffset.UtcNow - geminiMessageHistory.UpdatedAt >= TimeSpan.FromSeconds(15);
         isQuotaRefreshing = true;
         try
         {
             GeminiActivitySnapshot snapshot;
             IReadOnlyList<ClaudeQuotaReading> readings;
+            CodexMessageHistory? updatedRhythm = null;
             await usageQueryGate.WaitAsync(runtime.LifetimeToken);
             try
             {
                 if (isClosed) return;
-                (snapshot, readings) = await Task.Run(() =>
+                (snapshot, readings, updatedRhythm) = await Task.Run(() =>
                 {
                     GeminiDesktopQuotaReader.Synchronize();
                     var loadedReadings = GeminiQuotaReadingStore.Load();
@@ -33,12 +36,24 @@ public partial class MainWindow
                         loadedReadings = GeminiQuotaReadingStore.Load();
                     }
 
-                    return (currentSnapshot, loadedReadings);
+                    CodexMessageHistory? rhythm = null;
+                    if (shouldRefreshRhythm)
+                    {
+                        try { rhythm = GeminiRhythmReader.Read(DateTimeOffset.UtcNow, runtime.LifetimeToken); }
+                        catch (Exception ex) when (ex is not OperationCanceledException) { }
+                    }
+
+                    return (currentSnapshot, loadedReadings, rhythm);
                 }, runtime.LifetimeToken);
             }
             finally
             {
                 usageQueryGate.Release();
+            }
+
+            if (!isClosed && updatedRhythm is not null)
+            {
+                ApplyRhythmHistory(UsageSource.Gemini, updatedRhythm);
             }
 
             if (!isClosed && CurrentModule() is GeminiUsageModule current && ReferenceEquals(current, geminiModule))
@@ -193,13 +208,34 @@ public partial class MainWindow
                 ? $"{stats.MainSessions:N0} 主 · {stats.SubagentSessions:N0} 子代理"
                 : $"{stats.MainSessions:N0} 主会话";
 
-        var surface = stats.AntigravityEvents > 0 && stats.CliEvents > 0
-            ? $"AGY {stats.AntigravityEvents:N0} / CLI {stats.CliEvents:N0}"
-            : stats.AntigravityEvents > 0
-                ? $"AGY · 工具 {stats.ToolCalls:N0} 次"
-                : stats.CliEvents > 0
-                    ? $"CLI · {stats.CliEvents:N0} 条"
-                    : "当前范围无活跃会话";
+        var desktopAgyEvents = Math.Max(0, stats.AntigravityEvents - stats.T3Events);
+        string surface;
+        if (stats.AntigravityEvents == 0 && stats.CliEvents == 0)
+        {
+            surface = "当前范围无活跃会话";
+        }
+        else if (stats.AntigravityEvents > 0 && stats.CliEvents == 0)
+        {
+            var hostLabel = desktopAgyEvents > 0 && stats.T3Events > 0
+                ? $"AGY {desktopAgyEvents:N0} / T3 {stats.T3Events:N0}"
+                : stats.T3Events > 0
+                    ? "T3"
+                    : "AGY";
+            surface = $"{hostLabel} · 工具 {stats.ToolCalls:N0} 次";
+        }
+        else if (stats.AntigravityEvents == 0)
+        {
+            surface = $"CLI · {stats.CliEvents:N0} 条";
+        }
+        else
+        {
+            var parts = new List<string>(3);
+            if (desktopAgyEvents > 0) parts.Add($"AGY {desktopAgyEvents:N0}");
+            if (stats.T3Events > 0) parts.Add($"T3 {stats.T3Events:N0}");
+            parts.Add($"CLI {stats.CliEvents:N0}");
+            surface = string.Join(" / ", parts);
+        }
+
         GeminiSessionStatsDetail.Text = surface;
     }
 
@@ -231,7 +267,8 @@ public partial class MainWindow
         var dialog = new GeminiQuotaWindow(
             () => module.CurrentActivity,
             () => module.QuotaReadings,
-            () => RefreshQuotaSummaryAsync())
+            () => RefreshQuotaSummaryAsync(),
+            runtime)
         {
             Owner = this
         };
@@ -248,9 +285,9 @@ public partial class MainWindow
         IReadOnlyList<GeminiQuotaCycleUsage> cycles,
         GeminiQuotaCycleUsage selected)
     {
-        module.QuotaCycles = cycles.Select(cycle => new CodexQuotaCycle(
-            cycle.Start, cycle.Reset, cycle.Reset, cycle.Observation is null ? 0 : 1, null, cycle.IsCurrent)).ToArray();
-        module.SelectedCycle = module.QuotaCycles.First(cycle => cycle.ResetAt == selected.Reset);
+        module.QuotaCycles = cycles.Select(cycle => cycle.ToCodexCycle()).ToArray();
+        module.SelectedCycle = module.QuotaCycles.First(cycle =>
+            cycle.PeriodStart == selected.Start && cycle.PeriodEnd == selected.End);
         module.CustomStartLocal = null;
         module.Mode = RangeMode.Cycle;
         SyncRangeModeItems(module);
@@ -259,13 +296,36 @@ public partial class MainWindow
 
     private void AdvanceGeminiCycle(GeminiUsageModule module, GeminiQuotaWindowUsage? window)
     {
-        if (module.QuotaCycles.Count == 0 || window is null || window.ReportedUsedPercent is null) return;
+        if (window is null || window.ReportedUsedPercent is null) return;
         var reset = GeminiQuotaCycleHistory.NormalizeReset(window.ResetLocal);
-        if (reset <= module.QuotaCycles[0].ResetAt) return;
+        if (module.QuotaCycles.Count == 0)
+        {
+            var observations = GeminiQuotaCycleHistory.ReadWeekObservations(BeijingClock.Now);
+            if (observations.Count == 0) return;
+            var built = GeminiQuotaCycleHistory.Build(BeijingClock.Now, observations, module.QuotaReadings, [], complete: true);
+            if (built.Count == 0) return;
+            module.QuotaCycles = built.Select(c => c.ToCodexCycle()).ToArray();
+            module.SelectedCycle = module.QuotaCycles.FirstOrDefault(c => c.IsCurrent) ?? module.QuotaCycles[0];
+            SyncRangeModeItems(module);
+            return;
+        }
+
+        var head = module.QuotaCycles[0];
+        var startedNew = reset > head.ResetAt.AddMinutes(10) || window.StartLocal > head.PeriodStart.AddMinutes(2);
+        if (!startedNew) return;
+
         var followCurrent = module.SelectedCycle?.IsCurrent == true;
-        var current = new CodexQuotaCycle(reset.AddDays(-7), reset, reset, 1, null, true);
-        module.QuotaCycles = module.QuotaCycles.Select(cycle => cycle with { IsCurrent = false }).Prepend(current).ToArray();
+        var closedHead = head with
+        {
+            PeriodEnd = window.StartLocal > head.PeriodStart && window.StartLocal < head.PeriodEnd ? window.StartLocal : head.PeriodEnd,
+            IsCurrent = false
+        };
+        var current = new CodexQuotaCycle(window.StartLocal, reset, reset, 1, (decimal)window.ReportedUsedPercent.Value, true);
+        module.QuotaCycles = new[] { current, closedHead }
+            .Concat(module.QuotaCycles.Skip(1).Select(cycle => cycle with { IsCurrent = false }))
+            .ToArray();
         if (followCurrent) module.SelectedCycle = current;
+        SyncRangeModeItems(module);
         if (module.Mode != RangeMode.Cycle) return;
         UpdateRangeControls();
         if (followCurrent) _ = RefreshUsageAsync(isAutomaticRefresh: true);

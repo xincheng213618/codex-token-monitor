@@ -68,11 +68,7 @@ internal static class GeminiRateLimitLog
             var history = ReadWeeklyHistory();
             if (GeminiWeeklyQuotaObservation.FromSnapshot(snapshot) is { } current)
             {
-                history = history.Append(current)
-                    .GroupBy(reading => reading.ResetAt)
-                    .Select(group => group.OrderByDescending(r => r.ObservedAt).First())
-                    .OrderBy(reading => reading.ResetAt)
-                    .ToArray();
+                history = MergeWeeklyObservations(history.Append(current));
             }
 
             var existing = ReadLatestFromCurrentFile();
@@ -87,6 +83,7 @@ internal static class GeminiRateLimitLog
                 weekly_history = history
             }));
             File.Move(temp, CurrentFilePath, overwrite: true);
+            AppendHistorySnapshot(snapshot, fiveHour, sevenDay);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         finally
@@ -94,6 +91,84 @@ internal static class GeminiRateLimitLog
             try { if (File.Exists(temp)) File.Delete(temp); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
+    }
+
+    private static GeminiWeeklyQuotaObservation[] MergeWeeklyObservations(IEnumerable<GeminiWeeklyQuotaObservation> source)
+    {
+        var ordered = source
+            .Where(reading => reading is not null && reading.UsedPercent is >= 0 and <= 100 &&
+                              reading.ResetAt > DateTimeOffset.UnixEpoch.AddDays(7))
+            .OrderBy(reading => reading.ObservedAt)
+            .ToList();
+        var merged = new List<GeminiWeeklyQuotaObservation>(ordered.Count);
+        foreach (var item in ordered)
+        {
+            var normalized = item with { ResetAt = GeminiQuotaCycleHistory.NormalizeReset(item.ResetAt) };
+            if (merged.Count > 0)
+            {
+                var last = merged[^1];
+                if (last.ResetAt == normalized.ResetAt &&
+                    Math.Abs(last.UsedPercent - normalized.UsedPercent) < 0.01 &&
+                    (normalized.ObservedAt - last.ObservedAt).Duration() <= TimeSpan.FromMinutes(1))
+                {
+                    merged[^1] = normalized.ObservedAt >= last.ObservedAt ? normalized : last;
+                    continue;
+                }
+            }
+
+            merged.Add(normalized);
+        }
+
+        return merged.Count > 500 ? merged.TakeLast(500).ToArray() : merged.ToArray();
+    }
+
+    private static void AppendHistorySnapshot(
+        GeminiRateLimitSnapshot incoming,
+        GeminiRateLimitWindow? mergedFiveHour,
+        GeminiRateLimitWindow? mergedSevenDay)
+    {
+        object? Window(GeminiRateLimitWindow? window) => window is null ? null : new
+        {
+            used_percentage = window.UsedPercent,
+            resets_at = window.ResetLocal.ToUnixTimeSeconds(),
+            observed_at = (window.ObservedLocal ?? incoming.RecordedLocal).ToUnixTimeSeconds(),
+            source = window.Source.ToString(),
+            reset_precision_seconds = window.ResetPrecisionSeconds
+        };
+
+        try
+        {
+            if (File.Exists(FilePath))
+            {
+                var lastLine = File.ReadLines(FilePath).LastOrDefault(line => !string.IsNullOrWhiteSpace(line));
+                if (lastLine is not null && Parse([lastLine]).LastOrDefault() is { } prev)
+                {
+                    var sameFive = SameWindowState(prev.FiveHour, incoming.FiveHour ?? mergedFiveHour);
+                    var sameSeven = SameWindowState(prev.SevenDay, incoming.SevenDay ?? mergedSevenDay);
+                    if (sameFive && sameSeven &&
+                        (incoming.RecordedLocal - prev.RecordedLocal).Duration() <= TimeSpan.FromSeconds(5))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            var line = JsonSerializer.Serialize(new
+            {
+                recorded_at = incoming.RecordedLocal.ToUnixTimeSeconds(),
+                five_hour = Window(incoming.FiveHour ?? mergedFiveHour),
+                seven_day = Window(incoming.SevenDay ?? mergedSevenDay)
+            });
+            File.AppendAllText(FilePath, line + "\n");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    private static bool SameWindowState(GeminiRateLimitWindow? first, GeminiRateLimitWindow? second)
+    {
+        if (first is null || second is null) return first is null && second is null;
+        return Math.Abs(first.UsedPercent - second.UsedPercent) < 0.01 &&
+               (first.ResetLocal - second.ResetLocal).Duration() <= TimeSpan.FromSeconds(60);
     }
 
     private static GeminiRateLimitWindow? Newer(GeminiRateLimitWindow? incoming, GeminiRateLimitWindow? existing) =>
@@ -137,7 +212,10 @@ internal static class GeminiRateLimitLog
         }
     }
 
-    public static GeminiRateLimitSnapshot? ReadLatest(DateTimeOffset nowLocal)
+    public static GeminiRateLimitSnapshot? ReadLatest(DateTimeOffset nowLocal) =>
+        Latest(ReadAllSnapshots(), nowLocal);
+
+    public static IReadOnlyList<GeminiRateLimitSnapshot> ReadAllSnapshots()
     {
         var lines = new List<string>();
         try
@@ -152,10 +230,10 @@ internal static class GeminiRateLimitLog
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return null;
+            return [];
         }
 
-        return Latest(Parse(lines), nowLocal);
+        return Parse(lines);
     }
 
     public static GeminiRateLimitSnapshot? Latest(IEnumerable<GeminiRateLimitSnapshot> snapshots, DateTimeOffset nowLocal)
@@ -436,8 +514,10 @@ internal static class GeminiQuotaEstimator
                 : window.GeminiUsage;
             var cost = UsdCost(gemini);
             if (gemini.TotalTokens <= 0) continue;
-            var existing = readings.FirstOrDefault(item =>
-                item.Kind == window.Kind && SameWindow(item.ResetLocal, window.ResetLocal));
+            var existing = readings.LastOrDefault(item =>
+                item.Kind == window.Kind &&
+                SameWindow(item.ResetLocal, window.ResetLocal) &&
+                SameWindow(item.WindowStartLocal, window.StartLocal));
             if (existing is not null && existing.UsedPercent >= percent &&
                 (existing.RecordedLocal > (window.ObservedLocal ?? snapshot.NowLocal) ||
                  existing.RecordedLocal == (window.ObservedLocal ?? snapshot.NowLocal) && existing.Source == window.ReadingSource))
@@ -575,8 +655,11 @@ internal static class GeminiQuotaReadingStore
 
 internal sealed record GeminiQuotaCycleUsage(
     DateTimeOffset Start,
+    DateTimeOffset End,
     DateTimeOffset Reset,
     bool IsCurrent,
+    int SnapshotCount,
+    double? MaxUsedPercent,
     long? Tokens,
     long? Requests,
     decimal? ApiCostUsd,
@@ -584,11 +667,22 @@ internal sealed record GeminiQuotaCycleUsage(
     bool UsageIsPartial,
     DateTimeOffset? UsageThrough,
     GeminiWeeklyQuotaObservation? Observation,
-    decimal? FullReferenceUsd);
+    decimal? FullReferenceUsd)
+{
+    public CodexQuotaCycle ToCodexCycle() => new(
+        Start,
+        End,
+        Reset,
+        SnapshotCount,
+        MaxUsedPercent is { } u ? (decimal)Math.Clamp(u, 0.0, 100.0) : null,
+        IsCurrent);
+}
 
 internal static class GeminiQuotaCycleHistory
 {
     private static readonly TimeSpan Week = TimeSpan.FromDays(7);
+    private static readonly TimeSpan ResetShiftSplitThreshold = TimeSpan.FromHours(2);
+    private const double ResetDropSplitThresholdPercent = 2.0;
 
     public static DateTimeOffset NormalizeReset(DateTimeOffset reset)
     {
@@ -599,12 +693,103 @@ internal static class GeminiQuotaCycleHistory
         return toMinute <= TimeSpan.TicksPerSecond ? local.AddTicks(toMinute) : local;
     }
 
+    public static IReadOnlyList<GeminiWeeklyQuotaObservation> ReadWeekObservations(DateTimeOffset upToLocal)
+    {
+        var candidates = new List<GeminiWeeklyQuotaObservation>();
+
+        foreach (var snap in GeminiRateLimitLog.ReadAllSnapshots())
+        {
+            if (GeminiWeeklyQuotaObservation.FromSnapshot(snap) is { } obs &&
+                obs.UsedPercent is >= 0 and <= 100 &&
+                obs.ObservedAt <= upToLocal.AddMinutes(1))
+            {
+                candidates.Add(obs);
+            }
+        }
+
+        foreach (var obs in GeminiRateLimitLog.ReadWeeklyHistory())
+        {
+            if (obs.ObservedAt <= upToLocal.AddMinutes(1))
+            {
+                candidates.Add(obs with { ResetAt = NormalizeReset(obs.ResetAt) });
+            }
+        }
+
+        foreach (var sample in GeminiQuotaReadingStore.Load())
+        {
+            if (IsWeekReading(sample) && sample.RecordedLocal <= upToLocal.AddMinutes(1))
+            {
+                candidates.Add(new GeminiWeeklyQuotaObservation(
+                    NormalizeReset(sample.ResetLocal),
+                    sample.RecordedLocal,
+                    sample.UsedPercent,
+                    sample.Source));
+            }
+        }
+
+        var ordered = candidates
+            .Where(o => o.ResetAt > DateTimeOffset.UnixEpoch.AddDays(7) &&
+                        o.ObservedAt < o.ResetAt.AddMinutes(5) &&
+                        o.ObservedAt >= o.ResetAt - Week - TimeSpan.FromHours(2))
+            .OrderBy(o => o.ObservedAt)
+            .ToList();
+
+        var deduped = new List<GeminiWeeklyQuotaObservation>(ordered.Count);
+        foreach (var item in ordered)
+        {
+            if (deduped.Count > 0)
+            {
+                var prev = deduped[^1];
+                if ((item.ObservedAt - prev.ObservedAt).Duration() <= TimeSpan.FromSeconds(5) &&
+                    Math.Abs(item.UsedPercent - prev.UsedPercent) < 0.01 &&
+                    (item.ResetAt - prev.ResetAt).Duration() <= TimeSpan.FromMinutes(2))
+                {
+                    if (prev.Source != ClaudeQuotaReadingSource.Official && item.Source == ClaudeQuotaReadingSource.Official)
+                        deduped[^1] = item;
+                    continue;
+                }
+            }
+
+            deduped.Add(item);
+        }
+
+        return deduped;
+    }
+
+    public static DateTimeOffset ResolveActiveWeekStart(
+        DateTimeOffset resetLocal,
+        double? usedPercent,
+        DateTimeOffset? observedLocal,
+        DateTimeOffset nowLocal)
+    {
+        var nominalStart = resetLocal - Week;
+        if (usedPercent is null) return nominalStart;
+        var observations = ReadWeekObservations(nowLocal)
+            .Where(o => o.ObservedAt >= nominalStart && o.ObservedAt <= (observedLocal ?? nowLocal).AddSeconds(5))
+            .ToList();
+        if (observations.Count < 2) return nominalStart;
+
+        var splitStart = nominalStart;
+        for (var i = 1; i < observations.Count; i++)
+        {
+            if (StartsNewCycle(observations[i - 1], observations[i]))
+            {
+                var nextNominal = observations[i].ResetAt - Week;
+                splitStart = nextNominal > observations[i - 1].ObservedAt && nextNominal <= observations[i].ObservedAt
+                    ? nextNominal
+                    : observations[i].ObservedAt;
+            }
+        }
+
+        return splitStart > nominalStart && splitStart < resetLocal ? splitStart : nominalStart;
+    }
+
     public static IReadOnlyList<GeminiQuotaCycleUsage> Read(
         DateTimeOffset now,
         CancellationToken cancellationToken = default,
         string? homeOverride = null)
     {
-        var observations = GeminiRateLimitLog.ReadWeeklyHistory();
+        var observations = ReadWeekObservations(now);
         var readings = GeminiQuotaReadingStore.Load();
         if (observations.Count == 0 && !readings.Any(IsWeekReading))
             return [];
@@ -622,75 +807,228 @@ internal static class GeminiQuotaCycleHistory
         bool complete,
         CancellationToken cancellationToken = default)
     {
-        var byObs = observations.Where(r => r.ObservedAt <= now)
-            .GroupBy(r => NormalizeReset(r.ResetAt))
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.ObservedAt).First());
-        var bySample = readings.Where(r => IsWeekReading(r) && r.RecordedLocal <= now)
-            .GroupBy(r => NormalizeReset(r.ResetLocal))
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.RecordedLocal).First());
+        var mergedObs = observations
+            .Concat(readings.Where(r => IsWeekReading(r) && r.RecordedLocal <= now)
+                .Select(r => new GeminiWeeklyQuotaObservation(NormalizeReset(r.ResetLocal), r.RecordedLocal, r.UsedPercent, r.Source)))
+            .Where(o => o.ObservedAt <= now.AddMinutes(1))
+            .OrderBy(o => o.ObservedAt)
+            .ToList();
 
-        var anchors = byObs.Keys.Concat(bySample.Keys).ToArray();
-        if (anchors.Length == 0) return [];
-        var anchor = anchors.Max();
-        var current = EndOfWeek(now, anchor);
-
-        var usageByCycle = new Dictionary<DateTimeOffset, TokenUsageBucket>();
-        foreach (var group in rows.GroupBy(row => EndOfWeek(row.StartLocal, anchor)))
+        var timeline = new List<GeminiWeeklyQuotaObservation>(mergedObs.Count);
+        foreach (var item in mergedObs)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var usage = GeminiQuotaEstimator.GeminiModelUsage(group, group.Key - Week, group.Key);
-            if (usage.Events > 0) usageByCycle[group.Key] = usage;
+            var normalized = item with { ResetAt = NormalizeReset(item.ResetAt) };
+            if (timeline.Count > 0)
+            {
+                var prev = timeline[^1];
+                if ((normalized.ObservedAt - prev.ObservedAt).Duration() <= TimeSpan.FromSeconds(5) &&
+                    Math.Abs(normalized.UsedPercent - prev.UsedPercent) < 0.01 &&
+                    (normalized.ResetAt - prev.ResetAt).Duration() <= TimeSpan.FromMinutes(2))
+                {
+                    continue;
+                }
+            }
+            timeline.Add(normalized);
         }
 
-        var cycles = anchors.Concat(usageByCycle.Keys).Append(current)
-            .Where(reset => reset <= current && EndOfWeek(reset, anchor) == reset + Week)
-            .Distinct()
-            .OrderDescending();
+        if (timeline.Count == 0) return [];
 
-        var result = new List<GeminiQuotaCycleUsage>();
-        foreach (var reset in cycles)
+        // Split timeline into actual cycles (supporting early/mid-week resets and natural resets).
+        var clusters = new List<List<GeminiWeeklyQuotaObservation>> { new() { timeline[0] } };
+        for (var i = 1; i < timeline.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            usageByCycle.TryGetValue(reset, out var usage);
-            bySample.TryGetValue(reset, out var sample);
-            byObs.TryGetValue(reset, out var observed);
-            if (sample is not null && (observed is null || sample.RecordedLocal > observed.ObservedAt))
-            {
-                observed = new GeminiWeeklyQuotaObservation(reset, sample.RecordedLocal, sample.UsedPercent, sample.Source);
-            }
+            if (StartsNewCycle(timeline[i - 1], timeline[i]))
+                clusters.Add([timeline[i]]);
+            else
+                clusters[^1].Add(timeline[i]);
+        }
 
-            var priced = usage is null ? null : CodexModelCost.Estimate(usage, PricePresetGroups.Gemini);
-            var cost = priced?.CostTotals.Where(t => t.CurrencySymbol == "$").Sum(t => t.Amount) ?? sample?.CostUsd;
-            var reference = sample?.CapacityUsd;
-            if (reset == current && observed is { UsedPercent: >= 1 } && cost is > 0)
+        var sortedRows = rows.OrderBy(r => r.StartLocal).ToList();
+        var specs = new List<(DateTimeOffset Start, DateTimeOffset End, DateTimeOffset Reset, bool IsCurrent, List<GeminiWeeklyQuotaObservation> Obs)>();
+
+        // 1. Pre-observation historical 7d windows (only when local Gemini usage exists).
+        var firstClusterReset = clusters[0][^1].ResetAt;
+        var firstNominalStart = firstClusterReset - Week;
+        var firstStart = firstNominalStart < clusters[0][0].ObservedAt ? firstNominalStart : clusters[0][0].ObservedAt;
+        if (sortedRows.Count > 0 && sortedRows[0].StartLocal < firstStart)
+        {
+            foreach (var group in sortedRows.Where(r => r.StartLocal < firstStart).GroupBy(r => EndOfWeek(r.StartLocal, firstStart)))
             {
-                var matching = GeminiQuotaEstimator.GeminiModelUsage(
-                    rows.Where(row => row.StartLocal <= observed.ObservedAt), reset - Week, reset);
-                var atObs = GeminiQuotaEstimator.UsdCost(matching);
-                if (atObs > 0) reference = atObs * 100m / (decimal)observed.UsedPercent;
+                cancellationToken.ThrowIfCancellationRequested();
+                var wEnd = group.Key <= firstStart ? group.Key : firstStart;
+                var wStart = wEnd - Week;
+                var u = GeminiQuotaEstimator.GeminiModelUsage(group, wStart, wEnd);
+                if (u.Events > 0)
+                {
+                    specs.Add((wStart, wEnd, wEnd, false, []));
+                }
             }
+        }
+
+        // 2. Observed clusters (including early resets).
+        var nextStart = firstStart;
+        for (var c = 0; c < clusters.Count; c++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var cluster = clusters[c];
+            var nominalReset = cluster[^1].ResetAt;
+            var start = nextStart;
+
+            if (c < clusters.Count - 1)
+            {
+                var nextCluster = clusters[c + 1];
+                var nextFirst = nextCluster[0];
+                var nextNominalStart = nextCluster[^1].ResetAt - Week;
+                DateTimeOffset end;
+
+                if (nominalReset <= nextFirst.ObservedAt.AddMinutes(2))
+                {
+                    // Natural reset boundary reached before next observation.
+                    end = nominalReset;
+                    specs.Add((start, end, nominalReset, false, cluster));
+
+                    // Backfill any intermediate unrecorded 7d weeks that had local usage.
+                    var gapEnd = nextNominalStart > end ? nextNominalStart : end;
+                    if (gapEnd > end)
+                    {
+                        foreach (var group in sortedRows
+                                     .Where(r => r.StartLocal >= end && r.StartLocal < gapEnd)
+                                     .GroupBy(r => EndOfWeek(r.StartLocal, end)))
+                        {
+                            var gEnd = group.Key <= gapEnd ? group.Key : gapEnd;
+                            var gStart = gEnd - Week < end ? end : gEnd - Week;
+                            var u = GeminiQuotaEstimator.GeminiModelUsage(group, gStart, gEnd);
+                            if (u.Events > 0)
+                                specs.Add((gStart, gEnd, gEnd, false, []));
+                        }
+                    }
+
+                    nextStart = nextNominalStart > end ? nextNominalStart : end;
+                }
+                else
+                {
+                    // Early / mid-week reset! Cut the previous cycle cleanly without losing it.
+                    end = nextNominalStart > cluster[^1].ObservedAt && nextNominalStart <= nextFirst.ObservedAt
+                        ? nextNominalStart
+                        : nextFirst.ObservedAt;
+                    if (end <= start) end = start.AddSeconds(1);
+                    specs.Add((start, end, nominalReset, false, cluster));
+                    nextStart = end;
+                }
+            }
+            else
+            {
+                // Final observed cluster: either still active, or already expired naturally.
+                if (nominalReset > now)
+                {
+                    specs.Add((start, nominalReset, nominalReset, true, cluster));
+                }
+                else
+                {
+                    specs.Add((start, nominalReset, nominalReset, false, cluster));
+                    var projectedCurrentReset = EndOfWeek(now, nominalReset);
+                    foreach (var group in sortedRows
+                                 .Where(r => r.StartLocal >= nominalReset && r.StartLocal < projectedCurrentReset - Week)
+                                 .GroupBy(r => EndOfWeek(r.StartLocal, nominalReset)))
+                    {
+                        var u = GeminiQuotaEstimator.GeminiModelUsage(group, group.Key - Week, group.Key);
+                        if (u.Events > 0)
+                            specs.Add((group.Key - Week, group.Key, group.Key, false, []));
+                    }
+
+                    specs.Add((projectedCurrentReset - Week, projectedCurrentReset, projectedCurrentReset, true, []));
+                }
+            }
+        }
+
+        var byResetSample = readings
+            .Where(r => IsWeekReading(r) && r.RecordedLocal <= now)
+            .ToList();
+
+        var result = new List<GeminiQuotaCycleUsage>(specs.Count);
+        foreach (var spec in specs.OrderByDescending(s => s.Start))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var effectiveEnd = spec.IsCurrent && now < spec.End ? now.AddTicks(1) : spec.End;
+            var usage = GeminiQuotaEstimator.GeminiModelUsage(sortedRows, spec.Start, effectiveEnd);
+            var hasUsage = usage.Events > 0 || usage.TotalTokens > 0;
+
+            var latestObs = spec.Obs.Count > 0 ? spec.Obs[^1] : null;
+            var maxUsed = spec.Obs.Count > 0 ? spec.Obs.Max(o => o.UsedPercent) : (double?)null;
+            var matchingSample = byResetSample
+                .Where(s => s.RecordedLocal >= spec.Start.AddMinutes(-2) && s.RecordedLocal <= spec.End.AddMinutes(2))
+                .OrderByDescending(s => s.UsedPercent)
+                .ThenByDescending(s => s.RecordedLocal)
+                .FirstOrDefault();
+
+            var priced = hasUsage ? CodexModelCost.Estimate(usage, PricePresetGroups.Gemini) : null;
+            var cost = priced?.CostTotals.Where(t => t.CurrencySymbol == "$").Sum(t => t.Amount)
+                       ?? (hasUsage ? 0m : matchingSample?.CostUsd);
+
+            decimal? reference = null;
+            var peakObs = spec.Obs
+                .Where(o => o.UsedPercent >= 1.0)
+                .OrderByDescending(o => o.UsedPercent >= GeminiQuotaEstimator.ReliablePercent ? 1 : 0)
+                .ThenByDescending(o => o.UsedPercent)
+                .ThenByDescending(o => o.ObservedAt)
+                .FirstOrDefault();
+            if (peakObs is not null)
+            {
+                var atObsUsage = GeminiQuotaEstimator.GeminiModelUsage(
+                    sortedRows.Where(r => r.StartLocal >= spec.Start && r.StartLocal <= peakObs.ObservedAt),
+                    spec.Start,
+                    peakObs.ObservedAt.AddTicks(1));
+                var atObsCost = GeminiQuotaEstimator.UsdCost(atObsUsage);
+                if (atObsCost > 0m)
+                {
+                    reference = atObsCost * 100m / (decimal)peakObs.UsedPercent;
+                }
+                else if (cost is > 0m)
+                {
+                    reference = cost.Value * 100m / (decimal)peakObs.UsedPercent;
+                }
+            }
+            reference ??= matchingSample?.CapacityUsd;
+
+            if (!spec.IsCurrent && !hasUsage && spec.Obs.Count == 0 && matchingSample is null)
+                continue;
 
             result.Add(new GeminiQuotaCycleUsage(
-                reset - Week,
-                reset,
-                reset == current,
-                usage?.TotalTokens ?? sample?.Tokens,
-                usage?.Events ?? sample?.Events,
+                spec.Start,
+                spec.End,
+                spec.Reset,
+                spec.IsCurrent,
+                spec.Obs.Count,
+                maxUsed,
+                hasUsage ? usage.TotalTokens : matchingSample?.Tokens,
+                hasUsage ? usage.Events : matchingSample?.Events,
                 cost,
                 priced?.UnpricedTokens ?? 0,
-                !complete || (usage is null && sample is not null),
-                usage is null ? sample?.RecordedLocal : reset == current ? now : reset,
-                observed,
+                !complete || (!hasUsage && matchingSample is not null),
+                !hasUsage ? matchingSample?.RecordedLocal : spec.IsCurrent ? now : spec.End,
+                latestObs,
                 reference));
         }
 
         return result;
     }
 
+    internal static bool StartsNewCycle(GeminiWeeklyQuotaObservation previous, GeminiWeeklyQuotaObservation current)
+    {
+        if (current.ObservedAt >= previous.ResetAt.AddMinutes(-2))
+            return true;
+        if (current.UsedPercent + ResetDropSplitThresholdPercent < previous.UsedPercent)
+            return true;
+        if (current.ResetAt > previous.ResetAt + ResetShiftSplitThreshold)
+            return true;
+        return false;
+    }
+
     private static bool IsWeekReading(ClaudeQuotaReading reading) =>
         reading.Kind == ClaudeQuotaWindowKind.Week &&
-        reading.RecordedLocal < reading.ResetLocal &&
-        reading.RecordedLocal >= reading.ResetLocal - Week;
+        reading.RecordedLocal < reading.ResetLocal.AddMinutes(5) &&
+        reading.RecordedLocal >= reading.ResetLocal - Week - TimeSpan.FromHours(2);
 
     private static DateTimeOffset EndOfWeek(DateTimeOffset at, DateTimeOffset anchor)
     {
@@ -702,6 +1040,7 @@ internal static class GeminiQuotaCycleHistory
 internal sealed record GeminiSessionActivityRecord(
     string SessionKey,
     bool IsAntigravity,
+    bool IsT3,
     bool IsSubagent,
     DateTimeOffset FirstTimestamp,
     DateTimeOffset LastTimestamp,
@@ -718,7 +1057,9 @@ internal sealed record GeminiRangeActivityStats(
     long ToolCalls,
     long SevenDayTotalTokens,
     long SevenDayEvents,
-    int SevenDayActiveDays);
+    int SevenDayActiveDays,
+    int T3Sessions = 0,
+    long T3Events = 0);
 
 internal sealed record GeminiActivitySnapshot(
     DateTimeOffset NowLocal,
@@ -742,13 +1083,37 @@ internal static class GeminiActivityReader
 {
     private static readonly TimeSpan Lookback = TimeSpan.FromHours(24);
     private static readonly TimeSpan AnchorMaxAge = TimeSpan.FromHours(72);
+    private static readonly TimeSpan HistoryMemoTtl = TimeSpan.FromMinutes(2);
 
     private sealed record CachedFileEntry(
         CodexLogFileIndex.Signature Signature,
         GeminiSessionActivityRecord? Record);
 
+    private sealed record HistorySegment(
+        TokenUsageBucket Usage,
+        int ActiveDays,
+        bool IsComplete,
+        DateTimeOffset ReadAt);
+
     private static readonly ConcurrentDictionary<string, CachedFileEntry> FileCache =
         new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly object HistoryGate = new();
+    private static readonly Dictionary<(string Scope, DateTimeOffset Start, DateTimeOffset End), HistorySegment> HistoryMemo = new();
+
+    internal static void ResetHistoryMemo()
+    {
+        lock (HistoryGate)
+        {
+            HistoryMemo.Clear();
+        }
+    }
+
+    internal static void ResetCaches()
+    {
+        FileCache.Clear();
+        ResetHistoryMemo();
+    }
 
     private static string AnchorPath =>
         Path.Combine(MonitorCachePaths.LocalAppData, GeminiUsageReader.CacheFolder, "block-anchor.txt");
@@ -779,7 +1144,8 @@ internal static class GeminiActivityReader
 
         var today = Merge(rows.Where(row => row.StartLocal >= todayStart), todayStart);
         var weekStart = todayStart.AddDays(-6);
-        var (weekUsage, weekActiveDays, weekComplete) = ReadRangeBucket(weekStart, nowLocal, todayStart, rows, rowsComplete, cancellationToken, homeOverride);
+        var (weekUsage, weekActiveDays, weekComplete) = UsageInWindow(
+            weekStart, nowLocal, lookbackStart, todayStart, rows, rowsComplete, cancellationToken, homeOverride);
         var rangeStats = ReadStats(rangeStart, rangeEnd, nowLocal, cancellationToken, homeOverride, weekUsage, weekActiveDays);
 
         var snapshot = new GeminiActivitySnapshot(
@@ -800,13 +1166,17 @@ internal static class GeminiActivityReader
             int? resetPrecisionSeconds = null,
             ClaudeQuotaReadingSource readingSource = ClaudeQuotaReadingSource.Official)
         {
-            var start = reset - GeminiQuotaEstimator.Length(kind);
-            var (usage, _, complete) = ReadRangeBucket(start, nowLocal, todayStart, rows, rowsComplete, cancellationToken, homeOverride);
+            var start = kind == ClaudeQuotaWindowKind.Week
+                ? GeminiQuotaCycleHistory.ResolveActiveWeekStart(reset, usedPercent, observed, nowLocal)
+                : reset - GeminiQuotaEstimator.Length(kind);
+            var (usage, _, complete) = UsageInWindow(
+                start, nowLocal, lookbackStart, todayStart, rows, rowsComplete, cancellationToken, homeOverride);
             TokenUsageBucket? atObservation = null;
             if (observed is { } at)
             {
                 var clamped = at < nowLocal ? at : nowLocal;
-                var captured = ReadRangeBucket(start, clamped, todayStart, rows, rowsComplete, cancellationToken, homeOverride);
+                var captured = UsageInWindow(
+                    start, clamped, lookbackStart, todayStart, rows, rowsComplete, cancellationToken, homeOverride);
                 atObservation = captured.Usage;
                 complete &= captured.IsComplete;
             }
@@ -852,9 +1222,10 @@ internal static class GeminiActivityReader
         };
     }
 
-    private static (TokenUsageBucket Usage, int ActiveDays, bool IsComplete) ReadRangeBucket(
+    private static (TokenUsageBucket Usage, int ActiveDays, bool IsComplete) UsageInWindow(
         DateTimeOffset start,
         DateTimeOffset end,
+        DateTimeOffset lookbackStart,
         DateTimeOffset todayStart,
         IReadOnlyList<TokenUsageBucket> recentRows,
         bool recentComplete,
@@ -864,22 +1235,64 @@ internal static class GeminiActivityReader
         var bucket = new TokenUsageBucket { StartLocal = start };
         if (start >= end) return (bucket, 0, true);
 
-        if (homeOverride is null && UsageSourceReaders.For(UsageSource.Gemini) is GeminiUsageReader reader && start < todayStart)
+        // Reuse the already-loaded live lookback slice whenever it covers [start, end].
+        if (start >= lookbackStart)
         {
-            var histEnd = end < todayStart ? end : todayStart;
-            var incomplete = reader.GetIncompleteHistoricalDays(
-                    new DateTimeOffset(start.Date, CodexUsageReader.BeijingOffset),
-                    histEnd.AddTicks(-1),
-                    cancellationToken)
-                .ToHashSet();
-            var complete = true;
-            var activeDays = 0;
+            var inWindow = recentRows.Where(r => r.StartLocal >= start && r.StartLocal <= end).ToList();
+            foreach (var r in inWindow) bucket.MergeFrom(r);
+            var activeDays = inWindow.Select(r => r.StartLocal.ToOffset(CodexUsageReader.BeijingOffset).Date).Distinct().Count();
+            return (bucket, activeDays, recentComplete);
+        }
 
-            for (var day = new DateTimeOffset(start.Date, CodexUsageReader.BeijingOffset); day < histEnd; day = day.AddDays(1))
+        if (end <= todayStart)
+        {
+            var histOnly = ReadHistoricalSegment(start, end.AddTicks(1), cancellationToken, homeOverride);
+            return (histOnly.Usage, histOnly.ActiveDays, histOnly.IsComplete);
+        }
+
+        var history = ReadHistoricalSegment(start, todayStart, cancellationToken, homeOverride);
+        bucket.MergeFrom(history.Usage);
+        var todayRows = recentRows.Where(r => r.StartLocal >= todayStart && r.StartLocal <= end).ToList();
+        var todayPart = Merge(todayRows, todayStart);
+        var days = history.ActiveDays + (todayPart.Events > 0 ? 1 : 0);
+        if (todayPart.Events > 0) bucket.MergeFrom(todayPart);
+        return (bucket, days, history.IsComplete && recentComplete);
+    }
+
+    private static HistorySegment ReadHistoricalSegment(
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken cancellationToken,
+        string? homeOverride)
+    {
+        if (start >= end)
+            return new HistorySegment(new TokenUsageBucket { StartLocal = start }, 0, true, BeijingClock.Now);
+
+        var scope = $"{MonitorCachePaths.LocalAppData}|{homeOverride ?? ""}|{UsageLogPaths.GetOverrideRoot(UsageSource.Gemini) ?? ""}";
+        var key = (scope, start, end);
+        lock (HistoryGate)
+        {
+            if (HistoryMemo.TryGetValue(key, out var cached) &&
+                BeijingClock.Now - cached.ReadAt < HistoryMemoTtl)
+            {
+                return cached;
+            }
+        }
+
+        var bucket = new TokenUsageBucket { StartLocal = start };
+        var complete = true;
+        var activeDays = 0;
+
+        if (homeOverride is null && UsageSourceReaders.For(UsageSource.Gemini) is GeminiUsageReader reader)
+        {
+            var firstDay = new DateTimeOffset(start.Date, CodexUsageReader.BeijingOffset);
+            var incomplete = reader.GetIncompleteHistoricalDays(firstDay, end.AddTicks(-1), cancellationToken).ToHashSet();
+
+            for (var day = firstDay; day < end; day = day.AddDays(1))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var segStart = day < start ? start : day;
-                var segEnd = day.AddDays(1) > histEnd ? histEnd : day.AddDays(1);
+                var segEnd = day.AddDays(1) > end ? end : day.AddDays(1);
                 TokenUsageBucket dayBucket;
                 if (segStart == day && segEnd == day.AddDays(1) && !incomplete.Contains(day))
                 {
@@ -898,25 +1311,29 @@ internal static class GeminiActivityReader
                     bucket.MergeFrom(dayBucket);
                 }
             }
-
-            if (end >= todayStart)
-            {
-                var todayPart = Merge(recentRows.Where(r => r.StartLocal >= (start > todayStart ? start : todayStart) && r.StartLocal <= end), todayStart);
-                if (todayPart.Events > 0)
-                {
-                    activeDays++;
-                    bucket.MergeFrom(todayPart);
-                }
-                complete &= recentComplete;
-            }
-
-            return (bucket, activeDays, complete);
+        }
+        else
+        {
+            var (scanRows, scanComplete) = GeminiUsageReader.ReadTransientDetailRowsWithStatus(start, end, cancellationToken, homeOverride);
+            complete = scanComplete;
+            foreach (var r in scanRows) bucket.MergeFrom(r);
+            activeDays = scanRows.Select(r => r.StartLocal.ToOffset(CodexUsageReader.BeijingOffset).Date).Distinct().Count();
         }
 
-        var (scanRows, scanComplete) = GeminiUsageReader.ReadTransientDetailRowsWithStatus(start, end.AddTicks(1), cancellationToken, homeOverride);
-        foreach (var r in scanRows) bucket.MergeFrom(r);
-        var days = scanRows.Select(r => r.StartLocal.ToOffset(CodexUsageReader.BeijingOffset).Date).Distinct().Count();
-        return (bucket, days, scanComplete);
+        var segment = new HistorySegment(bucket, activeDays, complete, BeijingClock.Now);
+        lock (HistoryGate)
+        {
+            if (HistoryMemo.Count > 64)
+            {
+                var now = BeijingClock.Now;
+                foreach (var stale in HistoryMemo.Where(p => now - p.Value.ReadAt >= HistoryMemoTtl).Select(p => p.Key).ToList())
+                    HistoryMemo.Remove(stale);
+            }
+
+            HistoryMemo[key] = segment;
+        }
+
+        return segment;
     }
 
     public static GeminiRangeActivityStats ReadStats(
@@ -936,8 +1353,8 @@ internal static class GeminiActivityReader
         var roots = GeminiUsageReader.GetLogRoots(homeOverride);
         var (files, _) = GeminiUsageReader.DiscoverLogFiles(roots, cancellationToken, reportDiagnostics: false);
 
-        int mainSessions = 0, subagentSessions = 0, agySessions = 0, cliSessions = 0;
-        long agyEvents = 0, cliEvents = 0, toolCalls = 0;
+        int mainSessions = 0, subagentSessions = 0, agySessions = 0, cliSessions = 0, t3Sessions = 0;
+        long agyEvents = 0, cliEvents = 0, toolCalls = 0, t3Events = 0;
 
         foreach (var file in files)
         {
@@ -962,6 +1379,11 @@ internal static class GeminiActivityReader
             {
                 agySessions++;
                 agyEvents += inRangeCount;
+                if (record.IsT3)
+                {
+                    t3Sessions++;
+                    t3Events += inRangeCount;
+                }
             }
             else
             {
@@ -1011,7 +1433,9 @@ internal static class GeminiActivityReader
             toolCalls,
             sevenDayTokens,
             sevenDayEvents,
-            sevenDayActiveDays);
+            sevenDayActiveDays,
+            t3Sessions,
+            t3Events);
     }
 
     public static decimal EstimateCacheSavingsUsd(TokenUsageBucket summary)
@@ -1117,9 +1541,11 @@ internal static class GeminiActivityReader
     {
         using var reader = new StreamReader(stream, leaveOpen: true);
         var convId = GeminiUsageReader.ExtractAntigravityConversationId(file);
+        var isT3 = GeminiUsageReader.IsT3AntigravityPath(file);
         var timestamps = new List<DateTimeOffset>();
         var isSubagent = false;
-        var seenFirstUser = false;
+        var seenPlanner = false;
+        bool? explicitHuman = null;
         var toolCalls = 0;
 
         while (reader.ReadLine() is { } line)
@@ -1127,7 +1553,9 @@ internal static class GeminiActivityReader
             token.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(line)) continue;
             if (!line.Contains("PLANNER_RESPONSE", StringComparison.Ordinal) &&
-                !line.Contains("USER_INPUT", StringComparison.Ordinal))
+                !line.Contains("CHECKPOINT", StringComparison.Ordinal) &&
+                (seenPlanner || !line.Contains("USER_INPUT", StringComparison.Ordinal) &&
+                                !line.Contains("SYSTEM_MESSAGE", StringComparison.Ordinal)))
             {
                 continue;
             }
@@ -1138,19 +1566,31 @@ internal static class GeminiActivityReader
                 var root = doc.RootElement;
                 if (root.ValueKind != JsonValueKind.Object) continue;
                 var type = AgentSpeedJson.Text(root, "type");
-                if (type == "USER_INPUT" && !seenFirstUser)
+                if (!seenPlanner && type is "USER_INPUT" or "SYSTEM_MESSAGE")
                 {
-                    seenFirstUser = true;
+                    var stepIdx = AgentSpeedJson.Number(root, "step_index");
                     var src = AgentSpeedJson.Text(root, "source");
-                    var content = AgentSpeedJson.Text(root, "content") ?? "";
-                    if (src is not null && src != "USER_EXPLICIT" && !content.Contains("<USER_REQUEST>", StringComparison.Ordinal))
-                        isSubagent = true;
+                    var content = AgentSpeedJson.Text(root, "content");
+                    if (type == "USER_INPUT" && GeminiUsageReader.IsExplicitHumanPrompt(src, content))
+                    {
+                        explicitHuman = true;
+                    }
+                    else if (explicitHuman is null && GeminiUsageReader.IsSubagentInitialStep(type, stepIdx, src, content))
+                    {
+                        explicitHuman = false;
+                    }
                 }
-                else if (type == "PLANNER_RESPONSE")
+                else if (type is "PLANNER_RESPONSE" or "CHECKPOINT")
                 {
+                    if (!seenPlanner)
+                    {
+                        seenPlanner = true;
+                        isSubagent = explicitHuman == false;
+                    }
+
                     if (GeminiUsageReader.TryParseTimestamp(root, "created_at", out var ts))
                         timestamps.Add(ts);
-                    if (root.TryGetProperty("tool_calls", out var tc) && tc.ValueKind == JsonValueKind.Array)
+                    if (type == "PLANNER_RESPONSE" && root.TryGetProperty("tool_calls", out var tc) && tc.ValueKind == JsonValueKind.Array)
                         toolCalls += tc.GetArrayLength();
                 }
             }
@@ -1162,6 +1602,7 @@ internal static class GeminiActivityReader
         return new GeminiSessionActivityRecord(
             "agy:" + convId,
             IsAntigravity: true,
+            IsT3: isT3,
             IsSubagent: isSubagent,
             FirstTimestamp: timestamps[0],
             LastTimestamp: timestamps[^1],
@@ -1215,6 +1656,7 @@ internal static class GeminiActivityReader
         return new GeminiSessionActivityRecord(
             "gcli:" + sessionId,
             IsAntigravity: false,
+            IsT3: false,
             IsSubagent: false,
             FirstTimestamp: timestamps[0],
             LastTimestamp: timestamps[^1],
@@ -1258,6 +1700,7 @@ internal static class GeminiActivityReader
         return new GeminiSessionActivityRecord(
             "gcli:" + sessionId,
             IsAntigravity: false,
+            IsT3: false,
             IsSubagent: false,
             FirstTimestamp: timestamps[0],
             LastTimestamp: timestamps[^1],

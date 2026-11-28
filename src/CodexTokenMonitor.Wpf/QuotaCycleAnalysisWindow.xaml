@@ -49,7 +49,7 @@
 
         <DockPanel Grid.Row="0" Margin="2,0,2,13">
             <Border DockPanel.Dock="Right" Background="{StaticResource AccentSoftBrush}" CornerRadius="12" Padding="12,5" VerticalAlignment="Center">
-                <TextBlock Foreground="{StaticResource AccentBrush}" FontSize="12" Text="模型日志 × 额度快照插值" />
+                <TextBlock Foreground="{StaticResource AccentBrush}" FontSize="12" Text="模型用量 × 额度观测" />
             </Border>
             <StackPanel>
                 <TextBlock x:Name="CycleTitleText" Style="{StaticResource PageTitle}" TextWrapping="Wrap" Margin="0,0,16,0" />
@@ -285,7 +285,7 @@
             <StackPanel Margin="0,0,20,0">
                 <TextBlock x:Name="StatusText" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,5" />
                 <TextBlock Style="{StaticResource SectionDescription}"
-                       Text="说明：模型与 Token 来自会话日志；额度位置会在服务端快照之间插值。分段归因适合比较模型代价和波动，不等同于官方逐请求计费。" />
+                       Text="分段按已记录的额度变化对齐，缺失的刻度按区间插值。折算金额用于比较用量和波动。" />
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
                 <Button x:Name="RefreshAnalysisButton" Style="{StaticResource CloseButton}" Content="刷新数据"

@@ -84,6 +84,117 @@ public sealed class QuotaCachedQueryTests
         Assert.Equal(before, File.ReadAllBytes(MonitorSettingsDatabase.Path));
     }
 
+    [Fact]
+    public void CachedCycleUsesObservedQuotaTransitionsBeforeInterpolatingMissingLevels()
+    {
+        using var isolated = new IsolatedCache();
+        var reset = Day.AddDays(7);
+        var end = Day.AddMinutes(90);
+        var period = new CodexQuotaCycle(Day, end, reset, 4, 5m, false);
+        var events = new[]
+        {
+            UsageAt(10, 1_000_000, "first"),
+            UsageAt(20, 2_000_000, "at-transition"),
+            UsageAt(20, 3_000_000, "also-at-transition"),
+            UsageAt(25, 4_000_000, "second"),
+            UsageAt(30, 1_000_000, "at-second-transition"),
+            UsageAt(50, 4_000_000, "missing-level"),
+            UsageAt(60, 4_000_000, "at-jump"),
+            UsageAt(70, 2_000_000, "before-snapshot-without-usage")
+        };
+        var bucket = new TokenUsageBucket { StartLocal = Day };
+        foreach (var item in events) bucket.Add(item);
+        UsageCacheStore.Load().Put(bucket, true, end, detailEvents: events, propagateErrors: true);
+
+        var quota = QuotaSnapshotCacheStore.Load("CodexTokenMonitor");
+        quota.Put(DateOnly.FromDateTime(Day.DateTime), new[]
+        {
+            WeeklySnapshot(Day.AddMinutes(20), 1m),
+            WeeklySnapshot(Day.AddMinutes(30), 2m),
+            WeeklySnapshot(Day.AddMinutes(60), 4m),
+            WeeklySnapshot(Day.AddMinutes(80), 5m)
+        }, true, end, propagateErrors: true);
+        var stale = events.Select(item => item.Timestamp).Distinct()
+            .Select((time, index) => WeeklySnapshot(time, 10m + index)).ToArray();
+        quota.PutTimelineSnapshots(stale, stale.ToDictionary(
+            item => item.SnapshotLocal,
+            _ => ((DateTimeOffset?)Day, (DateTimeOffset?)end)));
+
+        var result = QuotaCycleAnalysisCalculator.BuildCached(period, currentWeek: null, bandSizePercent: 1m);
+
+        Assert.Equal(5m, result.ObservedQuotaDropPercent);
+        Assert.Equal(21_000_000, result.Tokens);
+        Assert.Equal(new long[] { 6_000_000, 5_000_000, 4_000_000, 4_000_000, 2_000_000 },
+            result.Bands.Select(band => band.Tokens).ToArray());
+        Assert.Equal(new[] { 0, 20, 30, 45, 60 }.Select(minutes => Day.AddMinutes(minutes)),
+            result.Bands.Select(band => band.StartLocal));
+        Assert.Equal(new[] { 20, 30, 45, 60, 80 }.Select(minutes => Day.AddMinutes(minutes)),
+            result.Bands.Select(band => band.EndLocal));
+        Assert.Equal(stale, quota.GetTimelineSnapshots(Day, end));
+
+        TokenUsageEvent UsageAt(int minute, long tokens, string key) => new(
+            Day.AddMinutes(minute), tokens, 0, 0, 0, tokens, key,
+            ModelId: "gpt-6.2-sol", ServiceTier: "default");
+
+        CodexQuotaSnapshot WeeklySnapshot(DateTimeOffset timestamp, decimal used) =>
+            new(timestamp, "codex", "Codex", null, null, used, reset);
+    }
+
+    [Fact]
+    public void CurrentCycleReadsQuotaCrossingsFromSessionJsonl()
+    {
+        using var isolated = new IsolatedCache();
+        var end = BeijingClock.Now.AddSeconds(-1);
+        var start = end.AddMinutes(-5);
+        var reset = start.AddDays(7);
+        var period = new CodexQuotaCycle(start, end, reset, 0, 2m, true);
+        var folder = Path.Combine(UsageLogPaths.GetCodexHome(), "sessions");
+        Directory.CreateDirectory(folder);
+        File.WriteAllLines(Path.Combine(folder, "cycle-quota.jsonl"), new[]
+        {
+            JsonSerializer.Serialize(new
+            {
+                timestamp = start, type = "turn_context",
+                payload = new { model = "gpt-6.2-sol", service_tier = "default" }
+            }),
+            UsageSnapshot(1, 0, 1_000_000),
+            UsageSnapshot(1.5, 1, null),
+            UsageSnapshot(2, 1, 2_000_000),
+            UsageSnapshot(3, 2, 4_000_000)
+        });
+        Assert.Empty(UsageSourceReaders.Codex.ReadCachedQuotaSnapshots(start, end));
+
+        var result = QuotaCycleAnalysisCalculator.Build(period, currentWeek: null, bandSizePercent: 1m);
+
+        Assert.Collection(result.Bands,
+            first =>
+            {
+                Assert.Equal(start.AddMinutes(1.5), first.EndLocal);
+                Assert.Equal(1_000_000, first.Tokens);
+            },
+            second =>
+            {
+                Assert.Equal(start.AddMinutes(3), second.EndLocal);
+                Assert.Equal(6_000_000, second.Tokens);
+            });
+
+        string UsageSnapshot(double minute, int usedPercent, long? tokens) => JsonSerializer.Serialize(new
+        {
+            timestamp = start.AddMinutes(minute), type = "event_msg", payload = new
+            {
+                type = "token_count",
+                info = tokens is { } count
+                    ? new { last_token_usage = new { input_tokens = count, total_tokens = count } }
+                    : null,
+                rate_limits = new
+                {
+                    limit_id = "codex",
+                    secondary = new { used_percent = usedPercent, window_minutes = 10080, resets_at = reset.ToUnixTimeSeconds() }
+                }
+            }
+        });
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

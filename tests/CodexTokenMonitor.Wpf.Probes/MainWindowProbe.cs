@@ -104,15 +104,20 @@ internal static partial class MainWindowProbe
                 dataContext = "UsageDisplayViewModel", modulesAssembly = typeof(UsageSourceModule).Assembly.GetName().Name,
                 queryModelsAssembly = typeof(UsageQueryResult).Assembly.GetName().Name });
             var tabs = Get<TabControl>(window, "SourceTabs");
-            Require(tabs.Items.Cast<TabItem>().Select(item => item.Header.ToString()).SequenceEqual(
-                UsageSourceRegistry.All.Select(item => item.Title)), "registered tab headers preserve order");
+            string[] expectedHeaders = ["Codex", "Gemini", "Claude Code", "ZCode", "WorkBuddy", "DSH", "Kimi", "Qoder"];
+            Require(tabs.Items.Cast<TabItem>().Select(item => item.Header.ToString()).SequenceEqual(expectedHeaders),
+                "Gemini is the second tab after Codex");
+            tabs.SelectedValue = UsageSource.Gemini;
+            Require(tabs.SelectedIndex == 1 && (UsageSource)Invoke(window, "CurrentSource")! == UsageSource.Gemini,
+                "selecting Gemini by source resolves to the second tab");
             var claudeTab = tabs.Items.Cast<TabItem>().Single(item => Equals(item.Tag, UsageSource.ClaudeCode));
+            var claudeIndex = tabs.Items.IndexOf(claudeTab);
             tabs.Items.Remove(claudeTab);
             tabs.Items.Insert(0, claudeTab);
             tabs.SelectedItem = claudeTab;
             Require((UsageSource)Invoke(window, "CurrentSource")! == UsageSource.ClaudeCode, "source follows tag instead of hardcoded index");
             tabs.Items.Remove(claudeTab);
-            tabs.Items.Insert(1, claudeTab);
+            tabs.Items.Insert(claudeIndex, claudeTab);
             tabs.SelectedIndex = -1;
             Require((UsageSource)Invoke(window, "CurrentSource")! == UsageSource.Codex, "empty selection keeps default source");
             tabs.SelectedIndex = 0;
@@ -807,7 +812,7 @@ internal static partial class MainWindowProbe
         module.Mode = mode;
         module.CustomStartLocal = custom ? SeedDay.AddHours(9.5) : null;
         module.PickerValue = (mode == RangeMode.Week ? SeedDay.AddDays(2) : SeedDay).DateTime;
-        Get<TabControl>(window, "SourceTabs").SelectedIndex = (int)module.Source;
+        Get<TabControl>(window, "SourceTabs").SelectedValue = module.Source;
         Invoke(window, "UpdateRangeControls");
         if (mode == RangeMode.Cycle)
         {

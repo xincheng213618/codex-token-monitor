@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 
@@ -5,22 +6,43 @@ namespace CodexTokenMonitor;
 
 /// <summary>
 /// Reads local Gemini usage across Google Antigravity (AGY) conversation transcripts
-/// (~/.gemini/antigravity/brain/&lt;id&gt;/.system_generated/logs/transcript.jsonl) and
-/// Gemini CLI session logs (~/.gemini/tmp/&lt;hash&gt;/chats/session-*.json[l]).
+/// (~/.gemini/antigravity/brain/&lt;id&gt;/.system_generated/logs/transcript.jsonl),
+/// T3 Code Antigravity ACP transcripts (~/.t3/userdata/providers/antigravity/*/antigravity-acp/brain/...),
+/// and Gemini CLI session logs (~/.gemini/tmp/&lt;hash&gt;/chats/session-*.json[l]).
 /// </summary>
 internal sealed class GeminiUsageReader : IUsageSourceReader
 {
     internal const string CacheFolder = "GeminiTokenMonitor";
 
+    private sealed record CachedTranscriptEvents(
+        CodexLogFileIndex.Signature Signature,
+        DateTimeOffset FirstTimestamp,
+        DateTimeOffset LastTimestamp,
+        IReadOnlyList<TokenUsageEvent> Events);
+
+    private static readonly ConcurrentDictionary<string, CachedTranscriptEvents> FileEventsCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public UsageSource Source => UsageSource.Gemini;
     public string Title => UsageSourceRegistry.For(Source).Title;
     public bool SupportsQuota => false;
 
-    public bool ClearCache() => UsageCacheStore.Delete(CacheFolder);
+    internal static void ClearMemoryCaches()
+    {
+        FileEventsCache.Clear();
+        GeminiActivityReader.ResetCaches();
+    }
+
+    public bool ClearCache()
+    {
+        ClearMemoryCaches();
+        return UsageCacheStore.Delete(CacheFolder);
+    }
 
     public bool RefreshCachedDay(DateOnly date, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        GeminiActivityReader.ResetHistoryMemo();
         var deleted = UsageCacheStore.DeleteDay(CacheFolder, date);
         var start = new DateTimeOffset(date.Year, date.Month, date.Day, 0, 0, 0, CodexUsageReader.BeijingOffset);
         var now = DateTimeOffset.UtcNow.ToOffset(CodexUsageReader.BeijingOffset);
@@ -193,21 +215,77 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gemini");
     }
 
+    internal static string GetT3UserdataHome()
+    {
+        if (Environment.GetEnvironmentVariable("T3_USERDATA_DIR") is { Length: > 0 } envT3)
+            return Path.GetFullPath(envT3);
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".t3", "userdata");
+    }
+
+    internal static bool IsT3AntigravityPath(string path)
+    {
+        var normalized = path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        var sep = Path.DirectorySeparatorChar;
+        return normalized.Contains($"{sep}antigravity-acp{sep}", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains($"{sep}providers{sep}antigravity{sep}", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool IsExplicitHumanPrompt(string? source, string? content) =>
+        source == "USER_EXPLICIT" || (content ?? "").Contains("<USER_REQUEST>", StringComparison.Ordinal);
+
+    internal static bool IsSubagentInitialStep(string? type, long stepIndex, string? source, string? content)
+    {
+        if (type == "SYSTEM_MESSAGE")
+            return stepIndex == 0;
+        if (type == "USER_INPUT")
+            return source is not null && !IsExplicitHumanPrompt(source, content);
+        return false;
+    }
+
     internal static IReadOnlyList<string> GetLogRoots(string? homeOverride = null)
     {
         if (!string.IsNullOrWhiteSpace(homeOverride))
             return [Path.GetFullPath(homeOverride)];
         if (UsageLogPaths.GetOverrideRoot(UsageSource.Gemini) is { } isolated)
-            return [isolated];
+            return [Path.GetFullPath(isolated)];
 
         var geminiHome = GetGeminiHome();
-        var roots = new List<string>(2);
+        var roots = new List<string>(4);
         var agyHome = Environment.GetEnvironmentVariable("ANTIGRAVITY_HOME");
         roots.Add(!string.IsNullOrWhiteSpace(agyHome)
             ? Path.Combine(agyHome, "brain")
             : Path.Combine(geminiHome, "antigravity", "brain"));
         roots.Add(Path.Combine(geminiHome, "tmp"));
-        return roots;
+        AddT3AntigravityRoots(GetT3UserdataHome(), roots);
+        return roots.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    internal static void AddT3AntigravityRoots(string t3UserdataDir, List<string> roots)
+    {
+        var providersDir = Path.Combine(t3UserdataDir, "providers", "antigravity");
+        if (!Directory.Exists(providersDir)) return;
+
+        try
+        {
+            foreach (var instanceDir in Directory.EnumerateDirectories(providersDir))
+            {
+                var acpBrain = Path.Combine(instanceDir, "antigravity-acp", "brain");
+                if (Directory.Exists(acpBrain))
+                {
+                    roots.Add(acpBrain);
+                    continue;
+                }
+
+                var directBrain = Path.Combine(instanceDir, "brain");
+                if (Directory.Exists(directBrain))
+                {
+                    roots.Add(directBrain);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 
     internal static (IReadOnlyList<string> Files, bool Complete) DiscoverLogFiles(
@@ -264,7 +342,7 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
         bool reportDiagnostics)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (depth > 10 || !Directory.Exists(directory)) return;
+        if (depth > 12 || !Directory.Exists(directory)) return;
 
         try
         {
@@ -283,11 +361,21 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var dirName = Path.GetFileName(sub);
-                // Skip non-log directories under Antigravity conversations (steps, artifacts, browser_sandbox, node_modules).
+                // Skip non-log directories under Antigravity / T3 conversations and ACP runtime folders.
                 if (dirName.Equals("steps", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("tasks", StringComparison.OrdinalIgnoreCase) ||
                     dirName.Equals("browser_sandbox", StringComparison.OrdinalIgnoreCase) ||
                     dirName.Equals("scratch", StringComparison.OrdinalIgnoreCase) ||
-                    dirName.Equals("node_modules", StringComparison.OrdinalIgnoreCase))
+                    dirName.Equals("node_modules", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals(".user_uploaded", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("tempmediaStorage", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("builtin", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("conversations", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("annotations", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("crashes", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("implicit", StringComparison.OrdinalIgnoreCase) ||
+                    dirName.Equals("mcp", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -343,20 +431,74 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
         List<TokenUsageEvent> events,
         CancellationToken cancellationToken)
     {
-        var name = Path.GetFileName(file);
-        if (name.StartsWith("session-", StringComparison.OrdinalIgnoreCase) &&
-            name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        try
         {
-            return ReadGeminiCliJsonFile(file, start, end, events, cancellationToken);
-        }
+            using var stream = CodexLogFileIndex.Open(file);
+            var beforeSig = CodexLogFileIndex.Identify(file, stream);
+            if (FileEventsCache.TryGetValue(file, out var cached) && cached.Signature == beforeSig)
+            {
+                if (cached.Events.Count > 0 && cached.LastTimestamp >= start && cached.FirstTimestamp < end)
+                {
+                    foreach (var item in cached.Events)
+                    {
+                        if (item.Timestamp >= start && item.Timestamp < end)
+                            events.Add(item);
+                    }
+                }
 
-        if (name.StartsWith("session-", StringComparison.OrdinalIgnoreCase) &&
-            name.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
+                return true;
+            }
+
+            stream.Position = 0;
+            var fileEvents = new List<TokenUsageEvent>();
+            var name = Path.GetFileName(file);
+            bool complete;
+            if (name.StartsWith("session-", StringComparison.OrdinalIgnoreCase) &&
+                name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                complete = ReadGeminiCliJsonStream(file, stream, fileEvents, cancellationToken);
+            }
+            else if (name.StartsWith("session-", StringComparison.OrdinalIgnoreCase) &&
+                     name.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
+            {
+                complete = ReadGeminiCliJsonlStream(file, stream, fileEvents, cancellationToken);
+            }
+            else
+            {
+                complete = ReadAntigravityTranscriptStream(file, stream, fileEvents, cancellationToken);
+            }
+
+            var mergedFileEvents = fileEvents.Count > 1 ? UsageEventMerger.Merge(fileEvents) : (IReadOnlyList<TokenUsageEvent>)fileEvents;
+            using var verifyStream = CodexLogFileIndex.Open(file);
+            var unchanged = beforeSig == CodexLogFileIndex.Identify(file, verifyStream);
+            if (complete && unchanged)
+            {
+                if (FileEventsCache.Count > 4096)
+                {
+                    FileEventsCache.Clear();
+                }
+
+                var firstTs = mergedFileEvents.Count > 0 ? mergedFileEvents.Min(item => item.Timestamp) : DateTimeOffset.MaxValue;
+                var lastTs = mergedFileEvents.Count > 0 ? mergedFileEvents.Max(item => item.Timestamp) : DateTimeOffset.MinValue;
+                FileEventsCache[file] = new CachedTranscriptEvents(beforeSig, firstTs, lastTs, mergedFileEvents);
+            }
+
+            foreach (var item in mergedFileEvents)
+            {
+                if (item.Timestamp >= start && item.Timestamp < end)
+                    events.Add(item);
+            }
+
+            return complete && unchanged;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return ReadGeminiCliJsonlFile(file, start, end, events, cancellationToken);
+            throw;
         }
-
-        return ReadAntigravityTranscriptFile(file, start, end, events, cancellationToken);
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     internal static string ExtractAntigravityConversationId(string file)
@@ -373,106 +515,115 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
         return logsDir?.Name ?? Path.GetFileNameWithoutExtension(file);
     }
 
-    private static bool ReadAntigravityTranscriptFile(
+    private static bool ReadAntigravityTranscriptStream(
         string file,
-        DateTimeOffset start,
-        DateTimeOffset end,
+        FileStream stream,
         List<TokenUsageEvent> events,
         CancellationToken cancellationToken)
     {
         var complete = true;
         var conversationId = ExtractAntigravityConversationId(file);
         var lineIndex = 0;
-        try
+        string? activeModel = null;
+        string? firstSeenModel = null;
+        var hasUnattributedModel = false;
+        using var reader = new StreamReader(stream, leaveOpen: true);
+        while (reader.ReadLine() is { } line)
         {
-            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-            while (reader.ReadLine() is { } line)
+            cancellationToken.ThrowIfCancellationRequested();
+            lineIndex++;
+            if (string.IsNullOrWhiteSpace(line) ||
+                !line.Contains("PLANNER_RESPONSE", StringComparison.Ordinal) &&
+                !line.Contains("CHECKPOINT", StringComparison.Ordinal))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                lineIndex++;
-                if (string.IsNullOrWhiteSpace(line) ||
-                    !line.Contains("PLANNER_RESPONSE", StringComparison.Ordinal) &&
-                    !line.Contains("CHECKPOINT", StringComparison.Ordinal))
+                continue;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) continue;
+                // Antigravity records context compaction as a separate token-bearing step without a model field.
+                if (String(root, "type") is not ("PLANNER_RESPONSE" or "CHECKPOINT")) continue;
+
+                var explicitModel = String(root, "model");
+                if (!string.IsNullOrWhiteSpace(explicitModel))
                 {
+                    activeModel = explicitModel;
+                    firstSeenModel ??= explicitModel;
+                }
+
+                if (!TryParseTimestamp(root, "created_at", out var timestamp))
+                {
+                    complete = false;
                     continue;
                 }
 
-                try
+                if (!OptionalNumber(root, "input_tokens", out var uncached) ||
+                    !OptionalNumber(root, "cache_read_tokens", out var cachedRead) ||
+                    !OptionalNumber(root, "cached_tokens", out var altCached) ||
+                    !OptionalNumber(root, "cache_write_tokens", out var cacheWrite) ||
+                    !OptionalNumber(root, "output_tokens", out var rawOutput) ||
+                    !OptionalNumber(root, "thoughts_token_count", out var thoughts1) ||
+                    !OptionalNumber(root, "reasoning_tokens", out var thoughts2) ||
+                    !OptionalNumber(root, "thinking_tokens", out var thoughts3))
                 {
-                    using var document = JsonDocument.Parse(line);
-                    var root = document.RootElement;
-                    if (root.ValueKind != JsonValueKind.Object) continue;
-                    // Antigravity records context compaction as a separate token-bearing step.
-                    if (String(root, "type") is not ("PLANNER_RESPONSE" or "CHECKPOINT")) continue;
-
-                    if (!TryParseTimestamp(root, "created_at", out var timestamp))
-                    {
-                        complete = false;
-                        continue;
-                    }
-
-                    if (!OptionalNumber(root, "input_tokens", out var uncached) ||
-                        !OptionalNumber(root, "cache_read_tokens", out var cachedRead) ||
-                        !OptionalNumber(root, "cached_tokens", out var altCached) ||
-                        !OptionalNumber(root, "cache_write_tokens", out var cacheWrite) ||
-                        !OptionalNumber(root, "output_tokens", out var rawOutput) ||
-                        !OptionalNumber(root, "thoughts_token_count", out var thoughts1) ||
-                        !OptionalNumber(root, "reasoning_tokens", out var thoughts2) ||
-                        !OptionalNumber(root, "thinking_tokens", out var thoughts3))
-                    {
-                        complete = false;
-                        continue;
-                    }
-
-                    if (timestamp < start || timestamp >= end) continue;
-
-                    var cached = Math.Max(cachedRead, altCached);
-                    var input = TokenCountMath.AddNonNegative(TokenCountMath.AddNonNegative(uncached, cached), cacheWrite);
-                    var reasoning = Math.Max(thoughts1, Math.Max(thoughts2, thoughts3));
-                    var output = Math.Max(rawOutput, reasoning);
-                    if (input == 0 && output == 0) continue;
-
-                    var stepKey = Number(root, "step_index", out var stepIndex)
-                        ? stepIndex.ToString(CultureInfo.InvariantCulture)
-                        : $"{lineIndex}:{timestamp.UtcTicks}";
-
-                    events.Add(new TokenUsageEvent(
-                        timestamp,
-                        input,
-                        cached,
-                        output,
-                        reasoning,
-                        TokenCountMath.AddNonNegative(input, output),
-                        $"agy:{conversationId}:{stepKey}",
-                        cacheWrite,
-                        ModelId: String(root, "model")));
-                }
-                catch (Exception ex) when (ex is JsonException or ArgumentOutOfRangeException)
-                {
-                    // Partially flushed tail line; retry on subsequent scan.
                     complete = false;
+                    continue;
                 }
+
+                var cached = Math.Max(cachedRead, altCached);
+                var input = TokenCountMath.AddNonNegative(TokenCountMath.AddNonNegative(uncached, cached), cacheWrite);
+                var reasoning = Math.Max(thoughts1, Math.Max(thoughts2, thoughts3));
+                var output = Math.Max(rawOutput, reasoning);
+                if (input == 0 && output == 0) continue;
+
+                var stepKey = Number(root, "step_index", out var stepIndex)
+                    ? stepIndex.ToString(CultureInfo.InvariantCulture)
+                    : $"{lineIndex}:{timestamp.UtcTicks}";
+
+                var resolvedModel = !string.IsNullOrWhiteSpace(explicitModel) ? explicitModel : activeModel;
+                if (resolvedModel is null) hasUnattributedModel = true;
+
+                events.Add(new TokenUsageEvent(
+                    timestamp,
+                    input,
+                    cached,
+                    output,
+                    reasoning,
+                    TokenCountMath.AddNonNegative(input, output),
+                    $"agy:{conversationId}:{stepKey}",
+                    cacheWrite,
+                    ModelId: resolvedModel));
+            }
+            catch (Exception ex) when (ex is JsonException or ArgumentOutOfRangeException)
+            {
+                // Partially flushed tail line; retry on subsequent scan.
+                complete = false;
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+
+        if (hasUnattributedModel && firstSeenModel is not null)
         {
-            return false;
+            for (var i = 0; i < events.Count; i++)
+            {
+                if (events[i].ModelId is null)
+                    events[i] = events[i] with { ModelId = firstSeenModel };
+            }
         }
 
         return complete;
     }
 
-    private static bool ReadGeminiCliJsonFile(
+    private static bool ReadGeminiCliJsonStream(
         string file,
-        DateTimeOffset start,
-        DateTimeOffset end,
+        FileStream stream,
         List<TokenUsageEvent> events,
         CancellationToken cancellationToken)
     {
         try
         {
-            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             using var document = JsonDocument.Parse(stream);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return true;
@@ -492,7 +643,7 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
                 cancellationToken.ThrowIfCancellationRequested();
                 var currentIndex = index++;
                 if (message.ValueKind != JsonValueKind.Object) continue;
-                TryAddGeminiCliMessage(message, sessionId, currentIndex, fallbackModel, sessionFallbackTime, start, end, events);
+                TryAddGeminiCliMessage(message, sessionId, currentIndex, fallbackModel, sessionFallbackTime, events);
             }
 
             return true;
@@ -502,16 +653,11 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
             // A session-*.json rewrite in progress may be momentarily incomplete.
             return false;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
     }
 
-    private static bool ReadGeminiCliJsonlFile(
+    private static bool ReadGeminiCliJsonlStream(
         string file,
-        DateTimeOffset start,
-        DateTimeOffset end,
+        FileStream stream,
         List<TokenUsageEvent> events,
         CancellationToken cancellationToken)
     {
@@ -519,33 +665,25 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
         var sessionId = Path.GetFileNameWithoutExtension(file);
         string? activeModel = null;
         var lineIndex = 0;
-        try
+        using var reader = new StreamReader(stream, leaveOpen: true);
+        while (reader.ReadLine() is { } line)
         {
-            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-            while (reader.ReadLine() is { } line)
+            cancellationToken.ThrowIfCancellationRequested();
+            var currentIndex = lineIndex++;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var currentIndex = lineIndex++;
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                try
-                {
-                    using var document = JsonDocument.Parse(line);
-                    var root = document.RootElement;
-                    if (root.ValueKind != JsonValueKind.Object) continue;
-                    sessionId = String(root, "sessionId") ?? sessionId;
-                    activeModel = String(root, "model") ?? activeModel;
-                    TryAddGeminiCliMessage(root, sessionId, currentIndex, activeModel, null, start, end, events);
-                }
-                catch (Exception ex) when (ex is JsonException or ArgumentOutOfRangeException)
-                {
-                    complete = false;
-                }
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) continue;
+                sessionId = String(root, "sessionId") ?? sessionId;
+                activeModel = String(root, "model") ?? activeModel;
+                TryAddGeminiCliMessage(root, sessionId, currentIndex, activeModel, null, events);
             }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return false;
+            catch (Exception ex) when (ex is JsonException or ArgumentOutOfRangeException)
+            {
+                complete = false;
+            }
         }
 
         return complete;
@@ -557,8 +695,6 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
         int index,
         string? fallbackModel,
         DateTimeOffset? fallbackTime,
-        DateTimeOffset start,
-        DateTimeOffset end,
         List<TokenUsageEvent> events)
     {
         var type = String(message, "type") ?? String(message, "role");
@@ -590,7 +726,6 @@ internal sealed class GeminiUsageReader : IUsageSourceReader
             return;
         }
 
-        if (timestamp < start || timestamp >= end) return;
         if (input == 0 && output == 0) return;
 
         var model = String(message, "model") ?? fallbackModel;

@@ -100,9 +100,77 @@ public sealed class GeminiModuleTests : IDisposable
         Assert.Equal(71_700, summary.TotalTokens);
         Assert.Contains("gemini-2.5-pro", summary.ModelUsage.Keys);
         Assert.Contains("gemini-2.5-flash", summary.ModelUsage.Keys);
+        // CHECKPOINT inherits gemini-2.5-pro from the preceding PLANNER_RESPONSE so no tokens remain unattributed.
+        Assert.Equal(2, summary.ModelUsage["gemini-2.5-pro"].Events);
+        var costEstimate = CodexModelCost.Estimate(summary, PricePresetGroups.Gemini);
+        Assert.True(costEstimate.IsComplete);
+        Assert.Equal(0, costEstimate.UnpricedTokens);
 
         Assert.Empty(reader.GetIncompleteHistoricalDays(day, day));
         Assert.Equal(71_700, reader.ReadCachedRange(day, day.AddDays(1)).TotalTokens);
+    }
+
+    [Fact]
+    public void T3AntigravityAndSystemMessageSubagents_AreDiscoveredClassifiedAndUpdatedOnAppend()
+    {
+        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(Path.Combine(root, "t3-cache"));
+        var isolatedHome = Path.Combine(root, "t3-env");
+        var t3Userdata = Path.Combine(isolatedHome, ".t3", "userdata");
+        var t3Brain = Path.Combine(t3Userdata, "providers", "antigravity", "inst-hash-01", "antigravity-acp", "brain");
+        var t3MainLogs = Path.Combine(t3Brain, "t3-main-conv", ".system_generated", "logs");
+        var agySubLogs = Path.Combine(isolatedHome, "antigravity", "brain", "agy-sys-sub", ".system_generated", "logs");
+        Directory.CreateDirectory(t3MainLogs);
+        Directory.CreateDirectory(agySubLogs);
+
+        var discoveredRoots = new List<string>();
+        GeminiUsageReader.AddT3AntigravityRoots(t3Userdata, discoveredRoots);
+        Assert.Contains(t3Brain, discoveredRoots, StringComparer.OrdinalIgnoreCase);
+
+        var day = new DateTimeOffset(2026, 11, 24, 0, 0, 0, TimeSpan.FromHours(8));
+        var t3Transcript = Path.Combine(t3MainLogs, "transcript.jsonl");
+        File.WriteAllLines(t3Transcript,
+        [
+            JsonSerializer.Serialize(new { step_index = 0, source = "USER_EXPLICIT", type = "USER_INPUT", created_at = day.AddHours(12).ToUniversalTime(), content = "<USER_REQUEST>t3 hello</USER_REQUEST>" }),
+            JsonSerializer.Serialize(new { step_index = 1, source = "MODEL", type = "PLANNER_RESPONSE", created_at = day.AddHours(12).AddSeconds(2).ToUniversalTime(), model = "gemini-4-carbon-high", input_tokens = 20_000, cache_read_tokens = 0, output_tokens = 1_000, tool_calls = new[] { new { name = "read_file" } } }),
+            JsonSerializer.Serialize(new { step_index = 2, source = "MODEL", type = "GENERIC", created_at = day.AddHours(12).AddSeconds(12).ToUniversalTime(), content = "Completed At: 2026-11-24T04:00:13Z" })
+        ]);
+
+        // Real Antigravity invoke_subagent transcript starts with step_index=0 SYSTEM_MESSAGE (no USER_INPUT).
+        File.WriteAllLines(Path.Combine(agySubLogs, "transcript.jsonl"),
+        [
+            JsonSerializer.Serialize(new { step_index = 0, source = "SYSTEM", type = "SYSTEM_MESSAGE", created_at = day.AddHours(14).ToUniversalTime(), content = "The following is a <SYSTEM_MESSAGE> not actually sent by the user." }),
+            JsonSerializer.Serialize(new { step_index = 1, source = "MODEL", type = "PLANNER_RESPONSE", created_at = day.AddHours(14).AddSeconds(1).ToUniversalTime(), model = "gemini-4-carbon-high", input_tokens = 10_000, cache_read_tokens = 0, output_tokens = 500, tool_calls = new[] { new { name = "read_file" } } }),
+            JsonSerializer.Serialize(new { step_index = 2, source = "MODEL", type = "GENERIC", created_at = day.AddHours(14).AddSeconds(6).ToUniversalTime(), content = "Completed At: 2026-11-24T06:00:07Z" }),
+            JsonSerializer.Serialize(new { step_index = 3, source = "SYSTEM", type = "CHECKPOINT", created_at = day.AddHours(14).AddSeconds(10).ToUniversalTime(), input_tokens = 2_000, cache_read_tokens = 8_000, output_tokens = 300 })
+        ]);
+
+        var firstScan = GeminiUsageReader.ReadTransientDetailRowsWithStatus(day, day.AddDays(1), homeOverride: isolatedHome);
+        Assert.True(firstScan.IsComplete);
+        Assert.Equal(3, firstScan.Rows.Count);
+
+        // Appending a new step to T3 transcript invalidates its cached file signature and picks up the new usage.
+        File.AppendAllLines(t3Transcript,
+        [
+            JsonSerializer.Serialize(new { step_index = 3, source = "MODEL", type = "PLANNER_RESPONSE", created_at = day.AddHours(12).AddSeconds(20).ToUniversalTime(), model = "gemini-4-carbon-high", input_tokens = 5_000, cache_read_tokens = 20_000, output_tokens = 400 })
+        ]);
+        var secondScan = GeminiUsageReader.ReadTransientDetailRowsWithStatus(day, day.AddDays(1), homeOverride: isolatedHome);
+        Assert.Equal(4, secondScan.Rows.Count);
+
+        var stats = GeminiActivityReader.ReadStats(day, day.AddDays(1), day.AddHours(18), homeOverride: isolatedHome);
+        Assert.Equal(1, stats.MainSessions);
+        Assert.Equal(1, stats.SubagentSessions);
+        Assert.Equal(2, stats.AntigravitySessions);
+        Assert.Equal(1, stats.T3Sessions);
+        Assert.Equal(2, stats.T3Events);
+        Assert.Equal(2, stats.ToolCalls);
+
+        var rhythm = GeminiRhythmReader.Read(day.AddDays(1), homeOverride: isolatedHome);
+        Assert.Equal(1, rhythm.CountInRange(day, day.AddDays(1)));
+
+        using var monitor = new AgentSpeedMonitor(isolatedHome, UsageSource.Gemini, watchFileSystem: false);
+        var speedSnapshot = monitor.Read(day.AddHours(14).AddSeconds(15), day);
+        var subAgent = Assert.Single(speedSnapshot.Agents, a => a.Agent.SessionId == "agy-sys-sub");
+        Assert.True(subAgent.Agent.IsSubagent);
     }
 
     [Fact]
@@ -377,5 +445,102 @@ public sealed class GeminiModuleTests : IDisposable
         Assert.Equal(2, stats.AntigravityEvents);
         Assert.Equal(1, stats.CliEvents);
         Assert.Equal(2, stats.ToolCalls);
+    }
+
+    [Fact]
+    public void CycleHistoryAndAnalysis_PreserveEarlyResetsBothShiftedAndSameAnchor()
+    {
+        using var cacheScope = MonitorCachePaths.PushLocalAppDataRoot(Path.Combine(root, "early-reset-cache"));
+        var geminiHome = Path.Combine(root, "early-reset-home");
+        var agyDir = Path.Combine(geminiHome, "antigravity", "brain", "conv-reset", ".system_generated", "logs");
+        Directory.CreateDirectory(agyDir);
+
+        var t1 = new DateTimeOffset(2026, 11, 24, 10, 8, 0, TimeSpan.FromHours(8));
+        var reset1 = new DateTimeOffset(2026, 12, 1, 8, 38, 0, TimeSpan.FromHours(8));
+        var t2 = new DateTimeOffset(2026, 11, 26, 18, 10, 0, TimeSpan.FromHours(8));
+        var reset2 = new DateTimeOffset(2026, 12, 3, 16, 0, 0, TimeSpan.FromHours(8));
+
+        // Usage in cycle 1 ($4.00) and usage in cycle 2 ($2.00).
+        File.WriteAllLines(Path.Combine(agyDir, "transcript.jsonl"),
+        [
+            JsonSerializer.Serialize(new
+            {
+                step_index = 1, source = "MODEL", type = "PLANNER_RESPONSE", status = "DONE",
+                created_at = t1.AddMinutes(-30).ToUniversalTime(), model = "gemini-4-carbon-high",
+                input_tokens = 1_000_000, cache_read_tokens = 0, output_tokens = 200_000
+            }),
+            JsonSerializer.Serialize(new
+            {
+                step_index = 2, source = "MODEL", type = "PLANNER_RESPONSE", status = "DONE",
+                created_at = t2.AddMinutes(-30).ToUniversalTime(), model = "gemini-4-carbon-high",
+                input_tokens = 500_000, cache_read_tokens = 0, output_tokens = 100_000
+            })
+        ]);
+
+        // 1) Save pre-reset observation (27% used, reset 12-01 08:38).
+        var snap1 = new GeminiRateLimitSnapshot(
+            t1,
+            new GeminiRateLimitWindow(100, t1.AddHours(3), t1, ClaudeQuotaReadingSource.Desktop, 60),
+            new GeminiRateLimitWindow(27, reset1, t1, ClaudeQuotaReadingSource.Desktop, 3600));
+        GeminiRateLimitLog.SaveCurrent(snap1);
+
+        // Verify Settings -> Models (without countdown) detects the upward quota reset cleanly.
+        string[] settingsAfterReset = ["Gemini Models", "Weekly Limit Remaining", "95%", "Five Hour Limit Remaining", "100%"];
+        Assert.True(GeminiDesktopQuotaParser.TryDetectUnanchoredWeekReset(settingsAfterReset, snap1, out var detectedRem));
+        Assert.Equal(95, detectedRem);
+
+        // 2) Save post-early-reset observation with shifted reset (5% used, reset 12-03 16:00 -> new cycle started 11-26 16:00).
+        var snap2 = new GeminiRateLimitSnapshot(
+            t2,
+            new GeminiRateLimitWindow(10, t2.AddHours(4), t2, ClaudeQuotaReadingSource.Desktop, 60),
+            new GeminiRateLimitWindow(5, reset2, t2, ClaudeQuotaReadingSource.Desktop, 3600));
+        GeminiRateLimitLog.SaveCurrent(snap2);
+
+        var cycles = GeminiQuotaCycleHistory.Read(t2.AddMinutes(5), homeOverride: geminiHome);
+        Assert.Equal(2, cycles.Count);
+
+        var current = cycles[0];
+        var previous = cycles[1];
+        Assert.True(current.IsCurrent);
+        Assert.False(previous.IsCurrent);
+
+        // Previous cycle was cut cleanly at new cycle's start (11-26 16:00) instead of being discarded!
+        Assert.Equal(reset1.AddDays(-7), previous.Start);
+        Assert.Equal(reset2.AddDays(-7), previous.End);
+        Assert.Equal(27, previous.MaxUsedPercent);
+        Assert.Equal(4.00m, previous.ApiCostUsd);
+
+        Assert.Equal(reset2.AddDays(-7), current.Start);
+        Assert.Equal(reset2, current.End);
+        Assert.Equal(5, current.MaxUsedPercent);
+        Assert.Equal(2.00m, current.ApiCostUsd);
+        // $2.00 / 5% = $40.00 full reference
+        Assert.Equal(40.00m, current.FullReferenceUsd);
+
+        // 3) Verify cycle analysis, cost curve, and manual interval estimator all work on Gemini cycles.
+        var analysisSource = new GeminiQuotaAnalysisSource(geminiHome);
+        var analysis = analysisSource.BuildAnalysis(current.ToCodexCycle(), null, 5m, CancellationToken.None);
+        Assert.True(analysis.HasData);
+        Assert.Single(analysis.Bands);
+
+        var curves = GeminiQuotaCostCurveBuilder.Build(cycles, t2.AddMinutes(5), CancellationToken.None, geminiHome);
+        Assert.Equal(2, curves.Curves.Count);
+
+        var liveActivity = GeminiActivityReader.ReadCurrent(t2.Date, t2.AddMinutes(5), t2.AddMinutes(5), homeOverride: geminiHome);
+        var manualText = GeminiManualWeekEstimator.Build(liveActivity.WeekWindow, cycles, 100m, 95m, homeOverride: geminiHome);
+        Assert.Contains("$40", manualText);
+
+        // 4) Also verify mid-week reset where ResetAt stays identical (e.g., server clears used% to 0% keeping reset2).
+        var t3 = t2.AddHours(3);
+        GeminiRateLimitLog.SaveCurrent(new GeminiRateLimitSnapshot(
+            t3,
+            null,
+            new GeminiRateLimitWindow(0, reset2, t3, ClaudeQuotaReadingSource.Official)));
+        var cyclesAfterSameAnchorClear = GeminiQuotaCycleHistory.Read(t3.AddMinutes(5), homeOverride: geminiHome);
+        Assert.Equal(3, cyclesAfterSameAnchorClear.Count);
+        Assert.Equal(t3, cyclesAfterSameAnchorClear[0].Start);
+        Assert.Equal(0, cyclesAfterSameAnchorClear[0].MaxUsedPercent);
+        Assert.Equal(5, cyclesAfterSameAnchorClear[1].MaxUsedPercent);
+        Assert.Equal(27, cyclesAfterSameAnchorClear[2].MaxUsedPercent);
     }
 }

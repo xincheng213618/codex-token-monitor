@@ -100,10 +100,11 @@ internal static class GeminiDesktopQuotaParser
         if (countdown is { } reading && reading.Duration <= length)
         {
             // Countdown text is rounded. Retain a compatible known reset so repeated
-            // samples from the same window don't turn into new historical cycles.
+            // samples from the same window don't turn into new historical cycles,
+            // unless used percentage dropped (an early/mid-cycle reset).
             var displayed = now + reading.Duration;
             var tolerance = TimeSpan.FromSeconds(reading.PrecisionSeconds + (previous?.ResetPrecisionSeconds ?? 0));
-            if (previous is { } known && (known.ResetLocal - displayed).Duration() <= tolerance)
+            if (previous is { } known && used + 0.001 >= known.UsedPercent && (known.ResetLocal - displayed).Duration() <= tolerance)
             {
                 reset = known.ResetLocal;
                 precision = known.ResetPrecisionSeconds;
@@ -125,6 +126,48 @@ internal static class GeminiDesktopQuotaParser
         }
 
         return new GeminiRateLimitWindow(used, reset, now, ClaudeQuotaReadingSource.Desktop, precision);
+    }
+
+    public static bool TryDetectUnanchoredWeekReset(
+        IEnumerable<string> names,
+        GeminiRateLimitSnapshot? previous,
+        out double currentRemainingPercent)
+    {
+        currentRemainingPercent = 0;
+        if (previous?.SevenDay is not { } knownWeek) return false;
+        var labels = names.Select(name => name.Trim()).Where(name => name.Length > 0).ToArray();
+        var group = Array.FindIndex(labels, name => GroupNames.Contains(name, StringComparer.OrdinalIgnoreCase));
+        if (group < 0) return false;
+
+        var end = Array.FindIndex(labels, group + 1, IsOtherGroup);
+        if (end < 0) end = labels.Length;
+        for (var i = group + 1; i < end; i++)
+        {
+            if (GetKind(labels[i]) != ClaudeQuotaWindowKind.Week) continue;
+            var next = i + 1;
+            while (next < end && GetKind(labels[next]) is null) next++;
+            for (var j = i + 1; j < next; j++)
+            {
+                var match = RemainingPercent.Match(labels[j]);
+                if (!match.Success && j + 1 < next && labels[j + 1].StartsWith('%'))
+                    match = RemainingPercent.Match(labels[j] + labels[j + 1]);
+                if (match.Success &&
+                    double.TryParse(match.Groups["value"].Value.Replace(',', '.'),
+                        NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var rem) &&
+                    rem is >= 0 and <= 100)
+                {
+                    var used = 100.0 - rem;
+                    if (used + 2.0 < knownWeek.UsedPercent)
+                    {
+                        currentRemainingPercent = rem;
+                        return true;
+                    }
+                    return false;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static (TimeSpan Duration, int PrecisionSeconds)? ReadDuration(string label)
